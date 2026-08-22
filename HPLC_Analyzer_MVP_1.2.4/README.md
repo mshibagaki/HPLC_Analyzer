@@ -6,6 +6,93 @@
 
 v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セット（Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2 5.15.2.1、Qt 5.15.2、Matplotlib 3.7.5、PyInstaller 5.13.2）を固定しました。各native依存を別プロセスで順番にimportし、どれか1つでも異常終了した場合はPyInstallerへ進みません。Windows 7では画面表示だけをピーク保持型のmin/max envelopeで間引く軽量描画を標準にし、解析・CSV・PNG・SVG・PDF・A4レポートは常に元データを使います。Windows 11 64-bit版は高品質描画と専用の新しい依存セットを維持し、両版の`.hplcproj`とプリセット形式は共通です。
 
+## 開発者向けクイックスタート
+
+このリポジトリでは、Windows 11版とWindows 7版で使用するPython、Qt、依存パッケージ、ビルドするOSが異なります。アプリケーションのソースは共通ですが、両環境の仮想環境や依存パッケージを混在させないでください。
+
+| 目的 | Windows 11版 | Windows 7版 |
+| --- | --- | --- |
+| 対象OS | Windows 11 64-bit | Windows 7 SP1 32-bit（build 7601） |
+| ビルドするPC | Windows 11 64-bit | Windows 7 SP1 32-bit実機 |
+| Python | Python 3.11 x64 | Python 3.8.10 x86 |
+| Qt | PySide6 / Qt 6 | PySide2 / Qt 5 |
+| requirements | `requirements-win11.txt` | `requirements-win7-bootstrap.txt`、`requirements-win7.txt` |
+| ビルド入口 | `build_windows11.bat` | `build_windows7_offline.bat`（`build_windows7.bat`も同じ処理） |
+| 配布物 | Windows 11 x64用セットアップEXE | Windows 7 x86用セットアップEXE |
+
+### Windows 11版を開発・起動する
+
+前提として、Windows 11 64-bit PCへPython 3.11 x64とInno Setup 6をインストールします。初回はリポジトリ内の`build_windows11.bat`を実行してください。このバッチは`.venv-win11-x64`を作成し、`requirements-win11.txt`の依存導入、パッケージ検証、全テスト、PyInstallerによるEXE生成、Inno SetupによるセットアップEXE生成を順番に実行します。初回の依存導入にはインターネット接続が必要です。
+
+```bat
+build_windows11.bat
+```
+
+一度ビルドして仮想環境を作成した後、ソースからGUIを起動する場合は次を実行します。
+
+```bat
+run_source_windows11.bat
+```
+
+生成された単体EXEを確認する場合は、次を起動します。
+
+```text
+dist\windows11-x64\HPLC_Analyzer.exe
+```
+
+他のPCへは、単体EXEではなく次のセットアップEXEを配布するのが標準です。配布先にPython、Qt、Inno Setup、ソースコード、インターネット接続は不要です。
+
+```text
+dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe
+```
+
+### Windows 7版をビルド・起動する
+
+Windows 7版の実行ファイルをWindows 10/11上で生成してはいけません。まずWindows 11 PCで`build_all_windows.bat`を実行し、Windows 11版セットアップEXEとWindows 7搬入用の完全オフラインビルドZIPを用意します。
+
+```bat
+build_all_windows.bat
+```
+
+生成された次のZIPをUSB等でWindows 7 SP1 32-bit実機へ移し、`C:\HPLC_Build\HPLC_Analyzer_MVP_1.2.4`などのローカルディスクへ展開します。USB、`Program Files`、ネットワーク共有上から直接ビルドしないでください。
+
+```text
+dist\offline\HPLC_Analyzer_1.2.4_Windows7_Offline_Build.zip
+```
+
+展開先のWindows 7実機で次を実行します。必要なPython、wheel、Inno Setup、VC++ x86ランタイムはオフライン資材へ同梱され、pipは`--no-index`で動作します。
+
+```bat
+build_windows7_offline.bat
+```
+
+バッチは、同梱資材のSHA-256、OSとCPUアーキテクチャ、Pythonと固定依存、native依存の個別import、全テスト、通常版／Debug版EXE、両EXEの起動スモークテストを検証します。すべて成功した場合だけセットアップEXEを生成します。
+
+生成後は通常版を解析に使用し、通常版が起動しない場合だけDebug版で起動時エラーを確認します。
+
+```text
+dist\windows7-x86\HPLC_Analyzer.exe
+dist\windows7-x86\HPLC_Analyzer_Debug.exe
+```
+
+他のWindows 7 PCへ配布するファイルは次のセットアップEXEです。Windows 7版セットアップには必要なアプリファイルとVC++ 2015-2019 x86ランタイムが含まれます。
+
+```text
+dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe
+```
+
+Windows 7版は、NumPy 1.20.3を含む`requirements-win7.txt`の固定バージョンを前提とします。NumPy 1.24.4は対象の古いCore 2実機で`0xc000001d`となることが確認されているため、通常の依存更新やWindows 11側の依存との共通化を行わないでください。また、対象PCにはWindows 7 SP1、SHA-2対応、KB2533623相当のDLLローダー更新が必要です。詳細なオフラインビルド手順と障害時の確認方法は`README_Windows7_Offline.txt`を参照してください。
+
+### 共通のテスト
+
+開発中に現在の環境でテストだけを実行する場合は、対象OS用の仮想環境を有効にしてリポジトリ直下で次を実行します。GUIを表示できないビルド検証では、各ビルドバッチが`QT_QPA_PLATFORM=offscreen`を設定して同じテストを実行します。
+
+```text
+python -m unittest discover -s tests -v
+```
+
+Windows 7互換性は、Windows 11でテストが通ることだけでは確認できません。Windows 7関連の変更は、Windows 7 SP1 32-bit実機上でビルド、通常版／Debug版の起動、ASCII読込、保存、図出力まで確認してください。
+
 ## 主な機能
 
 ### データ管理と表示

@@ -22,6 +22,7 @@ from .models import (
     sanitize_condition_presets,
 )
 from .parser import dataset_from_bytes
+from .project_migrations import ProjectMigrationError, migrate_project_manifest
 
 
 class ProjectError(ValueError):
@@ -169,6 +170,11 @@ def load_project(path: str) -> Project:
             # breaking v1.0 files. Legacy v0.x projects use schema numbers 1-7.
             if format_major == 0 and schema_version > 7:
                 raise ProjectError("Project was created by a newer application version")
+            try:
+                manifest = migrate_project_manifest(manifest)
+            except ProjectMigrationError as exc:
+                raise ProjectError("Could not migrate project: %s" % exc) from exc
+            schema_version = int(manifest.get("schema_version", schema_version))
             project = Project(
                 project_id=manifest.get("project_id", "") or Project().project_id,
                 title=manifest.get("title", "Untitled project"),

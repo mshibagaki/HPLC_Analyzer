@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from contextlib import closing
 import csv
 import math
@@ -44,6 +45,10 @@ from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.parser import dataset_from_bytes, load_ascii_file
 from hplc_app.preset_store import load_preset_store, save_preset_store
 from hplc_app.project_io import load_project, save_project
+from hplc_app.project_migrations import (
+    ProjectMigrationError,
+    migrate_project_manifest,
+)
 from hplc_app.report import (
     analysis_report_figures,
     export_analysis_report_pdf,
@@ -290,6 +295,116 @@ class AnalysisTests(unittest.TestCase):
 
 
 class ProjectTests(unittest.TestCase):
+    def test_manifest_migration_pipeline_supports_all_existing_schemas(self):
+        base = {
+            "format": "hplc-analyzer-project",
+            "format_major": 1,
+            "schema_version": 102,
+            "method": {},
+            "datasets": [
+                {
+                    "measurement": {},
+                    "peaks": [
+                        {
+                            "raw_area_uv_min": 2.0,
+                            "area_mau_min": 0.5,
+                            "retention_time_min": 3.25,
+                            "fwhm_min": 0.12,
+                            "area_percent": 42.0,
+                            "amount_nmol": 1.5,
+                        }
+                    ],
+                }
+            ],
+        }
+        for schema_version in list(range(8)) + [100, 101, 102]:
+            manifest = deepcopy(base)
+            manifest["schema_version"] = schema_version
+            if schema_version <= 7:
+                manifest.pop("format_major")
+            migrated = migrate_project_manifest(manifest)
+            self.assertEqual(migrated["format_major"], PROJECT_FORMAT_MAJOR)
+            self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
+            peak = migrated["datasets"][0]["peaks"][0]
+            self.assertEqual(peak["retention_time_min"], 3.25)
+            self.assertEqual(peak["fwhm_min"], 0.12)
+            self.assertEqual(peak["area_percent"], 42.0)
+            self.assertEqual(peak["amount_nmol"], 1.5)
+            if schema_version <= 101:
+                self.assertEqual(peak["raw_area_uv_sec"], 120.0)
+                self.assertEqual(peak["area_mau_sec"], 30.0)
+            else:
+                self.assertNotIn("raw_area_uv_sec", peak)
+                self.assertNotIn("area_mau_sec", peak)
+            if schema_version <= 6:
+                self.assertEqual(migrated["method"]["zoom_axis"], "auto")
+
+    def test_manifest_migration_is_pure_and_idempotent(self):
+        original = {
+            "format_major": 1,
+            "schema_version": 101,
+            "method": {"legend_font_family": ""},
+            "datasets": [
+                {
+                    "peaks": [
+                        {
+                            "raw_area_uv_min": 1.25,
+                            "area_mau_min": 0.25,
+                            "future_peak_field": {"kept_during_migration": True},
+                        }
+                    ],
+                    "future_dataset_field": [1, 2, 3],
+                }
+            ],
+            "future_project_field": {"value": 7},
+        }
+        untouched = deepcopy(original)
+        migrated = migrate_project_manifest(original)
+        migrated_twice = migrate_project_manifest(migrated)
+        self.assertEqual(original, untouched)
+        self.assertEqual(migrated_twice, migrated)
+        self.assertEqual(migrated["future_project_field"], {"value": 7})
+        self.assertEqual(migrated["datasets"][0]["future_dataset_field"], [1, 2, 3])
+        self.assertTrue(
+            migrated["datasets"][0]["peaks"][0]["future_peak_field"]
+            ["kept_during_migration"]
+        )
+
+    def test_schema_102_remains_current_without_run_model(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 102,
+            "method": {},
+            "datasets": [{"measurement": {"column_name": "C4"}, "peaks": []}],
+        }
+        migrated = migrate_project_manifest(manifest)
+        self.assertEqual(migrated["schema_version"], 102)
+        self.assertNotIn("runs", migrated)
+        self.assertNotIn("run_id", migrated["datasets"][0])
+        self.assertEqual(
+            migrated["datasets"][0]["measurement"]["column_name"], "C4"
+        )
+
+    def test_manifest_migration_rejects_invalid_structures_clearly(self):
+        with self.assertRaisesRegex(ProjectMigrationError, "datasets must be an array"):
+            migrate_project_manifest(
+                {
+                    "format_major": 1,
+                    "schema_version": 101,
+                    "method": {},
+                    "datasets": {},
+                }
+            )
+        with self.assertRaisesRegex(
+            ProjectMigrationError, "newer application version"
+        ):
+            migrate_project_manifest(
+                {
+                    "format_major": PROJECT_FORMAT_MAJOR + 1,
+                    "schema_version": 1,
+                }
+            )
+
     def test_version_independent_preset_store_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "presets.json"
@@ -612,6 +727,12 @@ class ProjectTests(unittest.TestCase):
             loaded = load_project(path)
             self.assertEqual(loaded.project_id, project.project_id)
             self.assertEqual(loaded.title, "v1 compatibility")
+            save_project(path, loaded)
+            with zipfile.ZipFile(path, "r") as archive:
+                resaved = json.loads(
+                    archive.read("project.json").decode("utf-8")
+                )
+            self.assertNotIn("future_optional_field", resaved)
 
     def test_standardized_project_filename_suggestion(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))

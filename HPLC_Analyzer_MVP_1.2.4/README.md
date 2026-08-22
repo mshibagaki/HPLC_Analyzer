@@ -10,6 +10,21 @@ v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セ
 
 このリポジトリでは、Windows 11版とWindows 7版で使用するPython、Qt、依存パッケージ、ビルドするOSが異なります。アプリケーションのソースは共通ですが、両環境の仮想環境や依存パッケージを混在させないでください。
 
+Gitで取得した直後は、まずアプリ本体があるディレクトリへ移動します。以下のビルド・起動・テストコマンドは、すべてこのディレクトリをカレントディレクトリとして実行します。
+
+```bat
+cd HPLC_Analyzer_MVP_1.2.4
+```
+
+最短の作業経路は次のとおりです。
+
+- Windows 11で開発する場合：`build_windows11.bat`を1回実行し、その後は`run_source_windows11.bat`でソースを起動します。
+- Windows 11版を配布する場合：`build_windows11.bat`が生成したWindows 11 x64用セットアップEXEを配布します。
+- Windows 7版を作る場合：Windows 11で`build_all_windows.bat`を実行して搬入用ZIPを作り、Windows 7 SP1 32-bit実機へ移して`build_windows7_offline.bat`を実行します。
+- Windows 7版を配布する場合：Windows 7実機で生成されたWindows 7 x86用セットアップEXEを配布します。
+
+既にビルド済みのアプリを利用するだけなら、開発環境は不要です。対象OS用のセットアップEXEを実行し、スタートメニューの`HPLC Analyzer`から起動してください。
+
 | 目的 | Windows 11版 | Windows 7版 |
 | --- | --- | --- |
 | 対象OS | Windows 11 64-bit | Windows 7 SP1 32-bit（build 7601） |

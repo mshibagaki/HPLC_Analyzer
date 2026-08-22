@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build outputs
+build/
+dist/
+*.spec.bak
+
+# Installer/build temporary files
+installer/output/
+output/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Win7 offline dependency bundle
+win7_offline/
+
+# Temporary/log files
+*.log
+*.tmp
+*.bak

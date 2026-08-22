@@ -1,0 +1,22 @@
+# Fully pinned Windows 7 SP1 x86 build environment for CPython 3.8.10.
+# Every wheel is bundled under win7_offline/wheels; pip must use --no-index.
+numpy==1.20.3
+matplotlib==3.7.5
+PySide2==5.15.2.1
+shiboken2==5.15.2.1
+PyInstaller==5.13.2
+altgraph==0.17.4
+contourpy==1.1.0
+cycler==0.12.1
+fonttools==4.57.0
+kiwisolver==1.4.7
+packaging==23.2
+pefile==2023.2.7
+Pillow==9.5.0
+pyinstaller-hooks-contrib==2023.6
+pyparsing==3.1.4
+python-dateutil==2.9.0.post0
+pywin32-ctypes==0.2.2
+six==1.16.0
+importlib-resources==6.4.5
+zipp==3.20.2

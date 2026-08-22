@@ -1,0 +1,6 @@
+"""HPLC Analyzer core package."""
+
+APP_NAME = "HPLC Analyzer"
+APP_VERSION = "1.2.4"
+PROJECT_FORMAT_MAJOR = 1
+PROJECT_SCHEMA_VERSION = 102

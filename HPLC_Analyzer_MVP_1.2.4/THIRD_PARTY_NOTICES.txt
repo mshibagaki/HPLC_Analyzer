@@ -1,0 +1,39 @@
+HPLC Analyzer 1.2.4 - Third-party notices
+
+The Windows builds bundle unmodified components from the following projects.
+Copyright remains with their respective authors. This notice does not change
+the license of HPLC Analyzer itself.
+
+- CPython 3.8.10: Python Software Foundation License
+  https://www.python.org/downloads/release/python-3810/
+- PySide2 5.15.2.1 and shiboken2 5.15.2.1: LGPLv3/GPLv2/commercial
+  https://pypi.org/project/PySide2/5.15.2.1/
+- PySide6 6.8.3 and shiboken6 6.8.3 (Windows 11 build): LGPLv3/GPLv3/commercial
+- Qt 5.15.2 libraries carried by PySide2: LGPLv3/GPL/commercial
+  https://www.qt.io/licensing/
+- NumPy 1.20.3 (Windows 7 build): BSD-3-Clause
+- NumPy 2.2.3 (Windows 11 build): BSD-3-Clause
+- Matplotlib 3.7.5 (Windows 7) / 3.10.1 (Windows 11): Matplotlib/PSF-compatible license
+- Pillow 9.5.0 (Windows 7 build): HPND
+- PyInstaller 5.13.2 (Windows 7) / 6.12.0 (Windows 11): GPLv2-or-later with the PyInstaller bootloader exception
+- contourpy: BSD-3-Clause
+- cycler: BSD-style
+- fonttools: MIT
+- kiwisolver: BSD-3-Clause
+- packaging: Apache-2.0 or BSD-2-Clause
+- pefile: MIT
+- pyinstaller-hooks-contrib: Apache-2.0 or GPL-2.0-or-later
+- pyparsing: MIT
+- python-dateutil: Apache-2.0 or BSD-3-Clause
+- pywin32-ctypes: BSD-3-Clause
+- six: MIT
+- importlib-resources 6.4.5: Apache-2.0
+- zipp 3.20.2: MIT
+- altgraph, pip, setuptools, wheel and their bundled components: see each
+  wheel's .dist-info license metadata in win7_offline/wheels.
+- Inno Setup 6.7.3: Inno Setup License
+  https://jrsoftware.org/isinfo.php
+- Microsoft Visual C++ 2015-2019 Redistributable 14.29: Microsoft license
+
+The bundled wheel archives retain their original metadata and license files.
+Key license texts copied for convenient access are in third_party_licenses.

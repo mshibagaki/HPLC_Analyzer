@@ -167,3 +167,13 @@ For each task:
 6. Summarize changed files, behavior, tests, and any remaining risks.
 
 Do not claim a test, build, or compatibility check was performed unless it actually was.
+
+## Git workflow
+
+- Never commit directly to `main`.
+- Use one working branch for each feature or bug fix, named `codex/...` by default.
+- Commit and push all changes to that working branch.
+- Open a Draft Pull Request targeting `main`.
+- Do not merge the Pull Request unless explicitly instructed by the user.
+- Do not mix unrelated changes in one Pull Request.
+- Changes related to Windows 7 compatibility must preserve the pinned legacy dependencies and offline-build requirements described above.

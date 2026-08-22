@@ -167,3 +167,11 @@ For each task:
 6. Summarize changed files, behavior, tests, and any remaining risks.
 
 Do not claim a test, build, or compatibility check was performed unless it actually was.
+
+## Git workflow
+
+- Never commit directly to `main`.
+- Create a dedicated `codex/...` working branch for each task.
+- Commit and push all changes to that working branch.
+- Open a Draft Pull Request targeting `main`.
+- Do not merge the Pull Request unless explicitly instructed by the user.

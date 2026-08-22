@@ -132,12 +132,6 @@ def migrate_101_to_102(manifest: Manifest) -> Manifest:
     return migrated
 
 
-def migrate_102_to_103(manifest: Manifest) -> Manifest:
-    """Establish schema 103 without adding the Run model from issue #12."""
-
-    return _with_schema(manifest, 103)
-
-
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -152,7 +146,6 @@ LEGACY_MIGRATIONS: Dict[int, Migration] = {
 V1_MIGRATIONS: Dict[int, Migration] = {
     100: migrate_100_to_101,
     101: migrate_101_to_102,
-    102: migrate_102_to_103,
 }
 
 

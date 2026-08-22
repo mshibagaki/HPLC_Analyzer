@@ -370,7 +370,7 @@ class ProjectTests(unittest.TestCase):
             ["kept_during_migration"]
         )
 
-    def test_schema_102_to_103_does_not_add_run_model(self):
+    def test_schema_102_remains_current_without_run_model(self):
         manifest = {
             "format_major": 1,
             "schema_version": 102,
@@ -378,7 +378,7 @@ class ProjectTests(unittest.TestCase):
             "datasets": [{"measurement": {"column_name": "C4"}, "peaks": []}],
         }
         migrated = migrate_project_manifest(manifest)
-        self.assertEqual(migrated["schema_version"], 103)
+        self.assertEqual(migrated["schema_version"], 102)
         self.assertNotIn("runs", migrated)
         self.assertNotIn("run_id", migrated["datasets"][0])
         self.assertEqual(

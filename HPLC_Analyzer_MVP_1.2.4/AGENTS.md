@@ -167,3 +167,54 @@ For each task:
 6. Summarize changed files, behavior, tests, and any remaining risks.
 
 Do not claim a test, build, or compatibility check was performed unless it actually was.
+
+## GitHub / Codex development workflow
+
+### Repository and branch policy
+
+- Treat `main` as the stable branch.
+- Never commit or push directly to `main`.
+- Perform every change on a working branch.
+- Use one branch per feature or fix by default; do not mix unrelated work.
+- Prefer branch names beginning with `feature/`, `fix/`, `docs/`, or `chore/`, according to the type of change.
+- Merge every change into `main` through a Pull Request.
+- Prefer a Draft Pull Request while work is in progress.
+- Mark a Pull Request Ready for review only after implementation and the relevant basic checks are complete.
+- This is currently a single-maintainer project, so approval from another person is not required.
+- The repository owner performs the final Pull Request review and Merge.
+- Codex must not automatically Merge a Pull Request unless the user explicitly instructs it to do so.
+- Never force-push to `main`.
+- Never delete `main`.
+- Never rewrite the published history of `main`.
+- Do not Merge incomplete, experimental, or unverified changes into `main`.
+- If a change may affect existing features, compatibility, scientific calculations, file formats, or user data, state the risk explicitly in the Pull Request.
+
+### Standard Codex workflow
+
+For every task, Codex must:
+
+1. Start from the latest `main`.
+2. Create a working branch.
+3. Make only the changes required for the current task.
+4. Commit with a message that clearly describes the change.
+5. Push the working branch to GitHub.
+6. Create or update a Draft Pull Request targeting `main`.
+7. Include the following in the Pull Request:
+   - what changed
+   - why it changed
+   - how it was verified
+   - remaining risks or known issues
+8. Not Merge unless explicitly instructed by the user.
+9. Leave the final review and Merge into `main` to the repository owner.
+
+### Current GitHub limitation
+
+This repository currently uses a Private repository on GitHub Free. GitHub branch protection and rulesets cannot currently enforce the workflow above for this repository. Even when GitHub does not technically block an action, every contributor and Codex must follow the rules in this `AGENTS.md`.
+
+If branch protection becomes available in the future, configure `main` with at least:
+
+- Require a Pull Request before merging.
+- Required approvals: `0`.
+- Block force pushes.
+- Prevent deletion of `main`.
+- Prevent direct pushes to `main`.

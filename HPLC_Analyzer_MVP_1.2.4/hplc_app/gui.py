@@ -112,6 +112,19 @@ COLORS = (
 INTEGRATION_BOUNDARY_COLOR = "#9ca3af"
 AVAILABLE_PLOT_FONTS = {font.name for font in font_manager.fontManager.ttflist}
 
+DATASET_VISIBLE_COLUMN = 0
+DATASET_RUN_ID_COLUMN = 1
+DATASET_LABEL_COLUMN = 2
+DATASET_WAVELENGTH_COLUMN = 3
+DATASET_GROUP_COLUMN = 4
+DATASET_Y_AXIS_COLUMN = 5
+DATASET_AUV_COLUMN = 6
+DATASET_X_SHIFT_COLUMN = 7
+DATASET_OFFSET_COLUMN = 8
+DATASET_COLOR_COLUMN = 9
+DATASET_SOURCE_COLUMN = 10
+DATASET_COLUMN_COUNT = 11
+
 
 def _resolved_plot_font(family: str):
     requested = str(family or "").strip()
@@ -684,14 +697,16 @@ class MainWindow(QtWidgets.QMainWindow):
         font.setBold(True)
         self.dataset_title.setFont(font)
         left_layout.addWidget(self.dataset_title)
-        self.dataset_table = QtWidgets.QTableWidget(0, 10)
+        self.dataset_table = QtWidgets.QTableWidget(0, DATASET_COLUMN_COUNT)
         self.dataset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.dataset_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.dataset_table.setWordWrap(False)
         self.dataset_table.verticalHeader().setVisible(False)
         self.dataset_table.itemChanged.connect(self._dataset_item_changed)
         self.dataset_table.itemSelectionChanged.connect(self._dataset_selection_changed)
-        self.dataset_table.setItemDelegateForColumn(9, LeftElideDelegate(self.dataset_table))
+        self.dataset_table.setItemDelegateForColumn(
+            DATASET_SOURCE_COLUMN, LeftElideDelegate(self.dataset_table)
+        )
         self.dataset_table.viewport().installEventFilter(self)
         left_layout.addWidget(self.dataset_table, 1)
         button_grid = QtWidgets.QGridLayout()
@@ -1261,6 +1276,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dataset_table.setHorizontalHeaderLabels(
             (
                 t("visible"),
+                t("run_id"),
                 t("label"),
                 t("wavelength"),
                 t("group"),
@@ -1395,25 +1411,47 @@ class MainWindow(QtWidgets.QMainWindow):
             show = _read_only_item("")
             show.setCheckState(CHECKED if dataset.visible else UNCHECKED)
             show.setData(USER_ROLE, dataset.id)
-            self.dataset_table.setItem(row, 0, show)
+            self.dataset_table.setItem(row, DATASET_VISIBLE_COLUMN, show)
+            run_id = _read_only_item(dataset.run_id)
+            run_id.setData(USER_ROLE, dataset.run_id)
+            run_id.setToolTip(dataset.run_id)
+            self.dataset_table.setItem(row, DATASET_RUN_ID_COLUMN, run_id)
             label = QtWidgets.QTableWidgetItem(dataset.label)
             label.setData(USER_ROLE, dataset.id)
-            self.dataset_table.setItem(row, 1, label)
+            self.dataset_table.setItem(row, DATASET_LABEL_COLUMN, label)
             self.dataset_table.setItem(
                 row,
-                2,
+                DATASET_WAVELENGTH_COLUMN,
                 QtWidgets.QTableWidgetItem(_format(dataset.measurement.wavelength_nm)),
             )
-            self.dataset_table.setItem(row, 3, QtWidgets.QTableWidgetItem(dataset.measurement.group))
-            self.dataset_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(dataset.y_axis)))
-            self.dataset_table.setItem(row, 5, QtWidgets.QTableWidgetItem(_format(dataset.measurement.aux_range_au_per_v)))
-            self.dataset_table.setItem(row, 6, QtWidgets.QTableWidgetItem(_format(dataset.x_shift_min)))
-            self.dataset_table.setItem(row, 7, QtWidgets.QTableWidgetItem(_format(dataset.offset)))
+            self.dataset_table.setItem(
+                row,
+                DATASET_GROUP_COLUMN,
+                QtWidgets.QTableWidgetItem(dataset.measurement.group),
+            )
+            self.dataset_table.setItem(
+                row, DATASET_Y_AXIS_COLUMN, QtWidgets.QTableWidgetItem(str(dataset.y_axis))
+            )
+            self.dataset_table.setItem(
+                row,
+                DATASET_AUV_COLUMN,
+                QtWidgets.QTableWidgetItem(_format(dataset.measurement.aux_range_au_per_v)),
+            )
+            self.dataset_table.setItem(
+                row,
+                DATASET_X_SHIFT_COLUMN,
+                QtWidgets.QTableWidgetItem(_format(dataset.x_shift_min)),
+            )
+            self.dataset_table.setItem(
+                row,
+                DATASET_OFFSET_COLUMN,
+                QtWidgets.QTableWidgetItem(_format(dataset.offset)),
+            )
             color_value = dataset.color or COLORS[row % len(COLORS)]
             color_item = _read_only_item(color_value)
             color_item.setBackground(QtGui.QColor(color_value))
             color_item.setForeground(QtGui.QColor("#ffffff" if QtGui.QColor(color_value).lightness() < 128 else "#000000"))
-            self.dataset_table.setItem(row, 8, color_item)
+            self.dataset_table.setItem(row, DATASET_COLOR_COLUMN, color_item)
             source_text = dataset.original_path or dataset.original_filename
             source = _read_only_item(source_text)
             source.setToolTip(dataset.original_path)
@@ -1422,9 +1460,10 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 alignment = QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
             source.setTextAlignment(alignment)
-            self.dataset_table.setItem(row, 9, source)
+            self.dataset_table.setItem(row, DATASET_SOURCE_COLUMN, source)
         self.dataset_table.resizeColumnsToContents()
-        self.dataset_table.setColumnWidth(9, 360)
+        self.dataset_table.setColumnWidth(DATASET_RUN_ID_COLUMN, 160)
+        self.dataset_table.setColumnWidth(DATASET_SOURCE_COLUMN, 360)
         self.dataset_table.horizontalHeader().setStretchLastSection(True)
         self._updating_table = False
         if self.project.datasets:
@@ -1447,37 +1486,37 @@ class MainWindow(QtWidgets.QMainWindow):
         dataset = self.project.datasets[row]
         before = self._capture_analysis_state()
         try:
-            if column == 0:
+            if column == DATASET_VISIBLE_COLUMN:
                 dataset.visible = item.checkState() == CHECKED
-            elif column == 1:
+            elif column == DATASET_LABEL_COLUMN:
                 old_label = dataset.label
                 dataset.label = item.text().strip() or dataset.original_filename
                 if not dataset.short_label or dataset.short_label == old_label:
                     dataset.short_label = dataset.label
-            elif column == 2:
+            elif column == DATASET_WAVELENGTH_COLUMN:
                 text = item.text().strip()
                 wavelength = float(text) if text else None
                 if wavelength is not None and wavelength <= 0:
                     raise ValueError("Wavelength must be positive")
                 dataset.measurement.wavelength_nm = wavelength
                 recalculate_dataset_peaks(dataset)
-            elif column == 3:
+            elif column == DATASET_GROUP_COLUMN:
                 dataset.measurement.group = item.text().strip()
-            elif column == 4:
+            elif column == DATASET_Y_AXIS_COLUMN:
                 axis = int(item.text().strip())
                 if axis not in (1, 2):
                     raise ValueError("Y axis must be 1 or 2")
                 dataset.y_axis = axis
-            elif column == 5:
+            elif column == DATASET_AUV_COLUMN:
                 text = item.text().strip()
                 dataset.measurement.aux_range_au_per_v = float(text) if text else None
                 if dataset.measurement.aux_range_au_per_v is not None and dataset.measurement.aux_range_au_per_v <= 0:
                     raise ValueError("AU/V must be positive")
                 recalculate_dataset_peaks(dataset)
-            elif column == 6:
+            elif column == DATASET_X_SHIFT_COLUMN:
                 dataset.x_shift_min = float(item.text().strip() or "0")
                 recalculate_dataset_peaks(dataset)
-            elif column == 7:
+            elif column == DATASET_OFFSET_COLUMN:
                 dataset.offset = float(item.text().strip() or "0")
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), str(exc))
@@ -2678,8 +2717,12 @@ class MainWindow(QtWidgets.QMainWindow):
         row = next((i for i, item in enumerate(self.project.datasets) if item.id == dataset.id), -1)
         if row >= 0:
             self._updating_table = True
-            self.dataset_table.item(row, 6).setText(_format(dataset.x_shift_min))
-            self.dataset_table.item(row, 7).setText(_format(dataset.offset))
+            self.dataset_table.item(row, DATASET_X_SHIFT_COLUMN).setText(
+                _format(dataset.x_shift_min)
+            )
+            self.dataset_table.item(row, DATASET_OFFSET_COLUMN).setText(
+                _format(dataset.offset)
+            )
             self._updating_table = False
         self._plot()
         self._update_title()

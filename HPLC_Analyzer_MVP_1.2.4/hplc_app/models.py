@@ -149,12 +149,14 @@ class MeasurementMetadata:
 class Run:
     """One physical acquisition shared by one or more detector Datasets.
 
-    Display labels remain Dataset-level until V130-12.  Timestamp and all
-    non-channel measurement/quantitation conditions are authoritative here.
+    Display labels, timestamp, and all non-channel measurement/quantitation
+    conditions are authoritative here.
     """
 
     id: str = field(default_factory=new_id)
     timestamp: str = ""
+    label: str = ""
+    short_label: str = ""
     sample_name: str = ""
     sample_id: str = ""
     group: str = ""
@@ -184,6 +186,8 @@ class Run:
         metadata: MeasurementMetadata,
         gradient_preset_name: str = "",
         run_id: str = "",
+        label: str = "",
+        short_label: str = "",
     ) -> "Run":
         values = {
             run_field: deepcopy(getattr(metadata, measurement_field))
@@ -191,6 +195,8 @@ class Run:
         }
         return cls(
             id=run_id or new_id(),
+            label=str(label or ""),
+            short_label=str(short_label or label or ""),
             gradient_preset_name=str(gradient_preset_name or ""),
             **values,
         )
@@ -289,10 +295,10 @@ class Dataset:
     raw_bytes: bytes = field(default=b"", repr=False)
 
     def __getattribute__(self, name: str):
-        if name == "gradient_preset_name":
+        if name in ("label", "short_label", "gradient_preset_name"):
             run = object.__getattribute__(self, "__dict__").get("_run")
             if run is not None:
-                return run.gradient_preset_name
+                return getattr(run, name)
         return object.__getattribute__(self, name)
 
     def __setattr__(self, name: str, value) -> None:
@@ -307,11 +313,23 @@ class Dataset:
             run = self.__dict__.get("_run")
             if run is not None:
                 run.gradient_preset_name = str(value or "")
+        if name in ("label", "short_label"):
+            run = self.__dict__.get("_run")
+            if run is not None:
+                setattr(run, name, str(value or ""))
         object.__setattr__(self, name, value)
 
     def bind_run(self, run: Run) -> None:
+        local_label = object.__getattribute__(self, "label")
+        local_short_label = object.__getattribute__(self, "short_label")
+        if not run.label:
+            run.label = str(local_label or self.original_filename or "")
+        if not run.short_label:
+            run.short_label = str(local_short_label or run.label or "")
         self.run_id = run.id
         object.__setattr__(self, "_run", run)
+        object.__setattr__(self, "label", run.label)
+        object.__setattr__(self, "short_label", run.short_label)
         self.measurement.bind_run(run)
         object.__setattr__(self, "gradient_preset_name", run.gradient_preset_name)
 
@@ -440,6 +458,8 @@ class Project:
                     dataset.measurement,
                     dataset.gradient_preset_name,
                     run_id=requested_id,
+                    label=dataset.label,
+                    short_label=dataset.short_label,
                 )
                 self.runs.append(run)
                 index[run.id] = run
@@ -460,6 +480,8 @@ class Project:
                 dataset.measurement,
                 dataset.gradient_preset_name,
                 run_id=dataset.run_id,
+                label=dataset.label,
+                short_label=dataset.short_label,
             )
             if selected.id in index:
                 raise ValueError("Duplicate Run ID: %s" % selected.id)

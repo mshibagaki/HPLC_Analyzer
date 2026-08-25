@@ -4,6 +4,9 @@
 #ifndef AppVersionNumeric
   #error AppVersionNumeric must be supplied by scripts\build_installer.bat
 #endif
+#ifndef ArtifactBaseName
+  #error ArtifactBaseName must be supplied by scripts\build_installer.bat
+#endif
 
 [Setup]
 AppId={{D21F975D-644A-48D3-8A67-40DC7BD85AAF}
@@ -17,7 +20,7 @@ DefaultGroupName=HPLC Analyzer
 DisableProgramGroupPage=yes
 LicenseFile=LICENSE.txt
 OutputDir=dist\installers
-OutputBaseFilename=HPLC_Analyzer_Setup_{#AppVersion}_Windows11_x64
+OutputBaseFilename={#ArtifactBaseName}
 SetupIconFile=assets\app_icon.ico
 UninstallDisplayIcon={app}\HPLC_Analyzer.exe
 UninstallDisplayName=HPLC Analyzer {#AppVersion} (Windows 11 64-bit)

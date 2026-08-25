@@ -32,7 +32,7 @@ if errorlevel 1 goto :failed
 
 echo.
 echo Windows 7 offline build kit:
-echo   dist\offline\HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip
+echo   dist\offline\%WINDOWS7_OFFLINE_ARCHIVE_NAME%
 if not defined HPLC_NO_PAUSE pause
 exit /b 0
 

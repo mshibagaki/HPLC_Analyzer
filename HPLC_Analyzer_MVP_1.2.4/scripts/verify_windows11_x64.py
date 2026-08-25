@@ -6,6 +6,11 @@ import struct
 import sys
 from pathlib import Path
 
+try:
+    from .verify_executable_metadata import verify_executable_metadata
+except ImportError:
+    from verify_executable_metadata import verify_executable_metadata
+
 
 EXPECTED_PYTHON = (3, 11)
 EXPECTED_BITS = 64
@@ -14,6 +19,7 @@ EXPECTED_PACKAGES = {
     "numpy": "2.2.3",
     "PyInstaller": "6.12.0",
     "PySide6": "6.8.3",
+    "pefile": "2023.2.7",
 }
 PE_MACHINE_AMD64 = 0x8664
 
@@ -94,7 +100,13 @@ def verify_executable(path):
             )
         )
         return False
+    metadata_errors = verify_executable_metadata(path, "windows11-x64")
+    if metadata_errors:
+        for error in metadata_errors:
+            print("[ERROR] {0}: {1}".format(path, error))
+        return False
     print("[OK] {0} is a Windows x64 / 64-bit executable.".format(path))
+    print("[OK] EXE version metadata matches Windows 11 x64 Release policy.")
     return True
 
 

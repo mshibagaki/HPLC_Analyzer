@@ -80,6 +80,7 @@ from .qt_compat import (
     CHECKED,
     ITEM_IS_EDITABLE,
     QT_API,
+    STANDARD_SAVE_SHORTCUT,
     UNCHECKED,
     USER_ROLE,
     QtCore,
@@ -1151,6 +1152,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.new_action = self._action(self.new_project)
         self.open_action = self._action(self.open_project)
         self.save_action = self._action(self.save_project)
+        self.save_action.setShortcut(STANDARD_SAVE_SHORTCUT)
         self.save_as_action = self._action(self.save_project_as)
         self.import_action = self._action(self.import_ascii)
         self.export_figure_action = self._action(self.export_figure)

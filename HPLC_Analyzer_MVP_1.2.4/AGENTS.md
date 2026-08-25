@@ -146,6 +146,8 @@ Typical interpretation:
 
 Do not change the application version unless the task explicitly requests a version bump.
 
+Release tags and GitHub Releases require explicit human approval. Use annotated tags, never move or reuse a published tag, and require the final Stable tag to resolve to the exact commit verified by the final RC. Do not publish Stable until the repository Release checklist has complete Windows 11 and physical Windows 7 evidence, upgrade/data-preservation results, final checksums, release notes, and signing status.
+
 ## Generated/binary files
 Do not add normal build outputs or local environments to source control.
 Common exclusions include:

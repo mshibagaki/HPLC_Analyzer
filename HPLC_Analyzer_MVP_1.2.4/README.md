@@ -370,6 +370,8 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 
 Windows 7版とWindows 11版は同じアプリケーションバージョンを使用します。依存パッケージやビルド環境は異なりますが、OSごとに別のアプリケーションバージョン番号は付けません。`.hplcproj`互換性を壊す可能性がある変更は、バージョン番号だけで判断せず、移行・後方読込処理と両OS間の互換性確認を伴う必要があります。
 
+RCからStableへ昇格する手順は[Release Process](../.github/RELEASE_PROCESS.md)、実施記録は[Release Checklist](../.github/RELEASE_CHECKLIST.md)、GitHub Release本文は[Release Template](../.github/RELEASE_TEMPLATE.md)を使用します。Windows 11とWindows 7実機、upgrade/data preservation、project互換性、checksumが揃うまでStableにはしません。
+
 ## 現在の制限
 
 - 今回の3ファイルと同じ `[Chromatogram (Ch1)]` / `R.Time` / `Intensity`構造が対象です。別形式は実例を追加してパーサーを拡張する必要があります。

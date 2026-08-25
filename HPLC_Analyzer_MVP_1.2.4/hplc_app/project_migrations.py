@@ -132,6 +132,107 @@ def migrate_101_to_102(manifest: Manifest) -> Manifest:
     return migrated
 
 
+_RUN_MEASUREMENT_FIELDS = (
+    "sample_name",
+    "sample_id",
+    "group",
+    "replicate",
+    "tags",
+    "comments",
+    "instrument_name",
+    "method_name",
+    "flow_rate_ml_min",
+    "column_name",
+    "column_temperature_c",
+    "injection_volume_ul",
+    "cell_path_length_cm",
+    "analyte_name",
+    "molar_absorptivity_214",
+    "molar_absorptivity_280",
+    "molecular_weight_g_mol",
+    "solvents",
+    "gradient",
+)
+
+_RUN_MEASUREMENT_DEFAULTS = {
+    "sample_name": "",
+    "sample_id": "",
+    "group": "",
+    "replicate": "",
+    "tags": [],
+    "comments": "",
+    "instrument_name": "",
+    "method_name": "",
+    "flow_rate_ml_min": None,
+    "column_name": "",
+    "column_temperature_c": None,
+    "injection_volume_ul": None,
+    "cell_path_length_cm": 1.0,
+    "analyte_name": "",
+    "molar_absorptivity_214": None,
+    "molar_absorptivity_280": None,
+    "molecular_weight_g_mol": None,
+    "solvents": {},
+    "gradient": [],
+}
+
+
+def _migration_run_id(dataset: Manifest, index: int, used: set) -> str:
+    source_id = str(dataset.get("id", "") or (index + 1))
+    base = "run-" + source_id
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = "%s-%d" % (base, suffix)
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def migrate_102_to_103(manifest: Manifest) -> Manifest:
+    """Create exactly one authoritative Run for each legacy Dataset."""
+    migrated = _with_schema(manifest, 103)
+    datasets = migrated.get("datasets", [])
+    if datasets is None:
+        datasets = []
+        migrated["datasets"] = datasets
+    if not isinstance(datasets, list):
+        raise ProjectMigrationError("Project datasets must be an array")
+
+    runs = []
+    used_ids = set()
+    for index, dataset in enumerate(datasets):
+        if not isinstance(dataset, dict):
+            raise ProjectMigrationError("Each project dataset must be an object")
+        measurement = dataset.get("measurement", {})
+        if measurement is None:
+            measurement = {}
+        if not isinstance(measurement, dict):
+            raise ProjectMigrationError("Dataset measurement must be an object")
+        run_id = _migration_run_id(dataset, index, used_ids)
+        run = {
+            "id": run_id,
+            "timestamp": deepcopy(measurement.get("acquisition_datetime", "")),
+            "gradient_preset_name": deepcopy(
+                dataset.get("gradient_preset_name", "")
+            ),
+        }
+        for field_name in _RUN_MEASUREMENT_FIELDS:
+            run[field_name] = deepcopy(
+                measurement.get(field_name, _RUN_MEASUREMENT_DEFAULTS[field_name])
+            )
+        if not isinstance(run["tags"], list):
+            run["tags"] = []
+        if not isinstance(run["solvents"], dict):
+            run["solvents"] = {}
+        if not isinstance(run["gradient"], list):
+            run["gradient"] = []
+        dataset["run_id"] = run_id
+        runs.append(run)
+    migrated["runs"] = runs
+    return migrated
+
+
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -146,6 +247,7 @@ LEGACY_MIGRATIONS: Dict[int, Migration] = {
 V1_MIGRATIONS: Dict[int, Migration] = {
     100: migrate_100_to_101,
     101: migrate_101_to_102,
+    102: migrate_102_to_103,
 }
 
 

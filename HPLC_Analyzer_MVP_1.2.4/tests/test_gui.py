@@ -549,6 +549,33 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_analysis_state_restores_shared_run_metadata_and_bindings(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        shared_run = window.project.run_for(first)
+        second.bind_run(shared_run)
+        window.project.runs[:] = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        original_name = first.measurement.sample_name
+        original_preset = first.gradient_preset_name
+        state = window._capture_analysis_state()
+
+        first.measurement.sample_name = "changed after snapshot"
+        second.gradient_preset_name = "changed gradient"
+        window._restore_analysis_state(state)
+
+        restored_first, restored_second = window.project.datasets
+        self.assertEqual(restored_first.measurement.sample_name, original_name)
+        self.assertEqual(restored_second.measurement.sample_name, original_name)
+        self.assertEqual(restored_first.gradient_preset_name, original_preset)
+        self.assertIs(restored_first.bound_run(), restored_second.bound_run())
+        self.assertIs(
+            window.project.run_for(restored_first), restored_first.bound_run()
+        )
+        self.assertEqual(len(window.project.runs), 1)
+        window.project.dirty = False
+        window.close()
+
     def test_text_annotation_dialog_and_drag_movement(self):
         window = self.make_window()
         dataset = window.project.datasets[0]

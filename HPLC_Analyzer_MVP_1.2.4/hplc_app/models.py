@@ -11,6 +11,33 @@ import numpy as np
 
 CONDITION_PRESET_LABEL_FIELDS = frozenset(("label", "short_label"))
 
+# Run is authoritative for these measurement fields.  Wavelength and AU/V
+# remain Dataset-level because one physical Run can contain separate detector
+# channels with different wavelengths and output ranges.
+RUN_MEASUREMENT_FIELD_MAP = {
+    "sample_name": "sample_name",
+    "sample_id": "sample_id",
+    "group": "group",
+    "replicate": "replicate",
+    "tags": "tags",
+    "comments": "comments",
+    "instrument_name": "instrument_name",
+    "method_name": "method_name",
+    "acquisition_datetime": "timestamp",
+    "flow_rate_ml_min": "flow_rate_ml_min",
+    "column_name": "column_name",
+    "column_temperature_c": "column_temperature_c",
+    "injection_volume_ul": "injection_volume_ul",
+    "cell_path_length_cm": "cell_path_length_cm",
+    "analyte_name": "analyte_name",
+    "molar_absorptivity_214": "molar_absorptivity_214",
+    "molar_absorptivity_280": "molar_absorptivity_280",
+    "molecular_weight_g_mol": "molecular_weight_g_mol",
+    "solvents": "solvents",
+    "gradient": "gradient",
+}
+DATASET_MEASUREMENT_FIELDS = frozenset(("wavelength_nm", "aux_range_au_per_v"))
+
 
 def sanitize_condition_presets(
     presets: Dict[str, Dict[str, Any]],
@@ -75,6 +102,39 @@ class MeasurementMetadata:
     )
     gradient: List[GradientPoint] = field(default_factory=list)
 
+    def __getattribute__(self, name: str):
+        run_field = RUN_MEASUREMENT_FIELD_MAP.get(name)
+        if run_field is not None:
+            run = object.__getattribute__(self, "__dict__").get("_run")
+            if run is not None:
+                return getattr(run, run_field)
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        run_field = RUN_MEASUREMENT_FIELD_MAP.get(name)
+        run = self.__dict__.get("_run")
+        if run_field is not None and run is not None:
+            setattr(run, run_field, value)
+            return
+        object.__setattr__(self, name, value)
+
+    def __deepcopy__(self, memo):
+        copied = MeasurementMetadata(
+            **{
+                name: deepcopy(getattr(self, name), memo)
+                for name in self.__dataclass_fields__
+            }
+        )
+        memo[id(self)] = copied
+        return copied
+
+    def bind_run(self, run: "Run") -> None:
+        """Bind legacy measurement access to the authoritative Run object."""
+        object.__setattr__(self, "_run", run)
+
+    def unbind_run(self) -> None:
+        self.__dict__.pop("_run", None)
+
     def epsilon_for_wavelength(self) -> Optional[float]:
         if self.wavelength_nm is None:
             return None
@@ -83,6 +143,74 @@ class MeasurementMetadata:
         if abs(self.wavelength_nm - 280.0) < 0.5:
             return self.molar_absorptivity_280
         return None
+
+
+@dataclass
+class Run:
+    """One physical acquisition shared by one or more detector Datasets.
+
+    Display labels remain Dataset-level until V130-12.  Timestamp and all
+    non-channel measurement/quantitation conditions are authoritative here.
+    """
+
+    id: str = field(default_factory=new_id)
+    timestamp: str = ""
+    sample_name: str = ""
+    sample_id: str = ""
+    group: str = ""
+    replicate: str = ""
+    tags: List[str] = field(default_factory=list)
+    comments: str = ""
+    instrument_name: str = ""
+    method_name: str = ""
+    flow_rate_ml_min: Optional[float] = None
+    column_name: str = ""
+    column_temperature_c: Optional[float] = None
+    injection_volume_ul: Optional[float] = None
+    cell_path_length_cm: Optional[float] = 1.0
+    analyte_name: str = ""
+    molar_absorptivity_214: Optional[float] = None
+    molar_absorptivity_280: Optional[float] = None
+    molecular_weight_g_mol: Optional[float] = None
+    solvents: Dict[str, Solvent] = field(
+        default_factory=lambda: {line: Solvent() for line in "ABCD"}
+    )
+    gradient: List[GradientPoint] = field(default_factory=list)
+    gradient_preset_name: str = ""
+
+    @classmethod
+    def from_measurement(
+        cls,
+        metadata: MeasurementMetadata,
+        gradient_preset_name: str = "",
+        run_id: str = "",
+    ) -> "Run":
+        values = {
+            run_field: deepcopy(getattr(metadata, measurement_field))
+            for measurement_field, run_field in RUN_MEASUREMENT_FIELD_MAP.items()
+        }
+        return cls(
+            id=run_id or new_id(),
+            gradient_preset_name=str(gradient_preset_name or ""),
+            **values,
+        )
+
+    def update_from_measurement(self, metadata: MeasurementMetadata) -> None:
+        for measurement_field, run_field in RUN_MEASUREMENT_FIELD_MAP.items():
+            setattr(self, run_field, deepcopy(getattr(metadata, measurement_field)))
+
+    def compatibility_measurement(
+        self, dataset_metadata: MeasurementMetadata
+    ) -> MeasurementMetadata:
+        values = {}
+        for name in MeasurementMetadata.__dataclass_fields__:
+            if name in DATASET_MEASUREMENT_FIELDS:
+                values[name] = deepcopy(getattr(dataset_metadata, name))
+            else:
+                values[name] = deepcopy(
+                    getattr(self, RUN_MEASUREMENT_FIELD_MAP[name])
+                )
+        return MeasurementMetadata(**values)
 
 
 @dataclass
@@ -137,6 +265,7 @@ class TextAnnotation:
 @dataclass
 class Dataset:
     id: str = field(default_factory=new_id)
+    run_id: str = ""
     label: str = ""
     short_label: str = ""
     original_filename: str = ""
@@ -158,6 +287,40 @@ class Dataset:
     time_min: np.ndarray = field(default_factory=lambda: np.array([], dtype=float), repr=False)
     intensity_uv: np.ndarray = field(default_factory=lambda: np.array([], dtype=float), repr=False)
     raw_bytes: bytes = field(default=b"", repr=False)
+
+    def __getattribute__(self, name: str):
+        if name == "gradient_preset_name":
+            run = object.__getattribute__(self, "__dict__").get("_run")
+            if run is not None:
+                return run.gradient_preset_name
+        return object.__getattribute__(self, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "measurement":
+            run = self.__dict__.get("_run")
+            if run is not None:
+                run.update_from_measurement(value)
+                object.__setattr__(self, name, value)
+                value.bind_run(run)
+                return
+        if name == "gradient_preset_name":
+            run = self.__dict__.get("_run")
+            if run is not None:
+                run.gradient_preset_name = str(value or "")
+        object.__setattr__(self, name, value)
+
+    def bind_run(self, run: Run) -> None:
+        self.run_id = run.id
+        object.__setattr__(self, "_run", run)
+        self.measurement.bind_run(run)
+        object.__setattr__(self, "gradient_preset_name", run.gradient_preset_name)
+
+    def bound_run(self) -> Optional[Run]:
+        return self.__dict__.get("_run")
+
+    def effective_gradient_preset_name(self) -> str:
+        run = self.bound_run()
+        return run.gradient_preset_name if run is not None else self.gradient_preset_name
 
     def to_manifest(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -249,9 +412,87 @@ class Project:
     modified_at: str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     ui_language: str = "ja"
     method: AnalysisMethod = field(default_factory=AnalysisMethod)
+    runs: List[Run] = field(default_factory=list)
     datasets: List[Dataset] = field(default_factory=list)
     annotations: List[TextAnnotation] = field(default_factory=list)
     condition_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     gradient_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     project_path: str = ""
     dirty: bool = False
+
+    def __post_init__(self) -> None:
+        self.rebuild_run_index(create_missing=True)
+
+    def rebuild_run_index(self, create_missing: bool = False) -> None:
+        index = {}
+        for run in self.runs:
+            if not run.id or run.id in index:
+                raise ValueError("Run IDs must be non-empty and unique")
+            index[run.id] = run
+        object.__setattr__(self, "_run_index", index)
+        for dataset in self.datasets:
+            run = index.get(dataset.run_id)
+            if run is None:
+                if not create_missing:
+                    raise ValueError("Dataset references a missing Run: %s" % dataset.run_id)
+                requested_id = dataset.run_id if dataset.run_id not in index else ""
+                run = Run.from_measurement(
+                    dataset.measurement,
+                    dataset.gradient_preset_name,
+                    run_id=requested_id,
+                )
+                self.runs.append(run)
+                index[run.id] = run
+            dataset.bind_run(run)
+
+    def run_for(self, dataset: Dataset) -> Run:
+        index = self.__dict__.get("_run_index", {})
+        run = index.get(dataset.run_id)
+        if run is None:
+            raise ValueError("Dataset references a missing Run: %s" % dataset.run_id)
+        return run
+
+    def add_dataset(self, dataset: Dataset, run: Optional[Run] = None) -> Run:
+        index = self.__dict__.get("_run_index", {})
+        selected = run or index.get(dataset.run_id)
+        if selected is None:
+            selected = Run.from_measurement(
+                dataset.measurement,
+                dataset.gradient_preset_name,
+                run_id=dataset.run_id,
+            )
+            if selected.id in index:
+                raise ValueError("Duplicate Run ID: %s" % selected.id)
+            self.runs.append(selected)
+            index[selected.id] = selected
+        elif not selected.id:
+            raise ValueError("Run ID must be non-empty")
+        elif selected.id in index:
+            selected = index[selected.id]
+        else:
+            self.runs.append(selected)
+            index[selected.id] = selected
+        dataset.bind_run(selected)
+        self.datasets.append(dataset)
+        return selected
+
+    def remove_dataset_at(self, index: int) -> Dataset:
+        dataset = self.datasets.pop(index)
+        run_id = dataset.run_id
+        if not any(item.run_id == run_id for item in self.datasets):
+            self.runs[:] = [run for run in self.runs if run.id != run_id]
+            self.__dict__.get("_run_index", {}).pop(run_id, None)
+        return dataset
+
+    def replace_dataset_measurement(
+        self, dataset: Dataset, metadata: MeasurementMetadata
+    ) -> None:
+        run = self.run_for(dataset)
+        run.update_from_measurement(metadata)
+        object.__setattr__(dataset, "measurement", metadata)
+        dataset.bind_run(run)
+
+    def compatibility_measurement_for(
+        self, dataset: Dataset
+    ) -> MeasurementMetadata:
+        return self.run_for(dataset).compatibility_measurement(dataset.measurement)

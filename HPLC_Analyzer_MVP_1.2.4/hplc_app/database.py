@@ -279,7 +279,7 @@ def sync_project_to_database(path: str, project: Project) -> None:
                     _solvent_text(dataset, "B"),
                     _solvent_text(dataset, "C"),
                     _solvent_text(dataset, "D"),
-                    dataset.gradient_preset_name,
+                    dataset.effective_gradient_preset_name(),
                     dataset.original_path,
                     dataset.sha256,
                 ),

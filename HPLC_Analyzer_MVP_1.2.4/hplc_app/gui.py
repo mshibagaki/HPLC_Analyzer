@@ -985,6 +985,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _capture_analysis_state(self):
         dataset_fields = (
+            "run_id",
             "label",
             "short_label",
             "measurement",
@@ -998,6 +999,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         return {
             "method": deepcopy(self.project.method),
+            "runs": deepcopy(self.project.runs),
             "annotations": deepcopy(self.project.annotations),
             "condition_presets": deepcopy(self.project.condition_presets),
             "gradient_presets": deepcopy(self.project.gradient_presets),
@@ -1012,6 +1014,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _restore_analysis_state(self, state):
         self.project.method = deepcopy(state["method"])
+        self.project.runs = deepcopy(state.get("runs", self.project.runs))
         self.project.annotations = deepcopy(state.get("annotations", []))
         self.project.condition_presets = deepcopy(state["condition_presets"])
         self.project.gradient_presets = deepcopy(state["gradient_presets"])
@@ -1032,6 +1035,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
             for field, value in values.items():
                 setattr(dataset, field, deepcopy(value))
+        self.project.rebuild_run_index(create_missing=False)
 
     def _push_undo_snapshot(self, state, label: str):
         self._undo_stack.append((label, state))
@@ -3151,7 +3155,7 @@ class MainWindow(QtWidgets.QMainWindow):
             try:
                 dataset = load_ascii_file(path)
                 dataset.color = COLORS[len(self.project.datasets) % len(COLORS)]
-                self.project.datasets.append(dataset)
+                self.project.add_dataset(dataset)
                 imported += 1
             except Exception as exc:
                 errors.append("%s: %s" % (Path(path).name, exc))
@@ -3268,7 +3272,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if answer != QtWidgets.QMessageBox.Yes:
             return
-        del self.project.datasets[row]
+        self.project.remove_dataset_at(row)
         self._reset_undo_history()
         self.project.dirty = True
         self._refresh_all(max(0, row - 1))

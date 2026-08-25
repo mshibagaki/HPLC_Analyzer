@@ -451,7 +451,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 format_optional(dataset.measurement.molar_absorptivity_214),
                 format_optional(dataset.measurement.molar_absorptivity_280),
                 format_optional(dataset.measurement.molecular_weight_g_mol),
-                dataset.gradient_preset_name,
+                dataset.effective_gradient_preset_name(),
             )
             for column, value in enumerate(values, start=1):
                 item = QtWidgets.QTableWidgetItem(value)
@@ -516,7 +516,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             format_optional(dataset.measurement.molar_absorptivity_214),
             format_optional(dataset.measurement.molar_absorptivity_280),
             format_optional(dataset.measurement.molecular_weight_g_mol),
-            dataset.gradient_preset_name,
+            dataset.effective_gradient_preset_name(),
         )
         for column, value in enumerate(values, start=1):
             self.table.item(row, column).setText(value)
@@ -701,7 +701,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         for row, (dataset, axis, numeric) in enumerate(parsed_rows):
             override = self.detail_overrides.get(dataset.id)
             if override is not None:
-                dataset.measurement = deepcopy(override.measurement)
+                self.project.replace_dataset_measurement(
+                    dataset, deepcopy(override.measurement)
+                )
                 dataset.short_label = override.short_label
             old_label = dataset.label
             dataset.label = self._cell_text(row, 1) or dataset.original_filename
@@ -1362,8 +1364,8 @@ class GradientDialog(QtWidgets.QDialog):
         self.dataset = dataset
         self.language = language
         self.presets = deepcopy(presets or {})
-        self.applied_preset_name = dataset.gradient_preset_name
-        self.last_loaded_preset_name = dataset.gradient_preset_name
+        self.applied_preset_name = dataset.effective_gradient_preset_name()
+        self.last_loaded_preset_name = dataset.effective_gradient_preset_name()
         self._loading_preset = False
         self.setWindowTitle("グラジエントプログラム" if language == "ja" else "Gradient program")
         self.resize(800, 560)

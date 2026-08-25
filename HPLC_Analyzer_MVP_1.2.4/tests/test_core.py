@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import struct
 import tempfile
 import unittest
 import zipfile
@@ -42,7 +43,8 @@ from hplc_app.models import (
     TextAnnotation,
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
-from hplc_app.parser import dataset_from_bytes, load_ascii_file
+from hplc_app.gcd_parser import GcdParseError, parse_gcd_streams
+from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
 from hplc_app.preset_store import load_preset_store, save_preset_store
 from hplc_app.project_io import load_project, save_project
 from hplc_app.project_migrations import (
@@ -99,6 +101,85 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(dataset.measurement.method_name, method)
             self.assertEqual(dataset.measurement.instrument_name, "装置名1")
             self.assertEqual(len(dataset.sha256), 64)
+
+    def test_gcd_stream_values_are_parsed_without_resampling(self):
+        status = bytearray(12)
+        struct.pack_into("<I", status, 0, 500)
+        struct.pack_into("<I", status, 8, 3)
+        peak_table = bytearray(4 + 236 + 4)
+        struct.pack_into("<I", peak_table, 0, 1)
+        struct.pack_into("<I", peak_table, 8, 16)
+        struct.pack_into("<I", peak_table, 12, 576900)
+        struct.pack_into("<d", peak_table, 16, 244213.4)
+        struct.pack_into("<d", peak_table, 24, 4084.125)
+        struct.pack_into("<I", peak_table, 48, 540400)
+        struct.pack_into("<I", peak_table, 52, 723000)
+        struct.pack_into("<d", peak_table, 56, 59.0)
+        struct.pack_into("<d", peak_table, 156, 81.83238983154297)
+        parsed = parse_gcd_streams(
+            {
+                "Status": bytes(status),
+                "Intensity Data": struct.pack("<3d", -104.0, 12.5, 300.0),
+                "Peak Table": bytes(peak_table),
+                "System": "装置名1".encode("cp932") + b"\0",
+            }
+        )
+        np.testing.assert_array_equal(parsed.intensity_uv, [-104.0, 12.5, 300.0])
+        np.testing.assert_allclose(parsed.time_min, [0.0, 0.5 / 60.0, 1.0 / 60.0])
+        self.assertEqual(parsed.metadata["Chromatogram.Interval(msec)"], "500")
+        self.assertEqual(parsed.metadata["Configuration.Instrument Name"], "装置名1")
+        self.assertEqual(parsed.peak_table[0]["R.Time"], "9.615")
+        self.assertEqual(parsed.peak_table[0]["Area"], "244213")
+        self.assertEqual(parsed.peak_table[0]["Conc."], "81.83239")
+
+    def test_gcd_stream_size_mismatch_fails_clearly(self):
+        status = bytearray(12)
+        struct.pack_into("<I", status, 0, 100)
+        struct.pack_into("<I", status, 8, 3)
+        with self.assertRaisesRegex(GcdParseError, "intensity size mismatch"):
+            parse_gcd_streams({"Status": bytes(status), "Intensity Data": struct.pack("<2d", 1, 2)})
+
+    def test_supplied_gcd_files_match_their_ascii_exports(self):
+        rawdata = ROOT.parent / "rawdata"
+        gcd_files = sorted(rawdata.rglob("*.gcd")) if rawdata.is_dir() else []
+        if not gcd_files:
+            self.skipTest("rawdata GCD fixtures are not present")
+        for gcd_path in gcd_files:
+            txt_path = gcd_path.with_suffix(".TXT")
+            self.assertTrue(txt_path.is_file(), str(txt_path))
+            gcd = load_chromatogram_file(str(gcd_path))
+            ascii_export = load_ascii_file(str(txt_path))
+            self.assertEqual(gcd.time_min.size, ascii_export.time_min.size)
+            np.testing.assert_allclose(gcd.time_min, ascii_export.time_min, atol=0.0000051, rtol=0)
+            rounded = np.where(
+                gcd.intensity_uv >= 0,
+                np.floor(gcd.intensity_uv + 0.5),
+                np.ceil(gcd.intensity_uv - 0.5),
+            )
+            np.testing.assert_array_equal(rounded, ascii_export.intensity_uv)
+            self.assertEqual(len(gcd.source_peak_table), len(ascii_export.source_peak_table))
+            for gcd_peak, txt_peak in zip(gcd.source_peak_table, ascii_export.source_peak_table):
+                for field in (
+                    "Peak#",
+                    "R.Time",
+                    "I.Time",
+                    "F.Time",
+                    "Area",
+                    "Height",
+                    "A/H",
+                    "Conc.",
+                    "Mark",
+                ):
+                    self.assertEqual(gcd_peak[field], txt_peak[field])
+        original = load_chromatogram_file(str(gcd_files[0]))
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = os.path.join(directory, "gcd-roundtrip.hplcproj")
+            save_project(project_path, Project(datasets=[original]))
+            restored = load_project(project_path).datasets[0]
+            self.assertEqual(restored.raw_bytes, original.raw_bytes)
+            self.assertEqual(restored.sha256, original.sha256)
+            np.testing.assert_array_equal(restored.time_min, original.time_min)
+            np.testing.assert_array_equal(restored.intensity_uv, original.intensity_uv)
 
 
 class AnalysisTests(unittest.TestCase):

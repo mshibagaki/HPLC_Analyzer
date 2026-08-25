@@ -25,7 +25,14 @@ from hplc_app.dialogs import (
     QuantitationHelpDialog,
     TextAnnotationDialog,
 )
-from hplc_app.gui import MainWindow
+from hplc_app.gui import (
+    DATASET_LABEL_COLUMN,
+    DATASET_RUN_ID_COLUMN,
+    DATASET_SOURCE_COLUMN,
+    DATASET_WAVELENGTH_COLUMN,
+    DATASET_X_SHIFT_COLUMN,
+    MainWindow,
+)
 from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation
 from hplc_app.parser import load_ascii_file
 from hplc_app.preset_store import load_preset_store, preset_store_path
@@ -244,8 +251,13 @@ class GuiTests(unittest.TestCase):
     def test_dual_axes_gradient_axis_full_path_and_exact_xlim(self):
         window = self.make_window()
         self.assertEqual(len(window.figure.axes), 3)
-        self.assertEqual(window.dataset_table.item(0, 9).text(), window.project.datasets[0].original_path)
-        self.assertEqual(window.dataset_table.item(0, 2).text(), "280")
+        self.assertEqual(
+            window.dataset_table.item(0, DATASET_SOURCE_COLUMN).text(),
+            window.project.datasets[0].original_path,
+        )
+        self.assertEqual(
+            window.dataset_table.item(0, DATASET_WAVELENGTH_COLUMN).text(), "280"
+        )
         self.assertAlmostEqual(window.axes.get_xlim()[0], 0.0, places=8)
         self.assertAlmostEqual(
             window.axes.get_xlim()[1],
@@ -255,6 +267,31 @@ class GuiTests(unittest.TestCase):
         ticks = window.axes.xaxis.get_major_locator().tick_values(0.0, 15.0)
         self.assertIn(5.0, ticks)
         self.assertIn(10.0, ticks)
+        window.project.dirty = False
+        window.close()
+
+    def test_run_id_column_keeps_dataset_rows_and_shows_shared_run(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        window._refresh_dataset_table(0)
+
+        self.assertEqual(window.dataset_table.rowCount(), 2)
+        first = window.dataset_table.item(0, DATASET_RUN_ID_COLUMN)
+        second = window.dataset_table.item(1, DATASET_RUN_ID_COLUMN)
+        self.assertEqual(first.text(), shared_run.id)
+        self.assertEqual(second.text(), shared_run.id)
+        self.assertEqual(first.toolTip(), shared_run.id)
+        self.assertFalse(bool(first.flags() & ITEM_IS_EDITABLE))
+        self.assertTrue(
+            bool(
+                window.dataset_table.item(0, DATASET_LABEL_COLUMN).flags()
+                & ITEM_IS_EDITABLE
+            )
+        )
+
         window.project.dirty = False
         window.close()
 
@@ -511,7 +548,7 @@ class GuiTests(unittest.TestCase):
 
     def test_inline_label_change_updates_legend(self):
         window = self.make_window()
-        window.dataset_table.item(0, 1).setText("Updated label")
+        window.dataset_table.item(0, DATASET_LABEL_COLUMN).setText("Updated label")
         self.app.processEvents()
         labels = window.axes.get_legend_handles_labels()[1]
         self.assertIn("Updated label_280 nm", labels)
@@ -521,7 +558,7 @@ class GuiTests(unittest.TestCase):
 
     def test_wavelength_is_directly_editable_and_updates_legend(self):
         window = self.make_window()
-        wavelength_item = window.dataset_table.item(0, 2)
+        wavelength_item = window.dataset_table.item(0, DATASET_WAVELENGTH_COLUMN)
         self.assertTrue(bool(wavelength_item.flags() & ITEM_IS_EDITABLE))
         wavelength_item.setText("254.5")
         self.app.processEvents()
@@ -637,7 +674,7 @@ class GuiTests(unittest.TestCase):
         dialog.aux_edit.setText("2.75")
         dialog._accept()
         self.assertEqual(dataset.measurement.aux_range_au_per_v, 2.75)
-        window.dataset_table.item(0, 6).setText("0.4")
+        window.dataset_table.item(0, DATASET_X_SHIFT_COLUMN).setText("0.4")
         self.app.processEvents()
         self.assertAlmostEqual(dataset.x_shift_min, 0.4, places=6)
         x_values = window._dataset_lines[dataset.id].get_xdata()
@@ -1024,7 +1061,7 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(all(abs(text.get_fontsize() - 12.5) < 0.01 for text in window.axes.texts))
         self.assertTrue(all(text.get_color() == "#000000" for text in window.axes.texts))
 
-        window.dataset_table.item(0, 6).setText("5")
+        window.dataset_table.item(0, DATASET_X_SHIFT_COLUMN).setText("5")
         self.app.processEvents()
         self.assertNotEqual(dataset.peaks[0].gradient_b_pct, old_b)
 

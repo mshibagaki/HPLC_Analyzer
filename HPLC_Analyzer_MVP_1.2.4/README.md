@@ -298,6 +298,8 @@ SQLiteは単一ファイル内でトランザクション更新し、別PCの書
 
 同じ系列の新しいセットアップEXEを実行すると、同じ製品として更新インストールされます。更新前にHPLC Analyzerを終了してください。プリセット、読み込み／保存先、研究室DBパス等のユーザー設定、`.hplcproj`、ASCII、研究室DBはインストールフォルダー外にあるため、更新やアンインストールでは削除されません。アンインストールはWindowsの「プログラムと機能」から実行します。
 
+Release前のclean install、旧版からのupgrade、uninstall、reinstallでは、専用fixtureとbyte比較を使ってこの保持契約を確認します。手順と記録様式は[Installer Upgrade Test](../.github/INSTALLER_UPGRADE_TEST.md)および[Evidence Template](../.github/INSTALLER_UPGRADE_EVIDENCE.md)にあります。Windows 11とWindows 7の両方が必須で、Windows 7の合格にはWindows 7 SP1 32-bit / Core 2実機での記録が必要です。
+
 v1.1.5以前の単体EXEはインストーラーの管理対象ではないため、自動削除されません。混同を避ける場合は、v1.2.4の起動確認後に旧EXEを手動で整理してください。
 
 Windows 7版セットアップは必要なアプリファイルとVC++ランタイムを内包し、完全オフラインで動作します。ただし、Windows 7 SP1、SHA-2対応等のOS自体の必要な更新は事前に適用してください。Windows 7はサポート終了OSなので、ネットワークから隔離した測定PCへ搬入する前にセットアップEXEを別PCでウイルススキャンしてください。

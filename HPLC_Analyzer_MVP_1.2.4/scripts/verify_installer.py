@@ -58,6 +58,18 @@ COMMON_REQUIRED = (
     '[Run]',
 )
 
+PROTECTED_DATA_MARKERS = (
+    "[UninstallDelete]",
+    "[InstallDelete]",
+    "Research Tools\\HPLC Analyzer",
+    "{userappdata}",
+    "{userdocs}",
+    "presets.json",
+    ".hplcproj",
+    ".sqlite",
+    "uninsdelete",
+)
+
 
 def verify_installer_script(target, path):
     """Return a list of human-readable configuration errors."""
@@ -73,8 +85,12 @@ def verify_installer_script(target, path):
     for fragment in TARGETS[target]["forbidden"]:
         if fragment in text:
             errors.append("unexpected installer setting: {0}".format(fragment))
-    if "[UninstallDelete]" in text or "Research Tools\\HPLC Analyzer" in text:
-        errors.append("installer must not delete or relocate per-user HPLC Analyzer settings")
+    lowered = text.lower()
+    for marker in PROTECTED_DATA_MARKERS:
+        if marker.lower() in lowered:
+            errors.append(
+                "installer must not manage protected user data: {0}".format(marker)
+            )
     return errors
 
 

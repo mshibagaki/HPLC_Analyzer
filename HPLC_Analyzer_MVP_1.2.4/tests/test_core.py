@@ -97,6 +97,13 @@ from hplc_app.settings_store import (
 )
 from scripts.windows7_import_preflight import EVENT_LOG_COMMAND, PROBES
 from scripts.inspect_gcd import _safe_dump_name
+from scripts.create_upgrade_test_fixture import create_fixture
+from scripts.installer_data_guard import (
+    build_snapshot as build_installer_data_snapshot,
+    compare_snapshots as compare_installer_data_snapshots,
+    read_snapshot as read_installer_data_snapshot,
+    write_snapshot as write_installer_data_snapshot,
+)
 from scripts.verify_windows7_x86 import PE_MACHINE_I386, read_pe_machine
 from scripts.verify_windows7_offline_bundle import (
     EXPECTED_RELATIVE_FILES as WINDOWS7_OFFLINE_FILES,
@@ -2173,6 +2180,99 @@ class ProjectTests(unittest.TestCase):
             "HPLC_Analyzer_Debug.exe",
             scripts["windows7-x86"].read_text(encoding="utf-8"),
         )
+
+    def test_installer_upgrade_fixture_and_guard_cover_user_owned_data(self):
+        qsettings = {
+            "hive": "HKEY_CURRENT_USER",
+            "key": r"Software\Research Tools\HPLC Analyzer",
+            "tree": {
+                "values": {
+                    "ui/language": {"type": 1, "value": "en"},
+                    "rendering/quality": {"type": 1, "value": "lightweight"},
+                },
+                "subkeys": {},
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_root = Path(directory) / "fixture"
+            paths, manifest = create_fixture(fixture_root, ROOT)
+            self.assertTrue(manifest.is_file())
+            snapshot = build_installer_data_snapshot(paths, qsettings)
+            baseline_path = Path(directory) / "evidence" / "before.json"
+            write_installer_data_snapshot(baseline_path, snapshot)
+            baseline = read_installer_data_snapshot(baseline_path)
+            self.assertEqual(
+                compare_installer_data_snapshots(
+                    baseline, build_installer_data_snapshot(paths, qsettings)
+                ),
+                [],
+            )
+
+            project = load_project(
+                str(Path(paths["projects"]) / "upgrade-preservation.hplcproj")
+            )
+            raw = Path(paths["raw"]) / "upgrade-canary.TXT"
+            self.assertEqual(project.datasets[0].raw_bytes, raw.read_bytes())
+            conditions, gradients = load_preset_store(Path(paths["presets"]))
+            self.assertIn("Canary 280 nm", conditions)
+            self.assertEqual(
+                gradients["Canary gradient"]["metadata_note"],
+                "must survive installer operations",
+            )
+            self.assertTrue(database_sections(paths["database"])["projects"])
+
+            raw.write_bytes(raw.read_bytes() + b"changed")
+            errors = compare_installer_data_snapshots(
+                baseline, build_installer_data_snapshot(paths, qsettings)
+            )
+            self.assertTrue(
+                any("protected file changed: raw/" in error for error in errors)
+            )
+            changed_settings = deepcopy(qsettings)
+            changed_settings["tree"]["values"]["ui/language"]["value"] = "ja"
+            errors = compare_installer_data_snapshots(
+                baseline, build_installer_data_snapshot(paths, changed_settings)
+            )
+            self.assertIn("QSettings registry changed", errors)
+
+    def test_installer_policy_and_upgrade_evidence_forbid_user_data_management(self):
+        guide = (ROOT.parent / ".github" / "INSTALLER_UPGRADE_TEST.md").read_text(
+            encoding="utf-8"
+        )
+        evidence = (
+            ROOT.parent / ".github" / "INSTALLER_UPGRADE_EVIDENCE.md"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "Clean install",
+            "v1.2.4 → v1.3.0",
+            "Uninstall",
+            "Reinstall",
+            "QSettings",
+            "presets.json",
+            "SQLite",
+            ".hplcproj",
+            "raw ASCII",
+            "user export",
+            "physical Windows 7 SP1 32-bit/Core 2",
+        ):
+            self.assertIn(required, guide)
+        self.assertIn("Data guard result", evidence)
+        self.assertIn("Previous Stable installer filename / SHA-256", evidence)
+        with tempfile.TemporaryDirectory() as directory:
+            unsafe = Path(directory) / "unsafe.iss"
+            original = (ROOT / "installer" / "windows11_x64.iss").read_text(
+                encoding="utf-8"
+            )
+            unsafe.write_text(
+                original
+                + "\n[UninstallDelete]\n"
+                + 'Type: filesandordirs; Name: "{userappdata}\\presets.json"\n',
+                encoding="utf-8",
+            )
+            errors = verify_installer_script("windows11-x64", unsafe)
+            self.assertTrue(
+                any("must not manage protected user data" in error for error in errors)
+            )
 
     def test_installer_build_is_automatic_and_has_combined_entry_point(self):
         helper = (ROOT / "scripts" / "build_installer.bat").read_text(encoding="utf-8")

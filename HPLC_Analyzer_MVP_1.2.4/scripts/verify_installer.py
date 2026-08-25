@@ -69,6 +69,18 @@ COMMON_REQUIRED = (
     '[Run]',
 )
 
+PROTECTED_DATA_MARKERS = (
+    "[UninstallDelete]",
+    "[InstallDelete]",
+    "Research Tools\\HPLC Analyzer",
+    "{userappdata}",
+    "{userdocs}",
+    "presets.json",
+    ".hplcproj",
+    ".sqlite",
+    "uninsdelete",
+)
+
 
 def verify_installer_script(target, path, expected_version=APP_VERSION):
     """Return a list of human-readable configuration errors."""
@@ -92,6 +104,12 @@ def verify_installer_script(target, path, expected_version=APP_VERSION):
         errors.append("installer must not delete or relocate per-user HPLC Analyzer settings")
     if "AppVersion={0}".format(expected_version) in text:
         errors.append("installer must receive AppVersion through an Inno Setup define")
+    lowered = text.lower()
+    for marker in PROTECTED_DATA_MARKERS:
+        if marker.lower() in lowered:
+            errors.append(
+                "installer must not manage protected user data: {0}".format(marker)
+            )
     return errors
 
 

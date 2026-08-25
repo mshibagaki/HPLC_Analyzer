@@ -370,6 +370,8 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 
 Windows 7版とWindows 11版は同じアプリケーションバージョンを使用します。依存パッケージやビルド環境は異なりますが、OSごとに別のアプリケーションバージョン番号は付けません。`.hplcproj`互換性を壊す可能性がある変更は、バージョン番号だけで判断せず、移行・後方読込処理と両OS間の互換性確認を伴う必要があります。
 
+Application versionの機械可読な正規値は`hplc_app/version.py`の`APP_VERSION`だけです。リリース時は最初にこの1行を更新し、`python scripts/read_version.py`と`python scripts/read_version.py --format windows`が成功することを確認してください。build batchはこの値を読み取り、GUI、project/preset/DB、installer metadata、成果物名、Windows 7 offline archiveへ自動的に伝播します。取得不能またはSemVerとして不正な場合、buildは停止します。その後、READMEの「現在の安定版」や成果物例、`README_Windows7_Offline.txt`等のリリース文書を確認します。ただし、リリース履歴、互換性説明、例示中にある過去のversion番号は履歴情報なので、一括置換しません。
+
 ## 現在の制限
 
 - 今回の3ファイルと同じ `[Chromatogram (Ch1)]` / `R.Time` / `Intensity`構造が対象です。別形式は実例を追加してパーサーを拡張する必要があります。

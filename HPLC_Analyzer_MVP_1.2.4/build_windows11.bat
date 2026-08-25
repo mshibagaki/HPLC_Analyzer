@@ -41,6 +41,8 @@ if not defined PYTHON_CMD (
 
 %PYTHON_CMD% scripts\verify_windows11_x64.py --interpreter
 if errorlevel 1 goto :failed
+call scripts\load_version.bat %PYTHON_CMD%
+if errorlevel 1 goto :failed
 
 if not exist .venv-win11-x64\Scripts\python.exe (
   %PYTHON_CMD% -m venv .venv-win11-x64
@@ -77,7 +79,7 @@ if errorlevel 1 goto :failed
 echo.
 echo Build complete ^(Windows 11 x64 / 64-bit^):
 echo   App      : dist\windows11-x64\HPLC_Analyzer.exe
-echo   Installer: dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe
+echo   Installer: dist\installers\HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe
 if not defined HPLC_NO_PAUSE pause
 exit /b 0
 

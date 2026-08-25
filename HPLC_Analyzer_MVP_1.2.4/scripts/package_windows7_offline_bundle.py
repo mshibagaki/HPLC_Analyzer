@@ -5,12 +5,16 @@ from pathlib import Path
 import sys
 import zipfile
 
-from verify_windows7_offline_bundle import verify_bundle
-from verify_windows7_wheelhouse import verify_dependency_closure
+try:
+    from .verify_windows7_offline_bundle import verify_bundle
+    from .verify_windows7_wheelhouse import verify_dependency_closure
+    from .read_version import read_version
+except ImportError:
+    from verify_windows7_offline_bundle import verify_bundle
+    from verify_windows7_wheelhouse import verify_dependency_closure
+    from read_version import read_version
 
 
-VERSION = "1.2.4"
-ARCHIVE_ROOT = "HPLC_Analyzer_MVP_{0}".format(VERSION)
 ROOT_FILES = (
     "README.md",
     "README_Windows7_Offline.txt",
@@ -28,6 +32,8 @@ ROOT_FILES = (
     "build_all_windows.bat",
     "prepare_windows7_offline_wheels.bat",
     "package_windows7_offline_bundle.bat",
+    "scripts/load_version.bat",
+    "scripts/read_version.py",
 )
 ROOT_DIRECTORIES = (
     "assets",
@@ -78,8 +84,22 @@ def compression_for(path):
     return zipfile.ZIP_DEFLATED
 
 
-def build_archive(root, output):
+def archive_root_name(version):
+    return "HPLC_Analyzer_MVP_{0}".format(version)
+
+
+def default_archive_path(root, version):
+    return (
+        root
+        / "dist"
+        / "offline"
+        / "HPLC_Analyzer_{0}_Windows7_Offline_Build.zip".format(version)
+    )
+
+
+def build_archive(root, output, version):
     seen = set()
+    archive_root = archive_root_name(version)
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", allowZip64=True) as archive:
         for path in iter_source_files(root):
@@ -89,7 +109,7 @@ def build_archive(root, output):
             seen.add(relative)
             archive.write(
                 path,
-                "{0}/{1}".format(ARCHIVE_ROOT, relative),
+                "{0}/{1}".format(archive_root, relative),
                 compress_type=compression_for(path),
                 compresslevel=9,
             )
@@ -106,16 +126,23 @@ def main(argv=None):
     parser.add_argument("--output")
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
+    try:
+        version = read_version(root / "hplc_app" / "version.py")
+    except ValueError as exc:
+        print("[ERROR] {0}".format(exc))
+        return 1
     errors = verify_bundle(root)
     errors.extend(verify_dependency_closure(root))
     if errors:
         for error in errors:
             print("[ERROR] {0}".format(error))
         return 1
-    output = Path(args.output).resolve() if args.output else (
-        root / "dist" / "offline" / "HPLC_Analyzer_1.2.4_Windows7_Offline_Build.zip"
+    output = (
+        Path(args.output).resolve()
+        if args.output
+        else default_archive_path(root, version)
     )
-    count = build_archive(root, output)
+    count = build_archive(root, output, version)
     print("[OK] Windows 7 offline build kit: {0}".format(output))
     print("[OK] Packaged {0} files.".format(count))
     return 0

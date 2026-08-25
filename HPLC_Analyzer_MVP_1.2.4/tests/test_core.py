@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -77,6 +79,15 @@ from scripts.verify_installer import (
     APP_ID as INSTALLER_APP_ID,
     verify_installer_script,
     verify_setup_executable,
+)
+from scripts.package_windows7_offline_bundle import (
+    archive_root_name,
+    default_archive_path,
+)
+from scripts.read_version import (
+    VersionError,
+    read_version,
+    windows_numeric_version,
 )
 
 
@@ -436,12 +447,116 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(saved_path, path)
             payload = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(payload["format_version"], 1)
-            self.assertEqual(payload["written_by"], "1.2.4")
             self.assertEqual(payload["written_by"], APP_VERSION)
             conditions, gradients = load_preset_store(path)
             self.assertEqual(conditions["280 nm C4"]["wavelength_nm"], 280.0)
             self.assertNotIn("label", conditions["280 nm C4"])
             self.assertIn("10-90 B", gradients)
+
+    def test_application_version_is_single_valid_source_for_runtime_and_builds(self):
+        version_file = ROOT / "hplc_app" / "version.py"
+        self.assertEqual(read_version(version_file), APP_VERSION)
+        self.assertEqual(
+            windows_numeric_version(APP_VERSION),
+            ".".join(APP_VERSION.split("-")[0].split("+")[0].split(".") + ["0"]),
+        )
+        literal_definitions = []
+        version_assignment = re.compile(r"^APP_VERSION\s*=\s*['\"]", re.MULTILINE)
+        for directory in (ROOT / "hplc_app", ROOT / "scripts"):
+            for path in directory.glob("*.py"):
+                if version_assignment.search(path.read_text(encoding="utf-8")):
+                    literal_definitions.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual(literal_definitions, ["hplc_app/version.py"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory) / "version.py"
+            temporary.write_text('APP_VERSION = "1.3.0-rc.2+build.5"\n', encoding="utf-8")
+            self.assertEqual(read_version(temporary), "1.3.0-rc.2+build.5")
+            self.assertEqual(
+                windows_numeric_version(read_version(temporary)), "1.3.0.0"
+            )
+            for invalid_source in (
+                'APP_VERSION = "01.3.0"\n',
+                'APP_VERSION = "1.3"\n',
+                'APP_VERSION = "1.3.0-01"\n',
+                'APP_VERSION = make_version()\n',
+                'OTHER_VERSION = "1.3.0"\n',
+                'APP_VERSION = "1.3.0"\nAPP_VERSION = "1.3.1"\n',
+            ):
+                temporary.write_text(invalid_source, encoding="utf-8")
+                with self.assertRaises(VersionError):
+                    read_version(temporary)
+            with self.assertRaises(VersionError):
+                windows_numeric_version("65536.0.0")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "read_version.py"),
+                    "--version-file",
+                    str(temporary),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("[ERROR]", completed.stderr)
+
+        reader = ROOT / "scripts" / "read_version.py"
+        completed = subprocess.run(
+            [sys.executable, str(reader)],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), APP_VERSION)
+        reader_source = reader.read_text(encoding="utf-8")
+        self.assertNotIn("import hplc_app", reader_source)
+        self.assertNotIn("PySide", reader_source)
+        self.assertNotIn("numpy", reader_source.lower())
+        self.assertNotIn("matplotlib", reader_source.lower())
+
+        self.assertEqual(
+            archive_root_name(APP_VERSION), "HPLC_Analyzer_MVP_" + APP_VERSION
+        )
+        self.assertEqual(
+            default_archive_path(Path("C:/build"), APP_VERSION).name,
+            "HPLC_Analyzer_{0}_Windows7_Offline_Build.zip".format(APP_VERSION),
+        )
+        for relative in (
+            "build_windows11.bat",
+            "build_windows7_offline.bat",
+            "build_all_windows.bat",
+            "package_windows7_offline_bundle.bat",
+            "scripts/build_installer.bat",
+        ):
+            batch = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("load_version.bat", batch)
+        installer_helper = (ROOT / "scripts" / "build_installer.bat").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--define=AppVersion=%APP_VERSION%", installer_helper)
+        self.assertIn(
+            "--define=AppVersionNumeric=%APP_VERSION_NUMERIC%", installer_helper
+        )
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        project = Project(title="version propagation", datasets=[dataset])
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / "version.hplcproj"
+            save_project(str(project_path), project)
+            with zipfile.ZipFile(project_path) as archive:
+                manifest = json.loads(archive.read("project.json").decode("utf-8"))
+            self.assertEqual(manifest["application_version"], APP_VERSION)
+            database_path = Path(directory) / "version.sqlite3"
+            sync_project_to_database(str(database_path), project)
+            with closing(sqlite3.connect(str(database_path))) as connection:
+                saved_version = connection.execute(
+                    "SELECT saved_with_version FROM projects"
+                ).fetchone()[0]
+            self.assertEqual(saved_version, APP_VERSION)
 
     def test_project_round_trip_embeds_raw_ascii_and_origin(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -946,7 +1061,7 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("--exe dist\\windows7-x86\\HPLC_Analyzer_Debug.exe", batch)
         self.assertGreaterEqual(batch.count("--startup-smoke-test"), 2)
         self.assertIn("build_installer.bat windows7-x86", batch)
-        self.assertIn("HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe", batch)
+        self.assertIn("HPLC_Analyzer_Setup_%APP_VERSION%_Windows7_x86.exe", batch)
         self.assertIn('name="HPLC_Analyzer_Debug"', spec)
         self.assertIn("console=True", spec)
         self.assertIn("debug=True", spec)
@@ -1166,7 +1281,7 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("--exe dist\\windows11-x64\\HPLC_Analyzer.exe", batch)
         self.assertIn("build_installer.bat windows11-x64", batch)
         self.assertIn("HPLC_ANALYZER_TEST_SETTINGS_DIR", batch)
-        self.assertIn("HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe", batch)
+        self.assertIn("HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe", batch)
         self.assertIn("Python 3.11 x64", requirements)
         self.assertIn("EXPECTED_PYTHON = (3, 11)", verifier)
         self.assertIn("PE_MACHINE_AMD64 = 0x8664", verifier)
@@ -1214,9 +1329,10 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("build_windows11.bat --no-pause", combined)
         self.assertIn("package_windows7_offline_bundle.bat --no-pause", combined)
         self.assertNotIn("build_windows7.bat --no-pause", combined)
-        self.assertIn("HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe", combined)
-        self.assertIn("HPLC_Analyzer_1.2.4_Windows7_Offline_Build.zip", combined)
-        self.assertIn('VERSION = "1.2.4"', packager)
+        self.assertIn("HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe", combined)
+        self.assertIn("HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip", combined)
+        self.assertNotIn('VERSION = "', packager)
+        self.assertIn("read_version", packager)
         self.assertIn("verify_bundle(root)", packager)
         self.assertIn("verify_dependency_closure(root)", packager)
         self.assertIn('"win7_offline"', packager)

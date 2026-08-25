@@ -91,6 +91,8 @@ if not exist "%PYTHON_EXE%" (
 if errorlevel 1 goto :failed
 "%PYTHON_EXE%" scripts\verify_windows7_x86.py --interpreter
 if errorlevel 1 goto :failed
+call scripts\load_version.bat "%PYTHON_EXE%"
+if errorlevel 1 goto :failed
 "%PYTHON_EXE%" scripts\verify_windows7_offline_bundle.py --root "%PROJECT_ROOT%"
 if errorlevel 1 goto :failed
 "%PYTHON_EXE%" scripts\verify_windows7_wheelhouse.py --root "%PROJECT_ROOT%"
@@ -169,7 +171,7 @@ echo.
 echo Build complete on Windows 7 SP1 x86:
 echo   Normal   : dist\HPLC_Analyzer.exe
 echo   Debug    : dist\HPLC_Analyzer_Debug.exe
-echo   Installer: dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe
+echo   Installer: dist\installers\HPLC_Analyzer_Setup_%APP_VERSION%_Windows7_x86.exe
 if not defined HPLC_NO_PAUSE pause
 exit /b 0
 

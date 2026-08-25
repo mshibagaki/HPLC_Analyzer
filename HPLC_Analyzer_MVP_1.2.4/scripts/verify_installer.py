@@ -22,7 +22,6 @@ TARGETS = {
             "ArchitecturesAllowed=x64compatible",
             "ArchitecturesInstallIn64BitMode=x64compatible",
             "dist\\windows11-x64\\HPLC_Analyzer.exe",
-            "OutputBaseFilename=HPLC_Analyzer_Setup_{#AppVersion}_Windows11_x64",
         ),
         "forbidden": (
             "HPLC_Analyzer_Debug.exe",
@@ -40,7 +39,6 @@ TARGETS = {
             'Parameters: "/install /quiet /norestart"',
             "Check: VCRedistNeedsInstall",
             "function VCRedistNeedsInstall: Boolean;",
-            "OutputBaseFilename=HPLC_Analyzer_Setup_{#AppVersion}_Windows7_x86",
         ),
         "forbidden": (
             "ArchitecturesInstallIn64BitMode=x64compatible",
@@ -51,11 +49,13 @@ TARGETS = {
 COMMON_REQUIRED = (
     "#ifndef AppVersion",
     "#ifndef AppVersionNumeric",
+    "#ifndef ArtifactBaseName",
     "AppVersion={#AppVersion}",
     "AppVerName=HPLC Analyzer {#AppVersion}",
     "VersionInfoVersion={#AppVersionNumeric}",
     "VersionInfoProductVersion={#AppVersionNumeric}",
     "VersionInfoProductTextVersion={#AppVersion}",
+    "OutputBaseFilename={#ArtifactBaseName}",
     "AppId=" + APP_ID,
     "AppName=HPLC Analyzer",
     "PrivilegesRequired=admin",

@@ -372,6 +372,16 @@ Windows 7版とWindows 11版は同じアプリケーションバージョンを�
 
 Application versionの機械可読な正規値は`hplc_app/version.py`の`APP_VERSION`だけです。リリース時は最初にこの1行を更新し、`python scripts/read_version.py`と`python scripts/read_version.py --format windows`が成功することを確認してください。build batchはこの値を読み取り、GUI、project/preset/DB、installer metadata、成果物名、Windows 7 offline archiveへ自動的に伝播します。取得不能またはSemVerとして不正な場合、buildは停止します。その後、READMEの「現在の安定版」や成果物例、`README_Windows7_Offline.txt`等のリリース文書を確認します。ただし、リリース履歴、互換性説明、例示中にある過去のversion番号は履歴情報なので、一括置換しません。
 
+正式なRelease成果物名は、正規バージョンから自動生成する次の3種類です。pre-releaseやbuild metadataを含む場合も、SemVer文字列を省略せず名前へ残します。
+
+- `HPLC_Analyzer_Setup_<version>_Windows11_x64.exe`
+- `HPLC_Analyzer_Setup_<version>_Windows7_x86.exe`
+- `HPLC_Analyzer_<version>_Windows7_Offline_Build.zip`
+
+Windows EXEとinstallerの文字列版（FileVersion / ProductVersion）はSemVerを保持します。Windowsの固定数値版は`MAJOR.MINOR.PATCH.0`とし、pre-releaseとbuild metadataは数値へ入れません。各数値要素はWindows version resourceの制約に合わせて0〜65535です。通常版とWindows 7 Debug版は同じProductVersionを使い、FileDescription、元のファイル名、Debug flagで用途を区別します。
+
+Windows 7 Debug版は、通常版が起動しない場合に原因を確認するためinstallerへ同梱する診断ツールです。独立したRelease成果物としては公開せず、通常の解析には通常版を使用します。installerの固定AppIdはOS版・更新版を通じて変更しません。
+
 ## 現在の制限
 
 - 今回の3ファイルと同じ `[Chromatogram (Ch1)]` / `R.Time` / `Intensity`構造が対象です。別形式は実例を追加してパーサーを拡張する必要があります。

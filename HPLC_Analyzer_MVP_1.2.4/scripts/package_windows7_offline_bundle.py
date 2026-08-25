@@ -6,10 +6,12 @@ import sys
 import zipfile
 
 try:
+    from .artifact_names import artifact_filename
     from .verify_windows7_offline_bundle import verify_bundle
     from .verify_windows7_wheelhouse import verify_dependency_closure
     from .read_version import read_version
 except ImportError:
+    from artifact_names import artifact_filename
     from verify_windows7_offline_bundle import verify_bundle
     from verify_windows7_wheelhouse import verify_dependency_closure
     from read_version import read_version
@@ -89,11 +91,8 @@ def archive_root_name(version):
 
 
 def default_archive_path(root, version):
-    return (
-        root
-        / "dist"
-        / "offline"
-        / "HPLC_Analyzer_{0}_Windows7_Offline_Build.zip".format(version)
+    return root / "dist" / "offline" / artifact_filename(
+        "windows7-offline", version
     )
 
 

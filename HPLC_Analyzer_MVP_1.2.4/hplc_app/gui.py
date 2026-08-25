@@ -2754,17 +2754,13 @@ class MainWindow(QtWidgets.QMainWindow):
                     x_right = full_right
             self.axes.set_xlim(x_left, x_right)
         if mode in ("both", "y"):
-            selected = self._selected_dataset()
-            selected_axis = self.axes_right if (
-                selected is not None and selected.y_axis == 2 and self.axes_right is not None
-            ) else self.axes
             zoomable_axes = tuple(
                 axis for axis in (self.axes, self.axes_right) if axis is not None
             )
             targets = (
                 [axis for axis in y_axes if axis in zoomable_axes]
                 if y_axes is not None
-                else [source_axis if source_axis in zoomable_axes else selected_axis]
+                else list(zoomable_axes)
             )
             center_map = y_centers or {}
             for target_axis in targets:

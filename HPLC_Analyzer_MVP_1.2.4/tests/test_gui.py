@@ -292,10 +292,14 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         original_x = window.axes.get_xlim()
         original_y = window.axes.get_ylim()
+        original_y2 = window.axes_right.get_ylim()
+        original_gradient = window.axes_gradient.get_ylim()
         window.project.method.zoom_axis = "x"
         window._zoom_view(0.8, center_x=8.0, source_axis=window.axes, center_y=original_y[0])
         self.assertLess(window.axes.get_xlim()[1] - window.axes.get_xlim()[0], original_x[1] - original_x[0])
         self.assertEqual(window.axes.get_ylim(), original_y)
+        self.assertEqual(window.axes_right.get_ylim(), original_y2)
+        self.assertEqual(window.axes_gradient.get_ylim(), original_gradient)
         event = SimpleNamespace(button=1, xdata=8.0, dblclick=True)
         window._on_canvas_press(event)
         self.assertAlmostEqual(window.axes.get_xlim()[0], original_x[0], places=6)
@@ -303,10 +307,63 @@ class GuiTests(unittest.TestCase):
 
         before_x = window.axes.get_xlim()
         before_y = window.axes.get_ylim()
+        before_y2 = window.axes_right.get_ylim()
+        window.dataset_table.selectRow(1)
         window.project.method.zoom_axis = "y"
-        window._zoom_view(0.8, center_x=8.0, source_axis=window.axes, center_y=sum(before_y) / 2.0)
+        window._zoom_view(
+            0.8,
+            center_x=8.0,
+            source_axis=window.axes_right,
+            center_y=sum(before_y2) / 2.0,
+        )
         self.assertEqual(window.axes.get_xlim(), before_x)
         self.assertLess(window.axes.get_ylim()[1] - window.axes.get_ylim()[0], before_y[1] - before_y[0])
+        self.assertLess(
+            window.axes_right.get_ylim()[1] - window.axes_right.get_ylim()[0],
+            before_y2[1] - before_y2[0],
+        )
+
+        window.project.datasets[1].visible = False
+        window.dataset_table.selectRow(0)
+        window._plot(preserve_view=False)
+        self.assertIsNone(window.axes_right)
+        y1_only = window.axes.get_ylim()
+        window._zoom_view(0.8, zoom_mode="y")
+        self.assertLess(
+            window.axes.get_ylim()[1] - window.axes.get_ylim()[0],
+            y1_only[1] - y1_only[0],
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_fixed_both_zoom_changes_x_y1_y2_but_not_gradient(self):
+        window = self.make_window()
+        before_x = window.axes.get_xlim()
+        before_y1 = window.axes.get_ylim()
+        before_y2 = window.axes_right.get_ylim()
+        before_gradient = window.axes_gradient.get_ylim()
+
+        window._zoom_view(
+            0.8,
+            center_x=sum(before_x) / 2.0,
+            source_axis=window.axes_right,
+            center_y=sum(before_y2) / 2.0,
+            zoom_mode="both",
+        )
+
+        self.assertLess(
+            window.axes.get_xlim()[1] - window.axes.get_xlim()[0],
+            before_x[1] - before_x[0],
+        )
+        self.assertLess(
+            window.axes.get_ylim()[1] - window.axes.get_ylim()[0],
+            before_y1[1] - before_y1[0],
+        )
+        self.assertLess(
+            window.axes_right.get_ylim()[1] - window.axes_right.get_ylim()[0],
+            before_y2[1] - before_y2[0],
+        )
+        self.assertEqual(window.axes_gradient.get_ylim(), before_gradient)
         window.project.dirty = False
         window.close()
 

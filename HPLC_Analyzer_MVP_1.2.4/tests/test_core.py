@@ -409,7 +409,7 @@ class ProjectTests(unittest.TestCase):
         untouched = deepcopy(manifest)
         migrated = migrate_project_manifest(manifest)
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 103)
+        self.assertEqual(migrated["schema_version"], 104)
         self.assertEqual(len(migrated["runs"]), 2)
         self.assertEqual(
             [item["id"] for item in migrated["runs"]],
@@ -418,6 +418,10 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(
             [item["run_id"] for item in migrated["datasets"]],
             ["run-same-source", "run-same-source-2"],
+        )
+        self.assertEqual(
+            [item["label"] for item in migrated["runs"]],
+            ["same label", "same label"],
         )
         self.assertEqual(
             migrated["datasets"][0]["measurement"],
@@ -432,6 +436,48 @@ class ProjectTests(unittest.TestCase):
             untouched["datasets"][0]["source_metadata"],
         )
         self.assertEqual(migrate_project_manifest(migrated), migrated)
+
+    def test_schema_103_promotes_first_dataset_label_to_shared_run(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 103,
+            "runs": [{"id": "run-shared", "sample_name": "sample A"}],
+            "datasets": [
+                {
+                    "id": "channel-214",
+                    "run_id": "run-shared",
+                    "label": "sample A",
+                    "short_label": "A",
+                    "measurement": {"wavelength_nm": 214.0},
+                },
+                {
+                    "id": "channel-280",
+                    "run_id": "run-shared",
+                    "label": "conflicting legacy label",
+                    "short_label": "conflict",
+                    "measurement": {"wavelength_nm": 280.0},
+                },
+            ],
+        }
+        untouched = deepcopy(manifest)
+        migrated = migrate_project_manifest(manifest)
+
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], 104)
+        self.assertEqual(migrated["runs"][0]["label"], "sample A")
+        self.assertEqual(migrated["runs"][0]["short_label"], "A")
+        self.assertEqual(
+            [dataset["label"] for dataset in migrated["datasets"]],
+            ["sample A", "sample A"],
+        )
+        self.assertEqual(
+            [dataset["short_label"] for dataset in migrated["datasets"]],
+            ["A", "A"],
+        )
+        self.assertEqual(
+            [dataset["measurement"]["wavelength_nm"] for dataset in migrated["datasets"]],
+            [214.0, 280.0],
+        )
 
     def test_manifest_migration_rejects_invalid_structures_clearly(self):
         with self.assertRaisesRegex(ProjectMigrationError, "datasets must be an array"):
@@ -588,7 +634,11 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(first.measurement.aux_range_au_per_v, 1.0)
         self.assertEqual(second.measurement.aux_range_au_per_v, 2.0)
         self.assertEqual(first.label, "214 channel")
-        self.assertEqual(second.label, "280 channel")
+        self.assertEqual(second.label, "214 channel")
+        second.label = "shared display label"
+        second.short_label = "shared"
+        self.assertEqual(first.label, "shared display label")
+        self.assertEqual(first.short_label, "shared")
         first.measurement = MeasurementMetadata(
             sample_name="replacement metadata",
             column_name="C18",
@@ -631,6 +681,8 @@ class ProjectTests(unittest.TestCase):
             ["run-two-channel", "run-two-channel"],
         )
         self.assertIs(loaded.datasets[0].bound_run(), loaded.datasets[1].bound_run())
+        self.assertEqual(loaded.datasets[0].label, loaded.datasets[1].label)
+        self.assertEqual(loaded.datasets[0].short_label, loaded.datasets[1].short_label)
         self.assertEqual(loaded.datasets[0].measurement.sample_name, "shared sample")
         self.assertEqual(
             [dataset.measurement.wavelength_nm for dataset in loaded.datasets],
@@ -664,6 +716,9 @@ class ProjectTests(unittest.TestCase):
             with zipfile.ZipFile(path, "r") as source:
                 contents = {name: source.read(name) for name in source.namelist()}
             manifest = json.loads(contents["project.json"].decode("utf-8"))
+            run_label = manifest["runs"][0]["label"]
+            manifest["datasets"][0]["label"] = "legacy label conflict"
+            manifest["datasets"][0]["short_label"] = "legacy short conflict"
             manifest["datasets"][0]["measurement"]["sample_name"] = "legacy conflict"
             manifest["datasets"][0]["measurement"]["column_name"] = "Legacy C18"
             manifest["datasets"][0]["measurement"]["wavelength_nm"] = 214.0
@@ -676,6 +731,8 @@ class ProjectTests(unittest.TestCase):
 
             loaded = load_project(path)
             restored = loaded.datasets[0]
+            self.assertEqual(restored.label, run_label)
+            self.assertEqual(restored.short_label, manifest["runs"][0]["short_label"])
             self.assertEqual(restored.measurement.sample_name, "run authority")
             self.assertEqual(restored.measurement.column_name, "Run C4")
             self.assertEqual(restored.measurement.wavelength_nm, 214.0)
@@ -683,6 +740,11 @@ class ProjectTests(unittest.TestCase):
             with zipfile.ZipFile(path, "r") as archive:
                 resaved = json.loads(archive.read("project.json").decode("utf-8"))
             compatibility = resaved["datasets"][0]["measurement"]
+            self.assertEqual(resaved["datasets"][0]["label"], run_label)
+            self.assertEqual(
+                resaved["datasets"][0]["short_label"],
+                resaved["runs"][0]["short_label"],
+            )
             self.assertEqual(compatibility["sample_name"], "run authority")
             self.assertEqual(compatibility["column_name"], "Run C4")
             self.assertEqual(compatibility["wavelength_nm"], 214.0)

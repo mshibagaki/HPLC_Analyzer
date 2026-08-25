@@ -278,6 +278,14 @@ v1系列では`.hplcproj`の基本フィールドとプロジェクトIDを維�
 
 プリセットはプロジェクトにも保存されますが、ソフト側にも記憶されます。別のプロジェクトを開いた場合や新規プロジェクトを作成した場合も、保存済みプリセットを利用できます。v1.1.5以降は、従来のWindows設定を初回起動時にユーザーのアプリ設定フォルダー内の`presets.json`へ自動移行し、以後は両方へ同期します。v1.2.4を更新インストールまたはアンインストールしても、このユーザー設定ファイルは削除しません。
 
+### 設定データの保存場所と責務
+
+- **Application settings（QSettings）**：UI言語用の設定枠、読み込み／保存／直近フォルダー、研究室DBパス、画面描画品質、図の出力形式、命名用の測定者を保存します。Windows上の従来の保存先とキー名を維持します。
+- **Persistent preset data（`presets.json`）**：条件プリセットとグラジエントプリセットの正本です。旧版のQSettings内プリセット値は、移行元および`presets.json`を読めない場合のfallbackとして残します。
+- **Project-specific settings（`.hplcproj`）**：解析条件、表示状態、クロマトグラム、積分結果、注釈など、そのプロジェクト固有の状態を保存します。画面描画品質はApplication settingsであり、Projectには保存しません。
+
+Application settingsのキー、既定値、型変換、不正値fallback、保存処理は`hplc_app/settings_store.py`へ集約しています。設定が欠損・破損している場合や一時的に保存できない場合も、安全な既定値で起動し、Projectやプリセットを削除しません。
+
 ## 研究室共通データベースの設定
 
 1. 管理者が研究室共有フォルダに`HPLC_Lab_Database.sqlite3`を置く場所を決めます。ファイルはまだ存在しなくても構いません。
@@ -387,7 +395,7 @@ Windows 7版とWindows 11版は同じアプリケーションバージョンを�
 python -m unittest discover -s tests -v
 ```
 
-コア42件・GUI46件の計88件では、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、画面用min/max間引きのピーク保持、解析値（面積・保持時間・FWHM・%Area）の不変性、軽量モードでも高品質出力が元データを使うこと、二軸・%B・積分範囲・zoom/pan、通常版／Debug版のスモークテスト順序を回帰対象にしています。既存のプロジェクト互換、プリセット移行、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
+コア51件・GUI46件の計97件では、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、画面用min/max間引きのピーク保持、解析値（面積・保持時間・FWHM・%Area）の不変性、軽量モードでも高品質出力が元データを使うこと、二軸・%B・積分範囲・zoom/pan、通常版／Debug版のスモークテスト順序を回帰対象にしています。Application settingsの既存キー引継ぎ・型変換・不正値fallback・保存失敗、`presets.json`優先の旧プリセット移行、既存のプロジェクト互換、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
 
 ## ファイル構成
 
@@ -396,6 +404,7 @@ app.py                    GUI起動
 hplc_app/parser.py        島津ASCIIパーサー
 hplc_app/analysis.py      換算・積分・自動ピーク検出・定量
 hplc_app/project_io.py    プロジェクト保存
+hplc_app/settings_store.py Application settingsの一元管理
 hplc_app/preset_store.py  バージョン間で共有するプリセットJSON
 hplc_app/naming.py        統一保存名の提案
 hplc_app/database.py      研究室共通SQLite DB・CSV出力

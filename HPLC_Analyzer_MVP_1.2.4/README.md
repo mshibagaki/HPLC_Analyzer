@@ -419,6 +419,7 @@ python scripts\release_consistency.py assets --release-version v1.2.4 --project-
 ```
 
 `assets`検査は、3つの正規artifact名、両installerのversion resource、Offline Build Kit内のApplication versionとproject schema、`SHA256SUMS.txt`の完全一致を確認します。GitHubへuploadした後もclean directoryへ再downloadし、`python scripts\release_checksums.py verify --release-dir <directory>`で再検証します。
+RCからStableへ昇格する手順は[Release Process](../.github/RELEASE_PROCESS.md)、実施記録は[Release Checklist](../.github/RELEASE_CHECKLIST.md)、GitHub Release本文は[Release Template](../.github/RELEASE_TEMPLATE.md)を使用します。Windows 11とWindows 7実機、upgrade/data preservation、project互換性、checksumが揃うまでStableにはしません。
 
 ## 現在の制限
 

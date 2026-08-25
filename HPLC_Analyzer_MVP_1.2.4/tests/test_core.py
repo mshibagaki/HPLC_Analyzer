@@ -63,6 +63,7 @@ from hplc_app.rendering import (
     minmax_decimate,
     screen_series,
 )
+from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from scripts.windows7_import_preflight import EVENT_LOG_COMMAND, PROBES
 from scripts.verify_windows7_x86 import PE_MACHINE_I386, read_pe_machine
 from scripts.verify_windows7_offline_bundle import (
@@ -101,6 +102,67 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(dataset.measurement.method_name, method)
             self.assertEqual(dataset.measurement.instrument_name, "装置名1")
             self.assertEqual(len(dataset.sha256), 64)
+
+    def test_acquisition_timestamp_priority_is_explicit_and_unambiguous(self):
+        metadata = {
+            "Sample Information.Acquisition Date": "2026/05/07 19:33:54",
+            "Header.Output Date": "2099/12/31",
+            "Header.Output Time": "23:59:59",
+        }
+        self.assertEqual(
+            acquisition_timestamp(metadata, "20260508_005353.TXT"),
+            "2026-05-07T19:33:54",
+        )
+        self.assertEqual(
+            acquisition_timestamp(
+                {"Sample Information.Acquisition Date": "vendor-local-time"},
+                "20260508_005353.TXT",
+            ),
+            "vendor-local-time",
+        )
+        self.assertEqual(
+            acquisition_timestamp(
+                {"Header.Output Date": "2026/05/08"},
+                "20260507_193354.TXT",
+            ),
+            "2026-05-07T19:33:54",
+        )
+        self.assertEqual(
+            acquisition_timestamp(
+                {
+                    "Header.Output Date": "2026/05/08",
+                    "Header.Output Time": "00:53:53",
+                },
+                "210601.TXT",
+            ),
+            "",
+        )
+        for filename in (
+            "20260507-193354.gcd",
+            "2026-05-07_19-33-54.TXT",
+            "2026_05_07_19_33_54.txt",
+        ):
+            self.assertEqual(
+                timestamp_from_filename(filename), "2026-05-07T19:33:54"
+            )
+        for ambiguous in (
+            "210601.TXT",
+            "20260507193354.TXT",
+            "sample_20260507_193354.TXT",
+            "20261340_996099.TXT",
+        ):
+            self.assertEqual(timestamp_from_filename(ambiguous), "")
+
+    def test_ascii_import_keeps_label_separate_from_run_timestamp(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        self.assertEqual(dataset.label, "210601")
+        self.assertEqual(
+            dataset.measurement.acquisition_datetime, "2026-05-07T19:33:54"
+        )
+        project = Project(datasets=[dataset])
+        run = project.run_for(dataset)
+        self.assertEqual(run.timestamp, "2026-05-07T19:33:54")
+        self.assertEqual(dataset.label, "210601")
 
 
 class AnalysisTests(unittest.TestCase):
@@ -433,6 +495,41 @@ class ProjectTests(unittest.TestCase):
         )
         self.assertEqual(migrate_project_manifest(migrated), migrated)
 
+    def test_run_migration_uses_strict_timestamp_fallback_without_relabeling(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 102,
+            "method": {},
+            "datasets": [
+                {
+                    "id": "known-timestamp",
+                    "label": "Keep this user label",
+                    "original_filename": "20260507_193354.TXT",
+                    "measurement": {"acquisition_datetime": ""},
+                    "source_metadata": {
+                        "Header.Output Date": "2099/12/31",
+                        "Header.Output Time": "23:59:59",
+                    },
+                },
+                {
+                    "id": "ambiguous-number",
+                    "label": "Also keep this label",
+                    "original_filename": "210601.TXT",
+                    "measurement": {"acquisition_datetime": ""},
+                },
+            ],
+        }
+        migrated = migrate_project_manifest(manifest)
+        self.assertEqual(
+            [run["timestamp"] for run in migrated["runs"]],
+            ["2026-05-07T19:33:54", ""],
+        )
+        self.assertEqual(
+            [dataset["label"] for dataset in migrated["datasets"]],
+            ["Keep this user label", "Also keep this label"],
+        )
+        self.assertEqual(manifest["datasets"][0]["label"], "Keep this user label")
+
     def test_manifest_migration_rejects_invalid_structures_clearly(self):
         with self.assertRaisesRegex(ProjectMigrationError, "datasets must be an array"):
             migrate_project_manifest(
@@ -626,6 +723,7 @@ class ProjectTests(unittest.TestCase):
             loaded = load_project(path)
 
         self.assertEqual(len(loaded.runs), 1)
+        self.assertEqual(loaded.runs[0].timestamp, "2026-05-07T19:33:54")
         self.assertEqual(
             [dataset.run_id for dataset in loaded.datasets],
             ["run-two-channel", "run-two-channel"],

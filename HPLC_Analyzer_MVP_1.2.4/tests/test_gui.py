@@ -39,6 +39,7 @@ from hplc_app.qt_compat import (
 )
 from hplc_app.report import render_analysis_report_pages
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
+from tests.gcd_fixtures import synthetic_gcd_bytes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1358,6 +1359,39 @@ class GuiTests(unittest.TestCase):
                 window._default_save_path("project.hplcproj"),
                 str(Path(save_directory) / "project.hplcproj"),
             )
+        window.project.dirty = False
+        window.close()
+
+    def test_import_accepts_mixed_gcd_ascii_and_reports_partial_failure(self):
+        window = self.make_window()
+        with tempfile.TemporaryDirectory() as directory:
+            valid_gcd = Path(directory) / "valid.gcd"
+            broken_gcd = Path(directory) / "broken.gcd"
+            valid_gcd.write_bytes(synthetic_gcd_bytes())
+            broken_gcd.write_bytes(synthetic_gcd_bytes()[:128])
+            selected_paths = [
+                str(valid_gcd),
+                str(SAMPLES / "191720.TXT"),
+                str(broken_gcd),
+            ]
+            with patch.object(
+                QtWidgets.QFileDialog,
+                "getOpenFileNames",
+                return_value=(selected_paths, ""),
+            ) as chooser, patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                window.import_ascii()
+
+            self.assertIn("*.gcd", chooser.call_args.args[3])
+            self.assertEqual(len(window.project.datasets), 4)
+            self.assertEqual(
+                [dataset.original_filename for dataset in window.project.datasets[-2:]],
+                ["valid.gcd", "191720.TXT"],
+            )
+            self.assertTrue(window.project.dirty)
+            self.assertIn("2", window.statusBar().currentMessage())
+            warning.assert_called_once()
+            self.assertIn("broken.gcd", warning.call_args.args[2])
+            self.assertIn("GCD is not an OLE compound file", warning.call_args.args[2])
         window.project.dirty = False
         window.close()
 

@@ -55,14 +55,19 @@ class _CompoundFile:
         if byte_order != 0xFFFE or major_version not in (3, 4):
             raise GcdParseError("Unsupported OLE compound-file version")
 
+        sector_shift = struct.unpack_from("<H", raw, 30)[0]
+        mini_sector_shift = struct.unpack_from("<H", raw, 32)[0]
+        expected_sector_shift = 9 if major_version == 3 else 12
+        if sector_shift != expected_sector_shift or mini_sector_shift != 6:
+            raise GcdParseError("Unsupported OLE sector size")
+
         self.raw = raw
         self.major_version = major_version
-        self.sector_size = 1 << struct.unpack_from("<H", raw, 30)[0]
-        self.mini_sector_size = 1 << struct.unpack_from("<H", raw, 32)[0]
-        if self.sector_size not in (512, 4096) or self.mini_sector_size != 64:
-            raise GcdParseError("Unsupported OLE sector size")
+        self.sector_size = 1 << sector_shift
+        self.mini_sector_size = 1 << mini_sector_shift
         if len(raw) < self.sector_size:
             raise GcdParseError("Truncated OLE header")
+        self.sector_count = len(raw) // self.sector_size - 1
 
         fat_sector_count = struct.unpack_from("<I", raw, 44)[0]
         first_directory_sector = struct.unpack_from("<I", raw, 48)[0]
@@ -72,12 +77,27 @@ class _CompoundFile:
         first_difat_sector = struct.unpack_from("<I", raw, 68)[0]
         difat_sector_count = struct.unpack_from("<I", raw, 72)[0]
 
+        if fat_sector_count == 0 or fat_sector_count > self.sector_count:
+            raise GcdParseError("OLE FAT sector count exceeds the file size")
+        if mini_fat_sector_count > self.sector_count:
+            raise GcdParseError("OLE mini FAT sector count exceeds the file size")
+        if difat_sector_count > self.sector_count:
+            raise GcdParseError("OLE DIFAT sector count exceeds the file size")
+
         difat = list(struct.unpack_from("<109I", raw, 76))
         current = first_difat_sector
+        seen_difat = set()
         for _unused in range(difat_sector_count):
+            if current == _END_OF_CHAIN:
+                raise GcdParseError("OLE DIFAT chain is shorter than declared")
+            if current in seen_difat:
+                raise GcdParseError("Cyclic OLE DIFAT sector chain")
+            seen_difat.add(current)
             values = list(self._unpack_sector_u32(current))
             difat.extend(values[:-1])
             current = values[-1]
+        if difat_sector_count and current != _END_OF_CHAIN:
+            raise GcdParseError("OLE DIFAT chain is longer than declared")
         fat_sector_ids = [
             sector_id
             for sector_id in difat
@@ -85,8 +105,11 @@ class _CompoundFile:
         ]
         if len(fat_sector_ids) < fat_sector_count:
             raise GcdParseError("OLE FAT sector list is truncated")
+        selected_fat_sector_ids = fat_sector_ids[:fat_sector_count]
+        if len(set(selected_fat_sector_ids)) != len(selected_fat_sector_ids):
+            raise GcdParseError("OLE FAT sector list contains duplicates")
         self.fat: List[int] = []
-        for sector_id in fat_sector_ids[:fat_sector_count]:
+        for sector_id in selected_fat_sector_ids:
             self.fat.extend(self._unpack_sector_u32(sector_id))
 
         directory = self._read_regular_stream(first_directory_sector)
@@ -111,7 +134,7 @@ class _CompoundFile:
             raise GcdParseError("Invalid OLE sector reference")
         offset = (sector_id + 1) * self.sector_size
         end = offset + self.sector_size
-        if sector_id < 0 or end > len(self.raw):
+        if end > len(self.raw):
             raise GcdParseError("OLE sector points outside the file")
         return self.raw[offset:end]
 
@@ -252,12 +275,15 @@ def _parse_peak_table(raw: bytes) -> List[Dict[str, str]]:
                 + ("E" if peak_flags & 0x40 else ""),
                 "ID#": "",
                 "Name": "",
-                "k'": "0.000",
-                "Plate #": "0.000",
-                "Plate Ht.": "0.000",
-                "Tailing": "0.000",
-                "Resolution": "0.000",
-                "Sep.Factor": "0.000",
+                # These vendor fields have not yet been mapped in the GCD
+                # record.  Blank means unavailable; zero would falsely look
+                # like a measured value.
+                "k'": "",
+                "Plate #": "",
+                "Plate Ht.": "",
+                "Tailing": "",
+                "Resolution": "",
+                "Sep.Factor": "",
             }
         )
     return result

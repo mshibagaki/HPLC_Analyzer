@@ -2,7 +2,7 @@
 
 島津 GCsolution / LCsolution / PACsolution のASCIIクロマトグラム、およびPACsolutionの`.gcd`を、元データを保持したまま管理・重ね描き・積分・定量・作図し、研究室内の測定履歴を共有データベースへ集約する研究用デスクトップソフトです。
 
-提供されたASCII実データに加え、`rawdata`内の6組の`.gcd` / `.TXT`で、GCD直接読込の全強度点、時間軸、ベンダーピーク表がASCII出力と一致することを検証しています。
+提供されたASCII実データに加え、`rawdata`内の6組の`.gcd` / `.TXT`で、GCD直接読込の全強度点、時間軸、ベンダーピーク表の主要値がASCII出力と一致することを検証しています。
 
 v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セット（Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2 5.15.2.1、Qt 5.15.2、Matplotlib 3.7.5、PyInstaller 5.13.2）を固定しました。各native依存を別プロセスで順番にimportし、どれか1つでも異常終了した場合はPyInstallerへ進みません。Windows 7では画面表示だけをピーク保持型のmin/max envelopeで間引く軽量描画を標準にし、解析・CSV・PNG・SVG・PDF・A4レポートは常に元データを使います。Windows 11 64-bit版は高品質描画と専用の新しい依存セットを維持し、両版の`.hplcproj`とプリセット形式は共通です。
 
@@ -373,6 +373,7 @@ Windows 7版とWindows 11版は同じアプリケーションバージョンを�
 ## 現在の制限
 
 - ASCIIは今回の3ファイルと同じ `[Chromatogram (Ch1)]` / `R.Time` / `Intensity`構造が対象です。GCDはPACsolution 2.2系のOLE Compound File構造を持ち、`Status`、`Intensity Data`、`Peak Table`ストリームを含む実例で検証しています。別世代・別構造のGCDは推測で読み込まず、明示的なエラーにします。
+- GCD直接読込では、sample name、sample ID、method name、acquisition datetime等のmetadataを現時点では復元しないため、該当欄は空になります。Peak Tableの`k'`、理論段数、テーリング、分離度等の未解析項目も、実測ゼロと区別するため空欄にします。元GCD bytesはproject内に変更せず保持します。
 - 1ファイル内に複数チャンネルが同居する形式は未対応です。Ch1/Ch2が別ファイルなら縦軸1/2に分けて表示できます。
 - ベースラインは指定区間内の直線または水平線です。曲線ベースライン、自動ベースライン追跡、ピーク波形のデコンボリューションは未実装です。
 - 自動ピーク検出は正のピークを対象とする候補生成です。データごとの目視確認が必要です。
@@ -389,7 +390,7 @@ python -m unittest discover -s tests -v
 
 ### GCD解析結果を再検証する
 
-GCDの読込は同名のTXTやCDFを参照せず、`.gcd`内のOLEストリームだけから時間軸、µV強度、ベンダーピーク表を復元します。今回の解析を同梱データから再現するには、アプリ本体ディレクトリで次を実行します。
+GCDの読込は同名のTXTやCDFを参照せず、`.gcd`内のOLEストリームだけから時間軸、µV強度、ベンダーピーク表の主要値を復元します。今回の解析を手元の提供データから再現するには、アプリ本体ディレクトリで次を実行します。
 
 ```text
 python scripts\verify_gcd_against_ascii.py ..\rawdata
@@ -401,7 +402,7 @@ python scripts\verify_gcd_against_ascii.py ..\rawdata
 python scripts\inspect_gcd.py path\to\sample.gcd
 ```
 
-コア42件・GUI46件の計88件では、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、画面用min/max間引きのピーク保持、解析値（面積・保持時間・FWHM・%Area）の不変性、軽量モードでも高品質出力が元データを使うこと、二軸・%B・積分範囲・zoom/pan、通常版／Debug版のスモークテスト順序を回帰対象にしています。既存のプロジェクト互換、プリセット移行、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
+コア56件・GUI47件の計103件では、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、synthetic CFBによるFAT/DIFAT/mini-FATと破損GCDの防御、GCD/ASCII混在import、画面用min/max間引きのピーク保持、解析値（面積・保持時間・FWHM・%Area）の不変性、軽量モードでも高品質出力が元データを使うこと、二軸・%B・積分範囲・zoom/pan、通常版／Debug版のスモークテスト順序を回帰対象にしています。既存のプロジェクト互換、プリセット移行、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
 
 ## ファイル構成
 

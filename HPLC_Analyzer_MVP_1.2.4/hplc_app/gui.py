@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-import json
 import math
 from pathlib import Path
 import tempfile
@@ -61,7 +60,7 @@ from .naming import (
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
-from .preset_store import load_preset_store, save_preset_store
+from .preset_store import load_preset_store, merge_preset_sources, save_preset_store
 from .project_io import (
     load_project,
     save_project,
@@ -73,6 +72,20 @@ from .rendering import (
     default_render_quality,
     normalize_render_quality,
     screen_series,
+)
+from .settings_store import (
+    ApplicationSettings,
+    DATABASE_PATH,
+    FIGURE_FORMAT,
+    IMPORT_DIRECTORY,
+    LAST_IMPORT_DIRECTORY,
+    LAST_PROJECT_DIRECTORY,
+    LAST_SAVE_DIRECTORY,
+    LEGACY_CONDITION_PRESETS,
+    LEGACY_GRADIENT_PRESETS,
+    NAMING_AUTHOR,
+    RENDERING_QUALITY,
+    SAVE_DIRECTORY,
 )
 from .qt_compat import (
     QAction,
@@ -283,27 +296,31 @@ class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self._settings = QtCore.QSettings("Research Tools", APP_NAME)
+        self._settings = ApplicationSettings()
         settings_conditions = sanitize_condition_presets(
-            self._read_json_setting("presets/conditions")
+            self._settings.get(LEGACY_CONDITION_PRESETS)
         )
-        settings_gradients = self._read_json_setting("presets/gradients")
+        settings_gradients = self._settings.get(LEGACY_GRADIENT_PRESETS)
         stored_conditions, stored_gradients = load_preset_store()
-        stored_conditions.update(deepcopy(settings_conditions))
-        stored_gradients.update(deepcopy(settings_gradients))
-        self._global_condition_presets = sanitize_condition_presets(
-            stored_conditions
+        merged_conditions, merged_gradients = merge_preset_sources(
+            settings_conditions,
+            settings_gradients,
+            stored_conditions,
+            stored_gradients,
         )
-        self._global_gradient_presets = stored_gradients
+        self._global_condition_presets = sanitize_condition_presets(
+            merged_conditions
+        )
+        self._global_gradient_presets = merged_gradients
         if self._global_condition_presets or self._global_gradient_presets:
             # v1.1.4 and earlier used QSettings only. Mirror those values into
             # a version-independent JSON file on first v1.1.5 launch, and
             # restore QSettings from that file if a future build changes path.
-            self._write_json_setting(
-                "presets/conditions", self._global_condition_presets
+            self._settings.set(
+                LEGACY_CONDITION_PRESETS, self._global_condition_presets
             )
-            self._write_json_setting(
-                "presets/gradients", self._global_gradient_presets
+            self._settings.set(
+                LEGACY_GRADIENT_PRESETS, self._global_gradient_presets
             )
             self._settings.sync()
             self._save_global_preset_file()
@@ -331,20 +348,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tick_update_guard = False
         self._undo_stack = []
         self._redo_stack = []
-        self._import_directory = str(self._settings.value("paths/import_directory", "") or "")
-        self._save_directory = str(self._settings.value("paths/save_directory", "") or "")
-        self._database_path = str(
-            self._settings.value("database/path", "") or ""
-        )
-        self._figure_export_format = str(
-            self._settings.value("export/figure_format", "png") or "png"
-        ).lower()
-        if self._figure_export_format not in ("png", "svg", "pdf"):
-            self._figure_export_format = "png"
-        self._render_quality = normalize_render_quality(
-            self._settings.value("rendering/quality", ""),
-            default_render_quality(),
-        )
+        self._import_directory = self._settings.get(IMPORT_DIRECTORY)
+        self._save_directory = self._settings.get(SAVE_DIRECTORY)
+        self._database_path = self._settings.get(DATABASE_PATH)
+        self._figure_export_format = self._settings.get(FIGURE_FORMAT)
+        self._render_quality = self._settings.get(RENDERING_QUALITY)
         self.axes_right = None
         self.axes_gradient = None
         self._overview_dataset_lines = {}
@@ -358,21 +366,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._retranslate()
         self._refresh_all()
         self.resize(1500, 900)
-
-    def _read_json_setting(self, key: str):
-        raw = self._settings.value(key, "")
-        if isinstance(raw, dict):
-            return deepcopy(raw)
-        if not raw:
-            return {}
-        try:
-            value = json.loads(str(raw))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return {}
-        return value if isinstance(value, dict) else {}
-
-    def _write_json_setting(self, key: str, value):
-        self._settings.setValue(key, json.dumps(value, ensure_ascii=False))
 
     def _save_global_preset_file(self):
         try:
@@ -391,8 +384,10 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._global_condition_presets = deepcopy(self.project.condition_presets)
         self._global_gradient_presets = deepcopy(self.project.gradient_presets)
-        self._write_json_setting("presets/conditions", self._global_condition_presets)
-        self._write_json_setting("presets/gradients", self._global_gradient_presets)
+        self._settings.set(
+            LEGACY_CONDITION_PRESETS, self._global_condition_presets
+        )
+        self._settings.set(LEGACY_GRADIENT_PRESETS, self._global_gradient_presets)
         self._settings.sync()
         self._save_global_preset_file()
 
@@ -418,15 +413,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.condition_presets = merged_conditions
         self.project.gradient_presets = merged_gradients
         if imported:
-            self._write_json_setting("presets/conditions", self._global_condition_presets)
-            self._write_json_setting("presets/gradients", self._global_gradient_presets)
+            self._settings.set(
+                LEGACY_CONDITION_PRESETS, self._global_condition_presets
+            )
+            self._settings.set(
+                LEGACY_GRADIENT_PRESETS, self._global_gradient_presets
+            )
             self._settings.sync()
             self._save_global_preset_file()
 
     def _default_save_path(self, filename: str) -> str:
-        last_directory = str(
-            self._settings.value("paths/last_save_directory", "") or ""
-        )
+        last_directory = self._settings.get(LAST_SAVE_DIRECTORY)
         directory = self._save_directory or last_directory
         if directory and Path(directory).is_dir():
             return str(Path(directory) / filename)
@@ -435,8 +432,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _remember_save_path(self, path: str):
         directory = Path(path).parent
         if directory.is_dir():
-            self._settings.setValue("paths/last_save_directory", str(directory))
-            self._settings.sync()
+            self._settings.set(LAST_SAVE_DIRECTORY, str(directory), sync=True)
 
     def _is_lightweight_rendering(self) -> bool:
         return self._render_quality == LIGHTWEIGHT
@@ -587,8 +583,7 @@ class MainWindow(QtWidgets.QMainWindow):
         changed = normalized != self._render_quality
         self._render_quality = normalized
         if persist:
-            self._settings.setValue("rendering/quality", normalized)
-            self._settings.sync()
+            self._settings.set(RENDERING_QUALITY, normalized, sync=True)
         if changed:
             self._set_figure_layout_quality()
             if replot and hasattr(self, "axes"):
@@ -3183,7 +3178,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.draw_idle()
 
     def import_ascii(self):
-        last_directory = str(self._settings.value("paths/last_import_directory", "") or "")
+        last_directory = self._settings.get(LAST_IMPORT_DIRECTORY)
         start_directory = self._import_directory or last_directory
         if start_directory and not Path(start_directory).is_dir():
             start_directory = ""
@@ -3195,7 +3190,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if not paths:
             return
-        self._settings.setValue("paths/last_import_directory", str(Path(paths[0]).parent))
+        self._settings.set(
+            LAST_IMPORT_DIRECTORY, str(Path(paths[0]).parent), sync=True
+        )
         imported = 0
         errors: List[str] = []
         for path in paths:
@@ -3231,10 +3228,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._import_directory = dialog.import_directory_value
         self._save_directory = dialog.save_directory_value
         self._database_path = dialog.database_path_value
-        self._settings.setValue("paths/import_directory", self._import_directory)
-        self._settings.setValue("paths/save_directory", self._save_directory)
-        self._settings.setValue("database/path", self._database_path)
-        self._settings.sync()
+        self._settings.set_many(
+            {
+                IMPORT_DIRECTORY: self._import_directory,
+                SAVE_DIRECTORY: self._save_directory,
+                DATABASE_PATH: self._database_path,
+            }
+        )
         render_quality_changed = dialog.render_quality_value != self._render_quality
         self._set_render_quality(
             dialog.render_quality_value,
@@ -3463,14 +3463,16 @@ class MainWindow(QtWidgets.QMainWindow):
         path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
             self,
             self.translator("open"),
-            str(self._settings.value("paths/last_project_directory", "") or ""),
+            self._settings.get(LAST_PROJECT_DIRECTORY),
             self.translator("project_filter"),
         )
         if not path:
             return
         try:
             self.project = load_project(path)
-            self._settings.setValue("paths/last_project_directory", str(Path(path).parent))
+            self._settings.set(
+                LAST_PROJECT_DIRECTORY, str(Path(path).parent), sync=True
+            )
             self._merge_global_presets_into_project()
             self._view_initialized = False
             self._view_history = []
@@ -3509,7 +3511,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def save_project_as(self) -> bool:
         parts = suggest_project_name_parts(
             self.project,
-            default_author=str(self._settings.value("naming/author", "") or ""),
+            default_author=self._settings.get(NAMING_AUTHOR),
         )
         naming_dialog = ProjectNamingDialog(
             parts, self.project.ui_language, self
@@ -3529,8 +3531,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.lower().endswith(".hplcproj"):
             path += ".hplcproj"
         apply_project_name_parts(self.project, parts)
-        self._settings.setValue("naming/author", self.project.author)
-        self._settings.sync()
+        self._settings.set(NAMING_AUTHOR, self.project.author, sync=True)
         self.project.project_path = path
         return self.save_project()
 
@@ -3585,8 +3586,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             path += ".%s" % selected_format
         self._figure_export_format = selected_format
-        self._settings.setValue("export/figure_format", selected_format)
-        self._settings.sync()
+        self._settings.set(FIGURE_FORMAT, selected_format, sync=True)
         try:
             self._save_figure_file(path)
             self._remember_save_path(path)

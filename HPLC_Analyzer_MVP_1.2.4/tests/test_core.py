@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 
 import numpy as np
@@ -90,6 +91,17 @@ from scripts.read_version import (
     VersionError,
     read_version,
     windows_numeric_version,
+)
+from scripts.release_checksums import (
+    read_sha256sums,
+    verify_sha256sums,
+    write_sha256sums,
+)
+from scripts.release_consistency import (
+    read_pinned_requirements,
+    verify_offline_archive,
+    verify_release_assets,
+    verify_source_consistency,
 )
 from scripts.write_windows_version_info import (
     expected_version_strings,
@@ -626,6 +638,151 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("HPLC_DEBUG_VERSION_FILE", spec)
         for filename in expected.values():
             self.assertNotIn(filename.replace("1.3.0", "%APP_VERSION%"), loader)
+
+    def test_release_checksums_cover_exactly_the_three_final_assets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release_dir = Path(directory)
+            targets = (
+                "windows11-installer",
+                "windows7-installer",
+                "windows7-offline",
+            )
+            for index, target in enumerate(targets):
+                (release_dir / artifact_filename(target, APP_VERSION)).write_bytes(
+                    ("asset-{0}".format(index)).encode("ascii")
+                )
+            checksums = write_sha256sums(release_dir, APP_VERSION)
+            self.assertEqual(checksums.name, "SHA256SUMS.txt")
+            self.assertEqual(verify_sha256sums(release_dir, APP_VERSION), [])
+            entries = read_sha256sums(checksums)
+            self.assertEqual(
+                set(entries),
+                {
+                    artifact_filename(target, APP_VERSION)
+                    for target in targets
+                },
+            )
+            with self.assertRaises(FileExistsError):
+                write_sha256sums(release_dir, APP_VERSION)
+            changed = release_dir / artifact_filename(
+                "windows11-installer", APP_VERSION
+            )
+            changed.write_bytes(b"changed after checksum")
+            self.assertEqual(
+                verify_sha256sums(release_dir, APP_VERSION),
+                ["SHA-256 mismatch: {0}".format(changed.name)],
+            )
+            checksums.write_text(
+                "0" * 64 + "  ../outside.exe\n", encoding="ascii"
+            )
+            with self.assertRaises(ValueError):
+                read_sha256sums(checksums)
+
+    def test_release_consistency_checks_identity_schema_pins_and_assets(self):
+        self.assertEqual(
+            verify_source_consistency(ROOT, "v" + APP_VERSION, PROJECT_SCHEMA_VERSION),
+            [],
+        )
+        self.assertTrue(
+            any(
+                "does not match APP_VERSION" in error
+                for error in verify_source_consistency(
+                    ROOT, "9.9.9", PROJECT_SCHEMA_VERSION
+                )
+            )
+        )
+        self.assertTrue(
+            any(
+                "does not match source schema" in error
+                for error in verify_source_consistency(
+                    ROOT, APP_VERSION, PROJECT_SCHEMA_VERSION + 1
+                )
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            unpinned = Path(directory) / "requirements.txt"
+            unpinned.write_text("numpy>=1.20\nnumpy==1.20.3\n", encoding="utf-8")
+            _pins, errors = read_pinned_requirements(unpinned)
+            self.assertTrue(any("not an exact == pin" in error for error in errors))
+
+            release_dir = Path(directory) / "release"
+            release_dir.mkdir()
+            for target in ("windows11-installer", "windows7-installer"):
+                (release_dir / artifact_filename(target, APP_VERSION)).write_bytes(
+                    b"synthetic installer"
+                )
+            offline = release_dir / artifact_filename(
+                "windows7-offline", APP_VERSION
+            )
+            archive_root = "HPLC_Analyzer_MVP_" + APP_VERSION
+            with zipfile.ZipFile(offline, "w") as archive:
+                archive.writestr(
+                    archive_root + "/hplc_app/version.py",
+                    'APP_VERSION = "{0}"\n'.format(APP_VERSION),
+                )
+                archive.writestr(
+                    archive_root + "/hplc_app/__init__.py",
+                    "PROJECT_FORMAT_MAJOR = 1\nPROJECT_SCHEMA_VERSION = {0}\n".format(
+                        PROJECT_SCHEMA_VERSION
+                    ),
+                )
+            self.assertEqual(
+                verify_offline_archive(offline, APP_VERSION, PROJECT_SCHEMA_VERSION),
+                [],
+            )
+            write_sha256sums(release_dir, APP_VERSION)
+            metadata = {
+                "CompanyName": "Research Tools",
+                "ProductName": "HPLC Analyzer",
+                "ProductVersion": APP_VERSION,
+            }
+            numeric = tuple(
+                int(part)
+                for part in windows_numeric_version(APP_VERSION).split(".")
+            )
+
+            def fake_metadata(path):
+                values = dict(metadata)
+                platform = (
+                    "Windows 11 64-bit"
+                    if "Windows11" in Path(path).name
+                    else "Windows 7 32-bit"
+                )
+                values["FileDescription"] = (
+                    "HPLC Analyzer {0} installer for {1}".format(
+                        APP_VERSION, platform
+                    )
+                )
+                return values, numeric
+
+            with mock.patch(
+                "scripts.release_consistency.verify_source_consistency",
+                return_value=[],
+            ), mock.patch(
+                "scripts.release_consistency._read_pe_metadata",
+                side_effect=fake_metadata,
+            ):
+                self.assertEqual(
+                    verify_release_assets(
+                        ROOT,
+                        release_dir,
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ),
+                    [],
+                )
+                (release_dir / "unapproved-debug.exe").write_bytes(b"extra")
+                self.assertTrue(
+                    any(
+                        "unexpected file in Release directory" in error
+                        for error in verify_release_assets(
+                            ROOT,
+                            release_dir,
+                            APP_VERSION,
+                            PROJECT_SCHEMA_VERSION,
+                        )
+                    )
+                )
 
     def test_project_round_trip_embeds_raw_ascii_and_origin(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))

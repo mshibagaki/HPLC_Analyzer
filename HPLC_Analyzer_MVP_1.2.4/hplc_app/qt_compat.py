@@ -18,6 +18,7 @@ try:
     WINDOW_MODAL = QtCore.Qt.WindowModality.WindowModal
     SHIFT_MODIFIER = QtCore.Qt.KeyboardModifier.ShiftModifier
     KEEP_ASPECT_RATIO = QtCore.Qt.AspectRatioMode.KeepAspectRatio
+    STANDARD_SAVE_SHORTCUT = QtGui.QKeySequence.StandardKey.Save
 except ImportError:
     from PySide2 import QtCore, QtGui, QtPrintSupport, QtWidgets
 
@@ -32,6 +33,7 @@ except ImportError:
     WINDOW_MODAL = QtCore.Qt.WindowModal
     SHIFT_MODIFIER = QtCore.Qt.ShiftModifier
     KEEP_ASPECT_RATIO = QtCore.Qt.KeepAspectRatio
+    STANDARD_SAVE_SHORTCUT = QtGui.QKeySequence.Save
 
 
 def dialog_exec(dialog):

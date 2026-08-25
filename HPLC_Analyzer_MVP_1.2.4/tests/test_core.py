@@ -38,8 +38,10 @@ from hplc_app.models import (
     AnalysisMethod,
     Dataset,
     GradientPoint,
+    MeasurementMetadata,
     PeakRegion,
     Project,
+    Run,
     Solvent,
     TextAnnotation,
 )
@@ -47,7 +49,7 @@ from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
 from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
 from hplc_app.preset_store import load_preset_store, save_preset_store
-from hplc_app.project_io import load_project, save_project
+from hplc_app.project_io import ProjectError, load_project, save_project
 from hplc_app.project_migrations import (
     ProjectMigrationError,
     migrate_project_manifest,
@@ -539,20 +541,66 @@ class ProjectTests(unittest.TestCase):
             ["kept_during_migration"]
         )
 
-    def test_schema_102_remains_current_without_run_model(self):
+    def test_schema_102_creates_one_stable_run_per_legacy_dataset(self):
         manifest = {
             "format_major": 1,
             "schema_version": 102,
             "method": {},
-            "datasets": [{"measurement": {"column_name": "C4"}, "peaks": []}],
+            "datasets": [
+                {
+                    "id": "same-source",
+                    "label": "same label",
+                    "original_filename": "20260507_120000.TXT",
+                    "measurement": {
+                        "sample_name": "sample A",
+                        "acquisition_datetime": "2026-05-07T12:00:00",
+                        "wavelength_nm": 214.0,
+                        "column_name": "C4",
+                    },
+                    "peaks": [{"retention_time_min": 3.2}],
+                    "source_metadata": {"kept": "unchanged"},
+                },
+                {
+                    "id": "same-source",
+                    "label": "same label",
+                    "original_filename": "20260507_120000.TXT",
+                    "measurement": {
+                        "sample_name": "sample A",
+                        "acquisition_datetime": "2026-05-07T12:00:00",
+                        "wavelength_nm": 280.0,
+                        "column_name": "C4",
+                    },
+                    "peaks": [{"retention_time_min": 3.2}],
+                    "source_metadata": {"kept": "unchanged"},
+                },
+            ],
         }
+        untouched = deepcopy(manifest)
         migrated = migrate_project_manifest(manifest)
-        self.assertEqual(migrated["schema_version"], 102)
-        self.assertNotIn("runs", migrated)
-        self.assertNotIn("run_id", migrated["datasets"][0])
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], 103)
+        self.assertEqual(len(migrated["runs"]), 2)
         self.assertEqual(
-            migrated["datasets"][0]["measurement"]["column_name"], "C4"
+            [item["id"] for item in migrated["runs"]],
+            ["run-same-source", "run-same-source-2"],
         )
+        self.assertEqual(
+            [item["run_id"] for item in migrated["datasets"]],
+            ["run-same-source", "run-same-source-2"],
+        )
+        self.assertEqual(
+            migrated["datasets"][0]["measurement"],
+            untouched["datasets"][0]["measurement"],
+        )
+        self.assertEqual(
+            migrated["datasets"][1]["peaks"],
+            untouched["datasets"][1]["peaks"],
+        )
+        self.assertEqual(
+            migrated["datasets"][0]["source_metadata"],
+            untouched["datasets"][0]["source_metadata"],
+        )
+        self.assertEqual(migrate_project_manifest(migrated), migrated)
 
     def test_manifest_migration_rejects_invalid_structures_clearly(self):
         with self.assertRaisesRegex(ProjectMigrationError, "datasets must be an array"):
@@ -670,6 +718,171 @@ class ProjectTests(unittest.TestCase):
                 manifest = json.loads(archive.read("project.json").decode("utf-8"))
             self.assertEqual(manifest["format_major"], PROJECT_FORMAT_MAJOR)
             self.assertEqual(manifest["schema_version"], PROJECT_SCHEMA_VERSION)
+
+    def test_shared_run_is_authoritative_and_dataset_channels_stay_independent(self):
+        run = Run(
+            id="run-shared",
+            timestamp="2026-05-07T12:00:00",
+            sample_name="sample A",
+            column_name="C4",
+            cell_path_length_cm=0.2,
+            molar_absorptivity_214=12500.0,
+            molar_absorptivity_280=8500.0,
+        )
+        first = Dataset(
+            run_id=run.id,
+            label="214 channel",
+            measurement=MeasurementMetadata(
+                wavelength_nm=214.0, aux_range_au_per_v=1.0
+            ),
+        )
+        second = Dataset(
+            run_id=run.id,
+            label="280 channel",
+            measurement=MeasurementMetadata(
+                wavelength_nm=280.0, aux_range_au_per_v=2.0
+            ),
+        )
+        project = Project(runs=[run], datasets=[first, second])
+
+        self.assertIs(project.run_for(first), run)
+        self.assertIs(project._run_index[run.id], run)
+        self.assertIs(first.bound_run(), second.bound_run())
+        first.measurement.sample_name = "renamed sample"
+        first.gradient_preset_name = "10-90 B"
+        self.assertEqual(second.measurement.sample_name, "renamed sample")
+        self.assertEqual(second.gradient_preset_name, "10-90 B")
+        self.assertEqual(first.measurement.wavelength_nm, 214.0)
+        self.assertEqual(second.measurement.wavelength_nm, 280.0)
+        self.assertEqual(first.measurement.aux_range_au_per_v, 1.0)
+        self.assertEqual(second.measurement.aux_range_au_per_v, 2.0)
+        self.assertEqual(first.label, "214 channel")
+        self.assertEqual(second.label, "280 channel")
+        first.measurement = MeasurementMetadata(
+            sample_name="replacement metadata",
+            column_name="C18",
+            wavelength_nm=220.0,
+            aux_range_au_per_v=4.0,
+        )
+        self.assertEqual(run.sample_name, "replacement metadata")
+        self.assertEqual(second.measurement.column_name, "C18")
+        self.assertEqual(first.measurement.wavelength_nm, 220.0)
+        self.assertEqual(second.measurement.wavelength_nm, 280.0)
+
+    def test_shared_run_round_trip_preserves_sources_peaks_and_channel_values(self):
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        first.measurement.wavelength_nm = 214.0
+        first.measurement.aux_range_au_per_v = 1.0
+        second.measurement.wavelength_nm = 280.0
+        second.measurement.aux_range_au_per_v = 2.0
+        first.peaks = [PeakRegion(start_min=1.0, end_min=2.0)]
+        recalculate_dataset_peaks(first)
+        run = Run.from_measurement(first.measurement, run_id="run-two-channel")
+        run.sample_name = "shared sample"
+        first.run_id = run.id
+        second.run_id = run.id
+        project = Project(runs=[run], datasets=[first, second])
+        original_time = [dataset.time_min.copy() for dataset in project.datasets]
+        original_signal = [dataset.intensity_uv.copy() for dataset in project.datasets]
+        original_raw = [dataset.raw_bytes for dataset in project.datasets]
+        original_sources = [deepcopy(dataset.source_metadata) for dataset in project.datasets]
+        original_peak = deepcopy(first.peaks[0])
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "shared-run.hplcproj")
+            save_project(path, project)
+            loaded = load_project(path)
+
+        self.assertEqual(len(loaded.runs), 1)
+        self.assertEqual(
+            [dataset.run_id for dataset in loaded.datasets],
+            ["run-two-channel", "run-two-channel"],
+        )
+        self.assertIs(loaded.datasets[0].bound_run(), loaded.datasets[1].bound_run())
+        self.assertEqual(loaded.datasets[0].measurement.sample_name, "shared sample")
+        self.assertEqual(
+            [dataset.measurement.wavelength_nm for dataset in loaded.datasets],
+            [214.0, 280.0],
+        )
+        self.assertEqual(
+            [dataset.measurement.aux_range_au_per_v for dataset in loaded.datasets],
+            [1.0, 2.0],
+        )
+        for index, dataset in enumerate(loaded.datasets):
+            np.testing.assert_array_equal(dataset.time_min, original_time[index])
+            np.testing.assert_array_equal(dataset.intensity_uv, original_signal[index])
+            self.assertEqual(dataset.raw_bytes, original_raw[index])
+            self.assertEqual(dataset.source_metadata, original_sources[index])
+        restored_peak = loaded.datasets[0].peaks[0]
+        self.assertEqual(restored_peak.start_min, original_peak.start_min)
+        self.assertEqual(restored_peak.end_min, original_peak.end_min)
+        self.assertEqual(restored_peak.retention_time_min, original_peak.retention_time_min)
+        self.assertEqual(restored_peak.raw_area_uv_sec, original_peak.raw_area_uv_sec)
+        self.assertEqual(restored_peak.area_mau_sec, original_peak.area_mau_sec)
+
+    def test_run_values_win_conflicts_and_are_projected_for_old_readers(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        dataset.measurement.sample_name = "run authority"
+        dataset.measurement.column_name = "Run C4"
+        dataset.measurement.wavelength_nm = 280.0
+        project = Project(datasets=[dataset])
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "run-authority.hplcproj")
+            save_project(path, project)
+            with zipfile.ZipFile(path, "r") as source:
+                contents = {name: source.read(name) for name in source.namelist()}
+            manifest = json.loads(contents["project.json"].decode("utf-8"))
+            manifest["datasets"][0]["measurement"]["sample_name"] = "legacy conflict"
+            manifest["datasets"][0]["measurement"]["column_name"] = "Legacy C18"
+            manifest["datasets"][0]["measurement"]["wavelength_nm"] = 214.0
+            contents["project.json"] = json.dumps(
+                manifest, ensure_ascii=False
+            ).encode("utf-8")
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as destination:
+                for name, payload in contents.items():
+                    destination.writestr(name, payload)
+
+            loaded = load_project(path)
+            restored = loaded.datasets[0]
+            self.assertEqual(restored.measurement.sample_name, "run authority")
+            self.assertEqual(restored.measurement.column_name, "Run C4")
+            self.assertEqual(restored.measurement.wavelength_nm, 214.0)
+            save_project(path, loaded)
+            with zipfile.ZipFile(path, "r") as archive:
+                resaved = json.loads(archive.read("project.json").decode("utf-8"))
+            compatibility = resaved["datasets"][0]["measurement"]
+            self.assertEqual(compatibility["sample_name"], "run authority")
+            self.assertEqual(compatibility["column_name"], "Run C4")
+            self.assertEqual(compatibility["wavelength_nm"], 214.0)
+
+    def test_project_load_rejects_missing_and_duplicate_run_references(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        project = Project(datasets=[dataset])
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "invalid-runs.hplcproj")
+            save_project(path, project)
+            with zipfile.ZipFile(path, "r") as source:
+                original = {name: source.read(name) for name in source.namelist()}
+
+            def write_manifest(manifest):
+                contents = dict(original)
+                contents["project.json"] = json.dumps(manifest).encode("utf-8")
+                with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as destination:
+                    for name, payload in contents.items():
+                        destination.writestr(name, payload)
+
+            missing = json.loads(original["project.json"].decode("utf-8"))
+            missing["datasets"][0]["run_id"] = "missing-run"
+            write_manifest(missing)
+            with self.assertRaisesRegex(ProjectError, "Run reference is invalid"):
+                load_project(path)
+
+            duplicate = json.loads(original["project.json"].decode("utf-8"))
+            duplicate["runs"].append(deepcopy(duplicate["runs"][0]))
+            write_manifest(duplicate)
+            with self.assertRaisesRegex(ProjectError, "Run collection is invalid"):
+                load_project(path)
 
     def test_screen_render_quality_is_not_written_to_project_files(self):
         project = Project(datasets=[load_ascii_file(str(SAMPLES / "210601.TXT"))])

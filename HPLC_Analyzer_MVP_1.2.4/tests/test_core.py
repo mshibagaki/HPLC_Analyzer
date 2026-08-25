@@ -45,8 +45,12 @@ from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.parser import dataset_from_bytes, load_ascii_file
 from hplc_app.preset_store import (
     load_preset_store,
+    load_preset_store_with_metadata,
     merge_preset_sources,
+    record_preset_saved,
+    record_preset_used,
     save_preset_store,
+    stable_preset_names,
 )
 from hplc_app.project_io import load_project, save_project
 from hplc_app.project_migrations import (
@@ -455,13 +459,77 @@ class ProjectTests(unittest.TestCase):
             )
             self.assertEqual(saved_path, path)
             payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["format_version"], 1)
+            self.assertEqual(payload["format_version"], 2)
             self.assertEqual(payload["written_by"], "1.2.4")
             self.assertEqual(payload["written_by"], APP_VERSION)
             conditions, gradients = load_preset_store(path)
             self.assertEqual(conditions["280 nm C4"]["wavelength_nm"], 280.0)
             self.assertNotIn("label", conditions["280 nm C4"])
             self.assertIn("10-90 B", gradients)
+            metadata = payload["preset_metadata"]
+            condition_metadata = metadata["conditions"]["280 nm C4"]
+            self.assertTrue(condition_metadata["id"])
+            self.assertTrue(condition_metadata["created_at"])
+            self.assertEqual(condition_metadata["last_used_at"], "")
+
+    def test_format1_preset_metadata_migration_rename_and_usage_are_stable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "presets.json"
+            legacy = {
+                "format_version": 1,
+                "written_by": "1.2.4",
+                "condition_presets": {"Legacy B": {"wavelength_nm": 280.0}},
+                "gradient_presets": {"Legacy A": {"gradient": [], "solvents": {}}},
+            }
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            conditions, gradients, metadata = load_preset_store_with_metadata(path)
+            condition_record = metadata["conditions"]["Legacy B"]
+            original_id = condition_record["id"]
+            self.assertTrue(original_id)
+            self.assertEqual(condition_record["created_at"], "")
+            self.assertEqual(condition_record["updated_at"], "")
+            self.assertEqual(condition_record["last_used_at"], "")
+            again = load_preset_store_with_metadata(path)[2]
+            self.assertEqual(
+                again["conditions"]["Legacy B"]["id"], original_id
+            )
+
+            conditions["Renamed B"] = conditions.pop("Legacy B")
+            record_preset_saved(
+                metadata,
+                "conditions",
+                "Legacy B",
+                "Renamed B",
+                now="2026-08-26T12:00:00+09:00",
+            )
+            record_preset_used(
+                metadata,
+                "conditions",
+                "Renamed B",
+                now="2026-08-26T12:30:00+09:00",
+            )
+            save_preset_store(conditions, gradients, path, metadata=metadata)
+            loaded_conditions, _loaded_gradients, loaded_metadata = (
+                load_preset_store_with_metadata(path)
+            )
+            self.assertNotIn("Legacy B", loaded_conditions)
+            renamed = loaded_metadata["conditions"]["Renamed B"]
+            self.assertEqual(renamed["id"], original_id)
+            self.assertEqual(renamed["created_at"], "")
+            self.assertEqual(
+                renamed["updated_at"], "2026-08-26T12:00:00+09:00"
+            )
+            self.assertEqual(
+                renamed["last_used_at"], "2026-08-26T12:30:00+09:00"
+            )
+            self.assertEqual(
+                stable_preset_names(
+                    ["Legacy A", "Renamed B"],
+                    loaded_metadata,
+                    "conditions",
+                ),
+                ["Legacy A", "Renamed B"],
+            )
 
     def test_project_round_trip_embeds_raw_ascii_and_origin(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -521,6 +589,7 @@ class ProjectTests(unittest.TestCase):
                 manifest = json.loads(archive.read("project.json").decode("utf-8"))
             self.assertEqual(manifest["format_major"], PROJECT_FORMAT_MAJOR)
             self.assertEqual(manifest["schema_version"], PROJECT_SCHEMA_VERSION)
+            self.assertNotIn("preset_metadata", manifest)
 
     def test_screen_render_quality_is_not_written_to_project_files(self):
         project = Project(datasets=[load_ascii_file(str(SAMPLES / "210601.TXT"))])

@@ -672,6 +672,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
+        self.project_location_label = QtWidgets.QLabel()
+        self.project_location_label.setMaximumWidth(520)
+        self.statusBar().addPermanentWidget(self.project_location_label)
         root = QtWidgets.QVBoxLayout(central)
         splitter = QtWidgets.QSplitter()
         root.addWidget(splitter, 1)
@@ -1374,6 +1377,25 @@ class MainWindow(QtWidgets.QMainWindow):
         marker = "*" if self.project.dirty else ""
         name = Path(self.project.project_path).name if self.project.project_path else self.project.title
         self.setWindowTitle("%s%s — %s %s" % (name, marker, APP_NAME, APP_VERSION))
+        if self.project.project_path:
+            absolute_path = str(Path(self.project.project_path).absolute())
+            location = self.translator(
+                "project_location_saved", path=absolute_path
+            )
+        else:
+            location = self.translator("project_location_unsaved")
+        elide_mode = (
+            QtCore.Qt.TextElideMode.ElideMiddle
+            if QT_API == 6
+            else QtCore.Qt.ElideMiddle
+        )
+        self.project_location_label.setText(
+            self.project_location_label.fontMetrics().elidedText(
+                location, elide_mode, 500
+            )
+        )
+        self.project_location_label.setToolTip(location)
+        self.project_location_label.setAccessibleName(location)
 
     def _refresh_all(self, selected_row: Optional[int] = None):
         self._refresh_dataset_table(selected_row)

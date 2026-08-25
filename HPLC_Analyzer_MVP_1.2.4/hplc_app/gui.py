@@ -86,6 +86,7 @@ from .settings_store import (
     NAMING_AUTHOR,
     RENDERING_QUALITY,
     SAVE_DIRECTORY,
+    UI_LANGUAGE,
 )
 from .qt_compat import (
     QAction,
@@ -299,6 +300,7 @@ class MainWindow(QtWidgets.QMainWindow):
             merged_conditions
         )
         self._global_gradient_presets = merged_gradients
+        self._application_language = self._settings.get(UI_LANGUAGE)
         if self._global_condition_presets or self._global_gradient_presets:
             # v1.1.4 and earlier used QSettings only. Mirror those values into
             # a version-independent JSON file on first v1.1.5 launch, and
@@ -312,10 +314,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._settings.sync()
             self._save_global_preset_file()
         self.project = Project(
+            ui_language=self._application_language,
             condition_presets=deepcopy(self._global_condition_presets),
             gradient_presets=deepcopy(self._global_gradient_presets),
         )
-        self.translator = Translator(self.project.ui_language)
+        self.translator = Translator(self._application_language)
         self._updating_table = False
         self._span_selector = None
         self._span_selector_mode = None
@@ -1035,7 +1038,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_undo_actions()
 
     def _history_label(self, japanese: str, english: str) -> str:
-        return japanese if self.project.ui_language == "ja" else english
+        return japanese if self._application_language == "ja" else english
 
     def _reset_undo_history(self):
         self._undo_stack = []
@@ -1328,14 +1331,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select_all_peaks_button.setText(t("select_all_peaks"))
         self.peak_title.setText(t("peaks"))
         self._set_peak_headers()
-        self.japanese_action.setChecked(self.project.ui_language == "ja")
-        self.english_action.setChecked(self.project.ui_language == "en")
+        self.japanese_action.setChecked(self._application_language == "ja")
+        self.english_action.setChecked(self._application_language == "en")
         self._update_undo_actions()
         self._update_title()
         self._plot()
 
     def _set_peak_headers(self):
-        ja = self.project.ui_language == "ja"
+        ja = self._application_language == "ja"
         headers = (
             "#",
             "開始 (min)" if ja else "Start (min)",
@@ -1360,9 +1363,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.peak_table.setHorizontalHeaderLabels(headers)
 
     def set_language(self, language: str):
-        self.project.ui_language = language
-        self.translator.set_language(language)
-        self.project.dirty = True
+        self._application_language = language if language in ("ja", "en") else "ja"
+        self._settings.set(
+            UI_LANGUAGE, self._application_language, sync=True
+        )
+        self.translator.set_language(self._application_language)
         self._retranslate()
 
     def _update_title(self):
@@ -2446,7 +2451,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = TextAnnotationDialog(
             annotation,
             self.project.datasets,
-            self.project.ui_language,
+            self._application_language,
             self,
             allow_delete=True,
         )
@@ -2487,7 +2492,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = TextAnnotationDialog(
             annotation,
             self.project.datasets,
-            self.project.ui_language,
+            self._application_language,
             self,
         )
         accepted = bool(dialog_exec(dialog))
@@ -3009,7 +3014,7 @@ class MainWindow(QtWidgets.QMainWindow):
         peak = dataset.peaks[row]
         peak_id = peak.id
         before = self._capture_analysis_state()
-        dialog = PeakRangeDialog(peak, float(dataset.time_min[0]), float(dataset.time_min[-1]), self.project.ui_language, self)
+        dialog = PeakRangeDialog(peak, float(dataset.time_min[0]), float(dataset.time_min[-1]), self._application_language, self)
         if dialog_exec(dialog):
             peak.start_min = dialog.start.value()
             peak.end_min = dialog.end.value()
@@ -3082,7 +3087,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self,
                 APP_NAME,
                 "条件に一致する新しいピーク候補はありません。"
-                if self.project.ui_language == "ja"
+                if self._application_language == "ja"
                 else "No new peak candidates matched the current settings.",
             )
             return
@@ -3166,7 +3171,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = PreferencesDialog(
             self.project.method,
             self._import_directory,
-            self.project.ui_language,
+            self._application_language,
             self,
             save_directory=self._save_directory,
             database_path=self._database_path,
@@ -3252,7 +3257,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
         dialog = LabDatabaseDialog(
-            self._database_path, self.project.ui_language, self
+            self._database_path, self._application_language, self
         )
         dialog_exec(dialog)
 
@@ -3263,7 +3268,7 @@ class MainWindow(QtWidgets.QMainWindow):
         answer = QtWidgets.QMessageBox.question(
             self,
             self.translator("warning"),
-            ("選択データをプロジェクトから削除しますか？" if self.project.ui_language == "ja" else "Remove the selected data from this project?"),
+            ("選択データをプロジェクトから削除しますか？" if self._application_language == "ja" else "Remove the selected data from this project?"),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:
@@ -3279,7 +3284,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
         before = self._capture_analysis_state()
-        dialog = MetadataDialog(dataset, self.project.ui_language, self)
+        dialog = MetadataDialog(dataset, self._application_language, self)
         if dialog_exec(dialog):
             try:
                 recalculate_dataset_peaks(dataset)
@@ -3312,7 +3317,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def edit_axis_labels(self):
         before = self._capture_analysis_state()
-        dialog = AxisLabelsDialog(self.project.method, self.project.ui_language, self)
+        dialog = AxisLabelsDialog(self.project.method, self._application_language, self)
         if not dialog_exec(dialog):
             return
         dialog.apply_to_method(self.project.method)
@@ -3330,7 +3335,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = BatchMetadataDialog(
             self.project,
             selected.id if selected is not None else "",
-            self.project.ui_language,
+            self._application_language,
             self,
         )
         if dialog_exec(dialog):
@@ -3357,7 +3362,7 @@ class MainWindow(QtWidgets.QMainWindow):
         before = self._capture_analysis_state()
         dialog = GradientDialog(
             dataset,
-            self.project.ui_language,
+            self._application_language,
             self,
             presets=self.project.gradient_presets,
         )
@@ -3395,14 +3400,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._confirm_unsaved():
             return
         self.project = Project(
-            ui_language=self.project.ui_language,
+            ui_language=self._application_language,
             condition_presets=deepcopy(self._global_condition_presets),
             gradient_presets=deepcopy(self._global_gradient_presets),
         )
         self._view_initialized = False
         self._view_history = []
         self._reset_undo_history()
-        self.translator.set_language(self.project.ui_language)
+        self.translator.set_language(self._application_language)
         self._refresh_all()
         self._retranslate()
 
@@ -3428,7 +3433,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._reset_undo_history()
             for dataset in self.project.datasets:
                 recalculate_dataset_peaks(dataset)
-            self.translator.set_language(self.project.ui_language)
+            self.translator.set_language(self._application_language)
             self._refresh_all()
             self._retranslate()
         except Exception as exc:
@@ -3463,7 +3468,7 @@ class MainWindow(QtWidgets.QMainWindow):
             default_author=self._settings.get(NAMING_AUTHOR),
         )
         naming_dialog = ProjectNamingDialog(
-            parts, self.project.ui_language, self
+            parts, self._application_language, self
         )
         if not dialog_exec(naming_dialog):
             return False
@@ -3632,7 +3637,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.lower().endswith(".csv"):
             path += ".csv"
         try:
-            export_metadata_csv(path, self.project.datasets, self.project.ui_language)
+            export_metadata_csv(path, self.project.datasets, self._application_language)
             self._remember_save_path(path)
             self.statusBar().showMessage(self.translator("saved", path=path), 5000)
         except Exception as exc:
@@ -3657,7 +3662,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             actual = export_analysis_report_pdf(
-                path, self.project, datasets, self.project.ui_language
+                path, self.project, datasets, self._application_language
             )
             self._remember_save_path(actual)
             self.statusBar().showMessage(self.translator("saved", path=actual), 7000)
@@ -3725,12 +3730,12 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             with tempfile.TemporaryDirectory(prefix="hplc_report_") as directory:
                 pages = render_analysis_report_pages(
-                    directory, self.project, datasets, self.project.ui_language
+                    directory, self.project, datasets, self._application_language
                 )
                 self._draw_report_pages_to_printer(printer, pages)
             self.statusBar().showMessage(
                 "印刷ジョブを送信しました。"
-                if self.project.ui_language == "ja"
+                if self._application_language == "ja"
                 else "The report was sent to the printer.",
                 7000,
             )
@@ -3738,11 +3743,11 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
 
     def show_quantitation_help(self):
-        dialog = QuantitationHelpDialog(self.project.ui_language, self)
+        dialog = QuantitationHelpDialog(self._application_language, self)
         dialog_exec(dialog)
 
     def about(self):
-        if self.project.ui_language == "ja":
+        if self._application_language == "ja":
             text = (
                 "島津GCsolution / LCsolution / PACsolutionのASCIIクロマトグラムを、"
                 "元データを保持したまま管理・重ね描き・積分・自動ピーク検出・定量・作図し、"

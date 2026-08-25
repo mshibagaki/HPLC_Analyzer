@@ -35,7 +35,11 @@ from hplc_app.gui import (
 )
 from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation
 from hplc_app.parser import load_ascii_file
-from hplc_app.preset_store import load_preset_store, preset_store_path
+from hplc_app.preset_store import (
+    load_preset_store,
+    load_preset_store_with_metadata,
+    preset_store_path,
+)
 from hplc_app.qt_compat import (
     ITEM_IS_EDITABLE,
     QT_API,
@@ -884,6 +888,12 @@ class GuiTests(unittest.TestCase):
         self.assertNotIn("short_label", condition_dialog.presets["280 nm C4"])
         condition_dialog.preset_combo.setCurrentText("280 nm C4")
         condition_dialog._apply_preset()
+        condition_id = condition_dialog.preset_metadata["conditions"]["280 nm C4"]["id"]
+        self.assertTrue(
+            condition_dialog.preset_metadata["conditions"]["280 nm C4"][
+                "last_used_at"
+            ]
+        )
         self.assertEqual(condition_dialog.table.item(0, 1).text(), "Keep this label")
         with patch.object(
             QtWidgets.QInputDialog,
@@ -893,6 +903,13 @@ class GuiTests(unittest.TestCase):
             condition_dialog._save_preset()
         self.assertEqual(get_text.call_args.args[4], "280 nm C4")
         self.assertIn("280 nm C4 revised", condition_dialog.presets)
+        self.assertNotIn("280 nm C4", condition_dialog.presets)
+        self.assertEqual(
+            condition_dialog.preset_metadata["conditions"]["280 nm C4 revised"][
+                "id"
+            ],
+            condition_id,
+        )
         self.assertNotIn("label", condition_dialog.presets["280 nm C4 revised"])
         condition_dialog.reject()
 
@@ -917,6 +934,7 @@ class GuiTests(unittest.TestCase):
             selected, "ja", presets=gradient_presets
         )
         gradient_dialog._apply_preset()
+        gradient_id = gradient_dialog.preset_metadata["gradients"][gradient_name]["id"]
         gradient_dialog.table.item(0, 2).setText("20")
         self.assertEqual(gradient_dialog.applied_preset_name, "")
         self.assertEqual(gradient_dialog.last_loaded_preset_name, gradient_name)
@@ -928,6 +946,13 @@ class GuiTests(unittest.TestCase):
             gradient_dialog._save_preset()
         self.assertEqual(get_text.call_args.args[4], gradient_name)
         self.assertIn("10-90 B revised", gradient_dialog.presets)
+        self.assertNotIn(gradient_name, gradient_dialog.presets)
+        self.assertEqual(
+            gradient_dialog.preset_metadata["gradients"]["10-90 B revised"][
+                "id"
+            ],
+            gradient_id,
+        )
         gradient_dialog.reject()
         window.project.dirty = False
         window.close()
@@ -1356,12 +1381,19 @@ class GuiTests(unittest.TestCase):
             }
         }
         first._persist_global_presets()
+        _conditions, _gradients, metadata = load_preset_store_with_metadata()
+        condition_id = metadata["conditions"]["280 nm C4"]["id"]
+        self.assertTrue(metadata["conditions"]["280 nm C4"]["created_at"])
         first.project.dirty = False
         first.close()
 
         second = MainWindow()
         self.assertIn("280 nm C4", second.project.condition_presets)
         self.assertIn("10-90 B", second.project.gradient_presets)
+        self.assertEqual(
+            second._global_preset_metadata["conditions"]["280 nm C4"]["id"],
+            condition_id,
+        )
         second.new_project()
         self.assertIn("280 nm C4", second.project.condition_presets)
         self.assertIn("10-90 B", second.project.gradient_presets)

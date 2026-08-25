@@ -1,0 +1,67 @@
+name: Level 2 Validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: level2-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: HPLC_Analyzer_MVP_1.2.4
+
+jobs:
+  source-contracts:
+    name: Source contracts (Python 3.8 / release inputs)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up validation Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: 3.11.9
+          architecture: x64
+      - name: Validate syntax, pins, version, installers, and optional offline assets
+        run: python scripts/ci_validate.py --offline-assets auto
+      - name: Test CI failure contracts
+        run: python -m unittest tests.test_ci_validation -v
+
+  windows-tests:
+    name: Windows source, core, and offscreen GUI tests
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      QT_QPA_PLATFORM: offscreen
+      HPLC_ANALYZER_CONFIG_DIR: ${{ runner.temp }}\hplc-presets
+      HPLC_ANALYZER_TEST_SETTINGS_DIR: ${{ runner.temp }}\hplc-qsettings
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up Python 3.11 x64
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: 3.11.9
+          architecture: x64
+      - name: Install fully pinned Windows 11 dependencies
+        run: python -m pip install -r requirements-win11.txt
+      - name: Import application and GUI
+        run: python -c "import hplc_app; import hplc_app.gui; print(hplc_app.APP_VERSION)"
+      - name: Run source, project, import, export, and offscreen GUI tests
+        run: python -m unittest discover -s tests -v

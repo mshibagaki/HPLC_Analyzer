@@ -574,6 +574,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         dialog = MetadataDialog(working, self.language, self)
         if dialog_exec(dialog):
             self.detail_overrides[original.id] = working
+            for related_row, dataset in enumerate(self.project.datasets):
+                if dataset.run_id == original.run_id:
+                    self.table.item(related_row, 1).setText(working.label)
             self._refresh_row_from_dataset(row, working)
             self.table.selectRow(row)
 

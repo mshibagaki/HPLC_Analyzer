@@ -557,6 +557,38 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_inline_label_change_updates_every_dataset_in_the_same_run(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        window._refresh_dataset_table(0)
+
+        label_column = next(
+            column
+            for column in range(window.dataset_table.columnCount())
+            if window.dataset_table.horizontalHeaderItem(column).text()
+            in ("ラベル", "Label")
+        )
+        window.dataset_table.item(0, label_column).setText("Shared run label")
+        self.app.processEvents()
+
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets],
+            ["Shared run label", "Shared run label"],
+        )
+        self.assertEqual(
+            window.dataset_table.item(1, label_column).text(), "Shared run label"
+        )
+        labels = window.axes.get_legend_handles_labels()[1]
+        labels.extend(window.axes_right.get_legend_handles_labels()[1])
+        self.assertIn("Shared run label_280 nm", labels)
+        self.assertIn("Shared run label_214 nm", labels)
+
+        window.project.dirty = False
+        window.close()
+
     def test_wavelength_is_directly_editable_and_updates_legend(self):
         window = self.make_window()
         wavelength_item = window.dataset_table.item(0, DATASET_WAVELENGTH_COLUMN)
@@ -994,6 +1026,39 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(edited.measurement.sample_name, "Edited from batch")
         self.assertEqual(edited.measurement.wavelength_nm, 230.0)
         self.assertEqual(edited.measurement.column_name, "C18")
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_detail_editor_keeps_shared_run_labels_synchronized(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        dialog = BatchMetadataDialog(
+            window.project, window.project.datasets[0].id, "ja"
+        )
+
+        def edit_details(metadata_dialog):
+            metadata_dialog.fields["label"].setText("Shared batch label")
+            metadata_dialog.fields["short_label"].setText("Shared")
+            metadata_dialog._accept()
+            return 1
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_details):
+            dialog._edit_selected_details(0)
+        self.assertEqual(dialog.table.item(0, 1).text(), "Shared batch label")
+        self.assertEqual(dialog.table.item(1, 1).text(), "Shared batch label")
+        dialog._accept()
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets],
+            ["Shared batch label", "Shared batch label"],
+        )
+        self.assertEqual(
+            [dataset.short_label for dataset in window.project.datasets],
+            ["Shared", "Shared"],
+        )
+
         window.project.dirty = False
         window.close()
 

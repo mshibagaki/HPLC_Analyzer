@@ -1485,10 +1485,12 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         dataset = self.project.datasets[row]
         before = self._capture_analysis_state()
+        label_changed = False
         try:
             if column == DATASET_VISIBLE_COLUMN:
                 dataset.visible = item.checkState() == CHECKED
             elif column == DATASET_LABEL_COLUMN:
+                label_changed = True
                 old_label = dataset.label
                 dataset.label = item.text().strip() or dataset.original_filename
                 if not dataset.short_label or dataset.short_label == old_label:
@@ -1526,6 +1528,8 @@ class MainWindow(QtWidgets.QMainWindow):
             before, self._history_label("クロマトグラム設定", "Chromatogram settings")
         )
         self.project.dirty = True
+        if label_changed:
+            self._refresh_dataset_table(row)
         self._refresh_peak_table()
         self._plot()
         self._update_title()

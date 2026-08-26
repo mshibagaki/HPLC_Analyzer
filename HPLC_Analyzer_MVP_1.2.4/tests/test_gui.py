@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -134,6 +134,14 @@ class GuiTests(unittest.TestCase):
         self.settings.setValue("rendering/quality", LIGHTWEIGHT)
         self.settings.sync()
         return self.make_window()
+
+    @staticmethod
+    def drop_event(urls):
+        mime_data = QtCore.QMimeData()
+        mime_data.setUrls(urls)
+        event = Mock()
+        event.mimeData.return_value = mime_data
+        return event
 
     def test_lightweight_screen_decimates_visible_lines_only(self):
         window = self.make_lightweight_window()
@@ -1775,6 +1783,200 @@ class GuiTests(unittest.TestCase):
             self.assertIn("broken.gcd", warning.call_args.args[2])
             self.assertIn("GCD is not an OLE compound file", warning.call_args.args[2])
         window.project.dirty = False
+        window.close()
+
+    def test_window_accepts_file_drags_and_ignores_non_url_drags(self):
+        window = self.make_window()
+        self.assertTrue(window.acceptDrops())
+
+        supported = self.drop_event(
+            [QtCore.QUrl.fromLocalFile(str(SAMPLES / "210601.TXT"))]
+        )
+        window.dragEnterEvent(supported)
+        supported.acceptProposedAction.assert_called_once()
+        supported.ignore.assert_not_called()
+
+        mime_data = QtCore.QMimeData()
+        mime_data.setText("not a file")
+        unsupported = Mock()
+        unsupported.mimeData.return_value = mime_data
+        window.dragEnterEvent(unsupported)
+        unsupported.ignore.assert_called_once()
+        unsupported.acceptProposedAction.assert_not_called()
+        window.project.dirty = False
+        window.close()
+
+    def test_drop_imports_ascii_and_gcd_in_input_order(self):
+        window = self.make_window()
+        with tempfile.TemporaryDirectory() as directory:
+            gcd_path = Path(directory) / "VALID.GCD"
+            gcd_path.write_bytes(synthetic_gcd_bytes())
+            event = self.drop_event(
+                [
+                    QtCore.QUrl.fromLocalFile(str(gcd_path)),
+                    QtCore.QUrl.fromLocalFile(str(SAMPLES / "191720.TXT")),
+                ]
+            )
+
+            window.dropEvent(event)
+
+            self.assertEqual(
+                [dataset.original_filename for dataset in window.project.datasets[-2:]],
+                ["VALID.GCD", "191720.TXT"],
+            )
+            self.assertTrue(window.project.dirty)
+            self.assertEqual(
+                self.settings.value("paths/last_import_directory"), directory
+            )
+            event.acceptProposedAction.assert_called_once()
+        window.project.dirty = False
+        window.close()
+
+    def test_drop_opens_one_project_through_shared_path_loader(self):
+        window = self.make_window()
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / "dropped.HPLCPROJ"
+            project_path.write_text("placeholder", encoding="utf-8")
+            opened_project = Project(
+                title="Dropped project", project_path=str(project_path)
+            )
+            event = self.drop_event(
+                [QtCore.QUrl.fromLocalFile(str(project_path))]
+            )
+            with patch(
+                "hplc_app.gui.load_project", return_value=opened_project
+            ) as loader:
+                window.dropEvent(event)
+
+            loader.assert_called_once_with(str(project_path))
+            self.assertIs(window.project, opened_project)
+            self.assertEqual(
+                self.settings.value("paths/last_project_directory"), directory
+            )
+            event.acceptProposedAction.assert_called_once()
+        window.project.dirty = False
+        window.close()
+
+    def test_dirty_project_drop_cancel_keeps_current_project(self):
+        window = self.make_window()
+        original_project = window.project
+        original_project.dirty = True
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / "cancelled.hplcproj"
+            project_path.write_text("placeholder", encoding="utf-8")
+            event = self.drop_event(
+                [QtCore.QUrl.fromLocalFile(str(project_path))]
+            )
+            with patch.object(
+                QtWidgets.QMessageBox,
+                "question",
+                return_value=QtWidgets.QMessageBox.Cancel,
+            ), patch("hplc_app.gui.load_project") as loader:
+                window.dropEvent(event)
+
+            loader.assert_not_called()
+            self.assertIs(window.project, original_project)
+            self.assertTrue(window.project.dirty)
+            event.acceptProposedAction.assert_called_once()
+        window.project.dirty = False
+        window.close()
+
+    def test_dirty_project_drop_save_or_discard_opens_project(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / "replacement.hplcproj"
+            project_path.write_text("placeholder", encoding="utf-8")
+            for answer in (
+                QtWidgets.QMessageBox.Save,
+                QtWidgets.QMessageBox.Discard,
+            ):
+                with self.subTest(answer=answer):
+                    window = self.make_window()
+                    window.project.dirty = True
+                    opened_project = Project(
+                        title="Replacement", project_path=str(project_path)
+                    )
+                    event = self.drop_event(
+                        [QtCore.QUrl.fromLocalFile(str(project_path))]
+                    )
+                    with patch.object(
+                        QtWidgets.QMessageBox, "question", return_value=answer
+                    ), patch.object(
+                        window, "save_project", return_value=True
+                    ) as saver, patch(
+                        "hplc_app.gui.load_project", return_value=opened_project
+                    ):
+                        window.dropEvent(event)
+
+                    if answer == QtWidgets.QMessageBox.Save:
+                        saver.assert_called_once()
+                    else:
+                        saver.assert_not_called()
+                    self.assertIs(window.project, opened_project)
+                    window.project.dirty = False
+                    window.close()
+
+    def test_failed_project_drop_keeps_current_project(self):
+        window = self.make_window()
+        original_project = window.project
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / "broken.hplcproj"
+            project_path.write_text("broken", encoding="utf-8")
+            event = self.drop_event(
+                [QtCore.QUrl.fromLocalFile(str(project_path))]
+            )
+            with patch(
+                "hplc_app.gui.load_project", side_effect=ValueError("broken project")
+            ), patch.object(QtWidgets.QMessageBox, "critical") as critical:
+                window.dropEvent(event)
+
+            critical.assert_called_once()
+            self.assertIn("broken project", critical.call_args.args[2])
+            self.assertIs(window.project, original_project)
+            self.assertFalse(window.project.dirty)
+            event.acceptProposedAction.assert_called_once()
+        window.close()
+
+    def test_invalid_file_drop_is_rejected_without_project_changes(self):
+        window = self.make_window()
+        original_project = window.project
+        original_count = len(window.project.datasets)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            text_path = root / "trace.txt"
+            project_path = root / "one.hplcproj"
+            second_project_path = root / "two.hplcproj"
+            unsupported_path = root / "notes.csv"
+            for path in (
+                text_path,
+                project_path,
+                second_project_path,
+                unsupported_path,
+            ):
+                path.write_text("placeholder", encoding="utf-8")
+
+            invalid_url_sets = (
+                [
+                    QtCore.QUrl.fromLocalFile(str(text_path)),
+                    QtCore.QUrl.fromLocalFile(str(project_path)),
+                ],
+                [
+                    QtCore.QUrl.fromLocalFile(str(project_path)),
+                    QtCore.QUrl.fromLocalFile(str(second_project_path)),
+                ],
+                [QtCore.QUrl.fromLocalFile(str(root))],
+                [QtCore.QUrl.fromLocalFile(str(unsupported_path))],
+                [QtCore.QUrl("https://example.invalid/trace.txt")],
+            )
+            for urls in invalid_url_sets:
+                with self.subTest(urls=[url.toString() for url in urls]):
+                    event = self.drop_event(urls)
+                    with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                        window.dropEvent(event)
+                    warning.assert_called_once()
+                    self.assertIs(window.project, original_project)
+                    self.assertEqual(len(window.project.datasets), original_count)
+                    self.assertFalse(window.project.dirty)
+                    event.acceptProposedAction.assert_called_once()
         window.close()
 
     def test_figure_export_is_menu_only_and_report_uses_save_folder(self):

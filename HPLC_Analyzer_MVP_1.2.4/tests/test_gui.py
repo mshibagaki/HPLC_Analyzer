@@ -1298,7 +1298,7 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
-    def test_batch_table_is_read_only_and_empty_preset_values_do_not_erase(self):
+    def test_batch_table_is_editable_and_empty_preset_values_do_not_erase(self):
         window = self.make_window()
         selected = window.project.datasets[0]
         selected.measurement.column_name = "C4"
@@ -1307,10 +1307,134 @@ class GuiTests(unittest.TestCase):
         dialog.presets["partial"] = {"wavelength_nm": 280.0, "column_name": "", "molar_absorptivity_280": None}
         dialog._refresh_presets("partial")
         dialog._apply_preset()
-        self.assertFalse(bool(dialog.table.item(0, 8).flags() & ITEM_IS_EDITABLE))
+        self.assertTrue(bool(dialog.table.item(0, 8).flags() & ITEM_IS_EDITABLE))
+        self.assertFalse(bool(dialog.table.item(0, 0).flags() & ITEM_IS_EDITABLE))
+        self.assertFalse(bool(dialog.table.item(0, 15).flags() & ITEM_IS_EDITABLE))
         dialog._accept()
         self.assertEqual(selected.measurement.column_name, "C4")
         self.assertEqual(selected.measurement.molar_absorptivity_280, 5500.0)
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_table_direct_edits_sync_run_fields_but_keep_channel_fields_independent(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        shared_run = window.project.run_for(first)
+        second.bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        original_first_wavelength = first.measurement.wavelength_nm
+
+        dialog = BatchMetadataDialog(window.project, second.id, "en")
+        dialog.table.item(1, 1).setText("Shared direct label")
+        dialog.table.item(1, 2).setText("direct-group")
+        dialog.table.item(1, 6).setText("1.25")
+        dialog.table.item(1, 4).setText("230")
+        self.app.processEvents()
+
+        self.assertEqual(dialog.table.item(0, 1).text(), "Shared direct label")
+        self.assertEqual(dialog.table.item(0, 2).text(), "direct-group")
+        self.assertEqual(dialog.table.item(0, 6).text(), "1.25")
+        self.assertEqual(
+            dialog.table.item(0, 4).text(),
+            "" if original_first_wavelength is None else "%g" % original_first_wavelength,
+        )
+        dialog._accept()
+
+        self.assertEqual([dataset.label for dataset in (first, second)], ["Shared direct label"] * 2)
+        self.assertEqual([dataset.measurement.group for dataset in (first, second)], ["direct-group"] * 2)
+        self.assertEqual([dataset.measurement.flow_rate_ml_min for dataset in (first, second)], [1.25] * 2)
+        self.assertEqual(first.measurement.wavelength_nm, original_first_wavelength)
+        self.assertEqual(second.measurement.wavelength_nm, 230.0)
+        from hplc_app.project_io import load_project, save_project
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "batch-direct-edit.hplcproj"
+            save_project(str(path), window.project)
+            reloaded = load_project(str(path))
+        self.assertEqual(
+            [dataset.measurement.flow_rate_ml_min for dataset in reloaded.datasets],
+            [1.25] * 2,
+        )
+        self.assertEqual(
+            [dataset.measurement.wavelength_nm for dataset in reloaded.datasets],
+            [original_first_wavelength, 230.0],
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_table_invalid_cell_prevents_every_project_change(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        original_label = first.label
+        original_flow = second.measurement.flow_rate_ml_min
+        dialog = BatchMetadataDialog(window.project, first.id, "en")
+        dialog.table.item(0, 1).setText("Must not be applied")
+        dialog.table.item(1, 6).setText("not-a-number")
+
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._accept()
+
+        self.assertEqual(first.label, original_label)
+        self.assertEqual(second.measurement.flow_rate_ml_min, original_flow)
+        self.assertNotEqual(dialog.result(), QtWidgets.QDialog.Accepted)
+        self.assertEqual((dialog.table.currentRow(), dialog.table.currentColumn()), (1, 6))
+        self.assertEqual(dialog.table.item(1, 6).background().color().name(), "#ffd9d9")
+        warning.assert_called_once()
+        self.assertIn("Row 2", warning.call_args.args[2])
+        self.assertIn("Flow", warning.call_args.args[2])
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_table_optional_numbers_allow_blank_but_reject_nonpositive_values(self):
+        window = self.make_window()
+        first = window.project.datasets[0]
+        original_flow = first.measurement.flow_rate_ml_min
+        dialog = BatchMetadataDialog(window.project, first.id, "en")
+        dialog.table.item(0, 6).setText("")
+        dialog.table.item(0, 7).setText("0")
+
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._accept()
+
+        self.assertEqual(first.measurement.flow_rate_ml_min, original_flow)
+        self.assertEqual((dialog.table.currentRow(), dialog.table.currentColumn()), (0, 7))
+        self.assertIn("greater than zero", warning.call_args.args[2])
+
+        dialog.table.item(0, 7).setText("")
+        dialog._accept()
+        self.assertEqual(first.measurement.flow_rate_ml_min, None)
+        self.assertEqual(first.measurement.cell_path_length_cm, None)
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_table_cancel_is_non_mutating_and_accept_is_one_undo_step(self):
+        window = self.make_window()
+        first = window.project.datasets[0]
+        original_wavelength = first.measurement.wavelength_nm
+
+        canceled = BatchMetadataDialog(window.project, first.id, "en")
+        canceled.table.item(0, 4).setText("250")
+        canceled.reject()
+        self.assertEqual(first.measurement.wavelength_nm, original_wavelength)
+        self.assertEqual(window._undo_stack, [])
+
+        def accept_direct_edit(dialog):
+            dialog.table.item(0, 4).setText("260")
+            dialog._accept()
+            return dialog.result()
+
+        with patch("hplc_app.gui.dialog_exec", side_effect=accept_direct_edit):
+            window.edit_batch_metadata()
+
+        self.assertEqual(first.measurement.wavelength_nm, 260.0)
+        self.assertEqual(len(window._undo_stack), 1)
+        self.assertIn("条件の一括編集", window.undo_action.text())
+        window.undo()
+        self.assertEqual(window.project.datasets[0].measurement.wavelength_nm, original_wavelength)
+        window.redo()
+        self.assertEqual(window.project.datasets[0].measurement.wavelength_nm, 260.0)
         window.project.dirty = False
         window.close()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+import math
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -444,8 +445,18 @@ PRESET_FIELDS = (
 )
 
 
+class BatchCellError(ValueError):
+    """One invalid editable cell in the batch conditions table."""
+
+    def __init__(self, row: int, column: int, reason: str):
+        super().__init__(reason)
+        self.row = row
+        self.column = column
+        self.reason = reason
+
+
 class BatchMetadataDialog(QtWidgets.QDialog):
-    """Read-only overview that applies named presets to checked datasets."""
+    """Editable condition overview with atomic validation and preset support."""
 
     FIELD_COLUMNS = {
         "wavelength_nm": 4,
@@ -461,6 +472,20 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         "molecular_weight_g_mol": 14,
     }
     GRADIENT_COLUMN = 15
+    EDITABLE_COLUMNS = frozenset(range(1, GRADIENT_COLUMN))
+    RUN_SHARED_COLUMNS = frozenset((1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+    POSITIVE_FIELDS = frozenset(
+        (
+            "wavelength_nm",
+            "aux_range_au_per_v",
+            "flow_rate_ml_min",
+            "cell_path_length_cm",
+            "injection_volume_ul",
+            "molar_absorptivity_214",
+            "molar_absorptivity_280",
+            "molecular_weight_g_mol",
+        )
+    )
 
     def __init__(
         self,
@@ -482,6 +507,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.loaded_condition_preset_name = ""
         self.gradient_assignments = {}
         self.detail_overrides = {}
+        self._syncing_table = False
         self.setWindowTitle("条件の一括入力・プリセット" if language == "ja" else "Batch conditions and presets")
         self.resize(1250, 620)
         root = QtWidgets.QVBoxLayout(self)
@@ -534,9 +560,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         root.addLayout(selection_row)
 
         note = QtWidgets.QLabel(
-            "行を選択して「選択行の詳細設定」またはダブルクリックすると、サンプル・測定・定量条件を編集できます。一括変更は上のプリセットから行います。"
+            "条件セルをダブルクリックすると直接編集できます。Run単位の値は同じRunの行へ同期され、OK時に全行を検証してから一括適用します。その他の項目は「選択行の詳細設定」で編集できます。"
             if language == "ja"
-            else "Select a row and choose Edit selected row details, or double-click it, to edit sample, measurement, and quantitation settings. Apply batch changes using presets above."
+            else "Double-click a condition cell to edit it directly. Run-level values are synchronized across the same Run, and every row is validated before changes are applied on OK. Use Edit selected row details for other fields."
         )
         note.setWordWrap(True)
         root.addWidget(note)
@@ -563,10 +589,16 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.table.setHorizontalHeaderLabels(headers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(
+            QtWidgets.QAbstractItemView.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditKeyPressed
+            | QtWidgets.QAbstractItemView.SelectedClicked
+        )
         self.table.verticalHeader().setVisible(False)
         root.addWidget(self.table, 1)
         for row, dataset in enumerate(project.datasets):
             use = QtWidgets.QTableWidgetItem("")
+            use.setFlags(use.flags() & ~ITEM_IS_EDITABLE)
             use.setCheckState(CHECKED if dataset.id == selected_dataset_id else UNCHECKED)
             self.table.setItem(row, 0, use)
             values = (
@@ -588,7 +620,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             )
             for column, value in enumerate(values, start=1):
                 item = QtWidgets.QTableWidgetItem(value)
-                item.setFlags(item.flags() & ~ITEM_IS_EDITABLE)
+                if column not in self.EDITABLE_COLUMNS:
+                    item.setFlags(item.flags() & ~ITEM_IS_EDITABLE)
                 self.table.setItem(row, column, item)
         self.table.resizeColumnsToContents()
 
@@ -600,9 +633,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.clear_checks_button.clicked.connect(lambda: self._set_all_checks(False))
         self.check_group_button.clicked.connect(self._check_same_group)
         self.edit_details_button.clicked.connect(self._edit_selected_details)
-        self.table.cellDoubleClicked.connect(
-            lambda row, _column: self._edit_selected_details(row)
-        )
+        self.table.itemChanged.connect(self._table_item_changed)
+        self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         self._refresh_presets()
         selected_row = next(
             (
@@ -654,27 +686,99 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         for column, value in enumerate(values, start=1):
             self.table.item(row, column).setText(value)
 
-    def _apply_row_to_dataset(self, row: int, dataset: Dataset):
-        axis = int(self._cell_text(row, 3))
+    def _cell_double_clicked(self, row: int, column: int):
+        if column not in self.EDITABLE_COLUMNS:
+            self._edit_selected_details(row)
+
+    def _table_item_changed(self, item):
+        if self._syncing_table or item.column() not in self.EDITABLE_COLUMNS:
+            return
+        self._syncing_table = True
+        try:
+            item.setBackground(QtGui.QBrush())
+            if item.column() not in self.RUN_SHARED_COLUMNS:
+                return
+            source = self.project.datasets[item.row()]
+            for row, dataset in enumerate(self.project.datasets):
+                if row == item.row() or dataset.run_id != source.run_id:
+                    continue
+                related = self.table.item(row, item.column())
+                if related is not None and related.text() != item.text():
+                    related.setText(item.text())
+                    related.setBackground(QtGui.QBrush())
+        finally:
+            self._syncing_table = False
+
+    def _cell_error(self, row: int, column: int, ja: str, en: str):
+        raise BatchCellError(row, column, ja if self.language == "ja" else en)
+
+    def _parse_row(self, row: int):
+        axis_text = self._cell_text(row, 3)
+        try:
+            axis = int(axis_text)
+        except ValueError:
+            self._cell_error(row, 3, "1または2を入力してください。", "Enter 1 or 2.")
         if axis not in (1, 2):
-            raise ValueError("Y axis must be 1 or 2 (row %d)" % (row + 1))
-        numeric = {
-            field: optional_float(self._cell_text(row, column))
-            for field, column in self.FIELD_COLUMNS.items()
-            if field not in ("column_name", "analyte_name")
-        }
-        for field in (
-            "wavelength_nm",
-            "aux_range_au_per_v",
-            "flow_rate_ml_min",
-            "cell_path_length_cm",
-            "injection_volume_ul",
-            "molar_absorptivity_214",
-            "molar_absorptivity_280",
-            "molecular_weight_g_mol",
-        ):
-            if numeric[field] is not None and numeric[field] <= 0:
-                raise ValueError("%s must be positive (row %d)" % (field, row + 1))
+            self._cell_error(row, 3, "1または2を入力してください。", "Enter 1 or 2.")
+
+        numeric = {}
+        for field, column in self.FIELD_COLUMNS.items():
+            if field in ("column_name", "analyte_name"):
+                continue
+            text = self._cell_text(row, column)
+            try:
+                value = optional_float(text)
+            except ValueError:
+                self._cell_error(
+                    row,
+                    column,
+                    "数値または空欄を入力してください。",
+                    "Enter a number or leave the cell empty.",
+                )
+            if value is not None and not math.isfinite(value):
+                self._cell_error(
+                    row,
+                    column,
+                    "有限の数値を入力してください。",
+                    "Enter a finite number.",
+                )
+            if field in self.POSITIVE_FIELDS and value is not None and value <= 0:
+                self._cell_error(
+                    row,
+                    column,
+                    "0より大きい値を入力してください。",
+                    "Enter a value greater than zero.",
+                )
+            numeric[field] = value
+        return axis, numeric
+
+    def _show_cell_error(self, error: BatchCellError):
+        item = self.table.item(error.row, error.column)
+        if item is not None:
+            self._syncing_table = True
+            try:
+                item.setBackground(QtGui.QBrush(QtGui.QColor("#ffd9d9")))
+            finally:
+                self._syncing_table = False
+            self.table.setCurrentCell(error.row, error.column)
+            self.table.scrollToItem(item)
+        header = self.table.horizontalHeaderItem(error.column)
+        field = header.text() if header is not None else str(error.column + 1)
+        message = (
+            "%d行目「%s」: %s" % (error.row + 1, field, error.reason)
+            if self.language == "ja"
+            else "Row %d, %s: %s" % (error.row + 1, field, error.reason)
+        )
+        QtWidgets.QMessageBox.warning(
+            self,
+            "入力エラー" if self.language == "ja" else "Invalid value",
+            message,
+        )
+        if item is not None:
+            self.table.editItem(item)
+
+    def _apply_row_to_dataset(self, row: int, dataset: Dataset):
+        axis, numeric = self._parse_row(row)
         old_label = dataset.label
         dataset.label = self._cell_text(row, 1) or dataset.original_filename
         if not dataset.short_label or dataset.short_label == old_label:
@@ -701,8 +805,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         working = deepcopy(self.detail_overrides.get(original.id, original))
         try:
             self._apply_row_to_dataset(row, working)
-        except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, "Invalid value", str(exc))
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
             return
         dialog = MetadataDialog(working, self.language, self)
         if dialog_exec(dialog):
@@ -825,29 +929,10 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         parsed_rows = []
         try:
             for row, dataset in enumerate(self.project.datasets):
-                axis = int(self._cell_text(row, 3))
-                if axis not in (1, 2):
-                    raise ValueError("Y axis must be 1 or 2 (row %d)" % (row + 1))
-                numeric = {
-                    field: optional_float(self._cell_text(row, column))
-                    for field, column in self.FIELD_COLUMNS.items()
-                    if field not in ("column_name", "analyte_name")
-                }
-                for field in (
-                    "wavelength_nm",
-                    "aux_range_au_per_v",
-                    "flow_rate_ml_min",
-                    "cell_path_length_cm",
-                    "injection_volume_ul",
-                    "molar_absorptivity_214",
-                    "molar_absorptivity_280",
-                    "molecular_weight_g_mol",
-                ):
-                    if numeric[field] is not None and numeric[field] <= 0:
-                        raise ValueError("%s must be positive (row %d)" % (field, row + 1))
+                axis, numeric = self._parse_row(row)
                 parsed_rows.append((dataset, axis, numeric))
-        except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, "Invalid value", str(exc))
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
             return
 
         for row, (dataset, axis, numeric) in enumerate(parsed_rows):

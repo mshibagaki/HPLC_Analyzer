@@ -3688,7 +3688,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._push_undo_snapshot(
                 before,
                 self._history_label(
-                    "条件プリセット一括適用", "Apply condition preset in batch"
+                    "条件の一括編集", "Edit batch conditions"
                 ),
             )
             self._persist_global_presets()

@@ -1369,6 +1369,99 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(dataset.measurement, dataset_before.measurement)
         dialog.reject()
 
+    def test_preset_lists_sort_filter_and_refresh_recent_use_without_mutation(self):
+        window = self.make_window()
+        selected = window.project.datasets[0]
+        window.project.condition_presets = {
+            "Legacy z": {"wavelength_nm": 220.0},
+            "beta": {"wavelength_nm": 280.0},
+            "Alpha": {"wavelength_nm": 214.0},
+        }
+        window.project.gradient_presets = {
+            "Gradient z": {"gradient": [], "solvents": {}},
+            "Gradient A": {"gradient": [], "solvents": {}},
+        }
+        metadata = {
+            "conditions": {
+                "Alpha": {
+                    "created_at": "2026-08-25T09:00:00+09:00",
+                    "updated_at": "2026-08-27T09:00:00+09:00",
+                    "last_used_at": "2026-08-26T11:00:00+09:00",
+                },
+                "beta": {
+                    "created_at": "2026-08-26T09:00:00+09:00",
+                    "updated_at": "2026-08-26T09:00:00+09:00",
+                    "last_used_at": "",
+                },
+                "Legacy z": {},
+            },
+            "gradients": {
+                "Gradient A": {
+                    "created_at": "2026-08-25T09:00:00+09:00",
+                    "last_used_at": "",
+                },
+                "Gradient z": {
+                    "created_at": "2026-08-26T09:00:00+09:00",
+                    "last_used_at": "2026-08-27T09:00:00+09:00",
+                },
+            },
+        }
+        dialog = BatchMetadataDialog(
+            window.project, selected.id, "en", preset_metadata=metadata
+        )
+        names = lambda combo: [
+            combo.itemText(index) for index in range(combo.count())
+        ]
+        self.assertEqual(
+            names(dialog.preset_combo), ["beta", "Alpha", "Legacy z"]
+        )
+        metadata_before = deepcopy(dialog.preset_metadata)
+        name_index = dialog.condition_preset_sort.findData("name")
+        dialog.condition_preset_sort.setCurrentIndex(name_index)
+        self.assertEqual(
+            names(dialog.preset_combo), ["Alpha", "beta", "Legacy z"]
+        )
+        dialog.condition_preset_filter.setText("BET")
+        self.assertEqual(names(dialog.preset_combo), ["beta"])
+        dialog.condition_preset_filter.clear()
+        used_index = dialog.condition_preset_sort.findData("used")
+        dialog.condition_preset_sort.setCurrentIndex(used_index)
+        self.assertEqual(names(dialog.preset_combo)[0], "Alpha")
+        dialog.preset_combo.setCurrentText("beta")
+        dialog._apply_preset()
+        self.assertEqual(names(dialog.preset_combo)[0], "beta")
+
+        gradient_name_index = dialog.gradient_preset_sort.findData("name")
+        dialog.gradient_preset_sort.setCurrentIndex(gradient_name_index)
+        self.assertEqual(
+            names(dialog.gradient_preset_combo), ["Gradient A", "Gradient z"]
+        )
+        dialog.gradient_preset_filter.setText(" Z")
+        self.assertEqual(names(dialog.gradient_preset_combo), ["Gradient z"])
+        self.assertEqual(
+            dialog.preset_metadata["conditions"]["Alpha"],
+            metadata_before["conditions"]["Alpha"],
+        )
+        dialog.reject()
+
+        gradient_dialog = GradientDialog(
+            selected,
+            "ja",
+            presets=window.project.gradient_presets,
+            preset_metadata=metadata,
+        )
+        gradient_dialog.preset_sort.setCurrentIndex(
+            gradient_dialog.preset_sort.findData("name")
+        )
+        self.assertEqual(
+            names(gradient_dialog.preset_combo), ["Gradient A", "Gradient z"]
+        )
+        gradient_dialog.preset_filter.setText("gradient a")
+        self.assertEqual(names(gradient_dialog.preset_combo), ["Gradient A"])
+        gradient_dialog.reject()
+        window.project.dirty = False
+        window.close()
+
     def test_batch_table_applies_named_conditions_to_checked_rows(self):
         window = self.make_window()
         selected = window.project.datasets[0]

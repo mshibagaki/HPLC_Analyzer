@@ -25,6 +25,7 @@ from .models import (
 )
 from .naming import build_project_filename, normalize_analysis_date
 from .preset_store import (
+    filter_preset_names,
     normalize_preset_metadata,
     record_preset_deleted,
     record_preset_saved,
@@ -50,6 +51,17 @@ def _preset_display(value) -> str:
     if isinstance(value, float):
         return "%g" % value
     return str(value)
+
+
+def _populate_preset_sort_combo(combo, language: str):
+    options = (
+        ("新しい順", "Newest created", "created"),
+        ("最近使った順", "Recently used", "used"),
+        ("最近更新した順", "Recently updated", "updated"),
+        ("名前順", "Name", "name"),
+    )
+    for japanese, english, key in options:
+        combo.addItem(japanese if language == "ja" else english, key)
 
 
 class PresetPreviewDialog(QtWidgets.QDialog):
@@ -697,6 +709,15 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         preset_row.addWidget(QtWidgets.QLabel("条件プリセット" if language == "ja" else "Condition preset"))
         self.preset_combo = QtWidgets.QComboBox()
         preset_row.addWidget(self.preset_combo, 1)
+        self.condition_preset_filter = QtWidgets.QLineEdit()
+        self.condition_preset_filter.setPlaceholderText(
+            "名前で絞り込み" if language == "ja" else "Filter by name"
+        )
+        self.condition_preset_filter.setMaximumWidth(150)
+        self.condition_preset_sort = QtWidgets.QComboBox()
+        _populate_preset_sort_combo(self.condition_preset_sort, language)
+        preset_row.addWidget(self.condition_preset_filter)
+        preset_row.addWidget(self.condition_preset_sort)
         self.preview_preset_button = QtWidgets.QPushButton(
             "内容・差分…" if language == "ja" else "Preview / diff…"
         )
@@ -716,13 +737,13 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             QtWidgets.QLabel("グラジエントプリセット" if language == "ja" else "Gradient preset")
         )
         self.gradient_preset_combo = QtWidgets.QComboBox()
-        self.gradient_preset_combo.addItems(
-            stable_preset_names(
-                self.gradient_presets,
-                self.preset_metadata,
-                "gradients",
-            )
+        self.gradient_preset_filter = QtWidgets.QLineEdit()
+        self.gradient_preset_filter.setPlaceholderText(
+            "名前で絞り込み" if language == "ja" else "Filter by name"
         )
+        self.gradient_preset_filter.setMaximumWidth(150)
+        self.gradient_preset_sort = QtWidgets.QComboBox()
+        _populate_preset_sort_combo(self.gradient_preset_sort, language)
         self.apply_gradient_button = QtWidgets.QPushButton(
             "チェック行へ適用" if language == "ja" else "Apply to checked rows"
         )
@@ -730,6 +751,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             "内容・差分…" if language == "ja" else "Preview / diff…"
         )
         gradient_preset_row.addWidget(self.gradient_preset_combo, 1)
+        gradient_preset_row.addWidget(self.gradient_preset_filter)
+        gradient_preset_row.addWidget(self.gradient_preset_sort)
         gradient_preset_row.addWidget(self.preview_gradient_preset_button)
         gradient_preset_row.addWidget(self.apply_gradient_button)
         root.addLayout(gradient_preset_row)
@@ -828,6 +851,26 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             self._preview_gradient_preset
         )
         self.apply_gradient_button.clicked.connect(self._apply_gradient_preset)
+        self.condition_preset_filter.textChanged.connect(
+            lambda _value=None: self._refresh_presets(
+                self.preset_combo.currentText()
+            )
+        )
+        self.condition_preset_sort.currentIndexChanged.connect(
+            lambda _value=None: self._refresh_presets(
+                self.preset_combo.currentText()
+            )
+        )
+        self.gradient_preset_filter.textChanged.connect(
+            lambda _value=None: self._refresh_gradient_presets(
+                self.gradient_preset_combo.currentText()
+            )
+        )
+        self.gradient_preset_sort.currentIndexChanged.connect(
+            lambda _value=None: self._refresh_gradient_presets(
+                self.gradient_preset_combo.currentText()
+            )
+        )
         self.check_all_button.clicked.connect(lambda: self._set_all_checks(True))
         self.clear_checks_button.clicked.connect(lambda: self._set_all_checks(False))
         self.check_group_button.clicked.connect(self._check_same_group)
@@ -838,6 +881,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.table.copy_callback = self._copy_selected_cells
         self.table.paste_callback = self._paste_clipboard
         self._refresh_presets()
+        self._refresh_gradient_presets()
         selected_row = next(
             (
                 row
@@ -1179,6 +1223,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             return
         self.gradient_presets = dialog.presets
         self.preset_metadata = dialog.preset_metadata
+        self._refresh_gradient_presets(working.effective_gradient_preset_name())
         self.detail_overrides[original.id] = working
         self.gradient_assignments.pop(original.run_id, None)
         gradient_name = working.effective_gradient_preset_name()
@@ -1190,16 +1235,39 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.table.setCurrentCell(row, self.GRADIENT_COLUMN)
 
     def _refresh_presets(self, selected_name: str = ""):
-        self.preset_combo.clear()
-        self.preset_combo.addItems(
-            stable_preset_names(
-                self.presets, self.preset_metadata, "conditions"
-            )
+        selected_name = selected_name or self.preset_combo.currentText()
+        sort_by = self.condition_preset_sort.currentData() or "created"
+        names = stable_preset_names(
+            self.presets, self.preset_metadata, "conditions", sort_by
         )
+        names = filter_preset_names(
+            names, self.condition_preset_filter.text()
+        )
+        self.preset_combo.clear()
+        self.preset_combo.addItems(names)
         if selected_name:
             index = self.preset_combo.findText(selected_name)
             if index >= 0:
                 self.preset_combo.setCurrentIndex(index)
+
+    def _refresh_gradient_presets(self, selected_name: str = ""):
+        selected_name = selected_name or self.gradient_preset_combo.currentText()
+        sort_by = self.gradient_preset_sort.currentData() or "created"
+        names = stable_preset_names(
+            self.gradient_presets,
+            self.preset_metadata,
+            "gradients",
+            sort_by,
+        )
+        names = filter_preset_names(
+            names, self.gradient_preset_filter.text()
+        )
+        self.gradient_preset_combo.clear()
+        self.gradient_preset_combo.addItems(names)
+        if selected_name:
+            index = self.gradient_preset_combo.findText(selected_name)
+            if index >= 0:
+                self.gradient_preset_combo.setCurrentIndex(index)
 
     def _preview_condition_preset(self):
         name = self.preset_combo.currentText()
@@ -1345,6 +1413,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.loaded_condition_preset_name = name
         if checked_rows:
             record_preset_used(self.preset_metadata, "conditions", name)
+            self._refresh_presets(name)
 
     def _apply_gradient_preset(self):
         name = self.gradient_preset_combo.currentText()
@@ -1359,6 +1428,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                     self.table.item(related_row, self.GRADIENT_COLUMN).setText(name)
         if checked_rows:
             record_preset_used(self.preset_metadata, "gradients", name)
+            self._refresh_gradient_presets(name)
 
     def _cell_text(self, row: int, column: int) -> str:
         item = self.table.item(row, column)
@@ -2059,6 +2129,13 @@ class GradientDialog(QtWidgets.QDialog):
         preset_row = QtWidgets.QHBoxLayout()
         preset_row.addWidget(QtWidgets.QLabel("プリセット" if language == "ja" else "Preset"))
         self.preset_combo = QtWidgets.QComboBox()
+        self.preset_filter = QtWidgets.QLineEdit()
+        self.preset_filter.setPlaceholderText(
+            "名前で絞り込み" if language == "ja" else "Filter by name"
+        )
+        self.preset_filter.setMaximumWidth(150)
+        self.preset_sort = QtWidgets.QComboBox()
+        _populate_preset_sort_combo(self.preset_sort, language)
         self.save_preset_button = QtWidgets.QPushButton(
             "現在の条件を名前を付けて保存" if language == "ja" else "Save current program"
         )
@@ -2068,6 +2145,8 @@ class GradientDialog(QtWidgets.QDialog):
         self.apply_preset_button = QtWidgets.QPushButton("読み込む" if language == "ja" else "Load")
         self.delete_preset_button = QtWidgets.QPushButton("削除" if language == "ja" else "Delete")
         preset_row.addWidget(self.preset_combo, 1)
+        preset_row.addWidget(self.preset_filter)
+        preset_row.addWidget(self.preset_sort)
         preset_row.addWidget(self.preview_preset_button)
         preset_row.addWidget(self.save_preset_button)
         preset_row.addWidget(self.apply_preset_button)
@@ -2114,6 +2193,16 @@ class GradientDialog(QtWidgets.QDialog):
         self.preview_preset_button.clicked.connect(self._preview_preset)
         self.apply_preset_button.clicked.connect(self._apply_preset)
         self.delete_preset_button.clicked.connect(self._delete_preset)
+        self.preset_filter.textChanged.connect(
+            lambda _value=None: self._refresh_presets(
+                self.preset_combo.currentText()
+            )
+        )
+        self.preset_sort.currentIndexChanged.connect(
+            lambda _value=None: self._refresh_presets(
+                self.preset_combo.currentText()
+            )
+        )
         self._refresh_presets(self.applied_preset_name)
 
         buttons = QtWidgets.QDialogButtonBox(
@@ -2158,12 +2247,17 @@ class GradientDialog(QtWidgets.QDialog):
             self.applied_preset_name = ""
 
     def _refresh_presets(self, selected_name: str = ""):
-        self.preset_combo.clear()
-        self.preset_combo.addItems(
-            stable_preset_names(
-                self.presets, self.preset_metadata, "gradients"
-            )
+        selected_name = selected_name or self.preset_combo.currentText()
+        sort_by = self.preset_sort.currentData() or "created"
+        names = stable_preset_names(
+            self.presets,
+            self.preset_metadata,
+            "gradients",
+            sort_by,
         )
+        names = filter_preset_names(names, self.preset_filter.text())
+        self.preset_combo.clear()
+        self.preset_combo.addItems(names)
         if selected_name:
             index = self.preset_combo.findText(selected_name)
             if index >= 0:
@@ -2292,6 +2386,7 @@ class GradientDialog(QtWidgets.QDialog):
             self.applied_preset_name = name
             self.last_loaded_preset_name = name
             record_preset_used(self.preset_metadata, "gradients", name)
+            self._refresh_presets(name)
         finally:
             self._loading_preset = False
 

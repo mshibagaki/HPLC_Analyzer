@@ -270,6 +270,7 @@ class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setAcceptDrops(True)
         self._settings = QtCore.QSettings("Research Tools", APP_NAME)
         settings_conditions = sanitize_condition_presets(
             self._read_json_setting("presets/conditions")
@@ -3131,19 +3132,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_overview_window()
         self.canvas.draw_idle()
 
-    def import_ascii(self):
-        last_directory = str(self._settings.value("paths/last_import_directory", "") or "")
-        start_directory = self._import_directory or last_directory
-        if start_directory and not Path(start_directory).is_dir():
-            start_directory = ""
-        paths, _selected_filter = QtWidgets.QFileDialog.getOpenFileNames(
-            self,
-            self.translator("import"),
-            start_directory,
-            self.translator("ascii_filter"),
-        )
+    def _import_chromatogram_paths(self, paths) -> int:
+        paths = [str(path) for path in paths]
         if not paths:
-            return
+            return 0
         self._settings.setValue("paths/last_import_directory", str(Path(paths[0]).parent))
         imported = 0
         errors: List[str] = []
@@ -3162,6 +3154,64 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(self.translator("imported", count=imported), 5000)
         if errors:
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), "\n".join(errors))
+        return imported
+
+    def import_ascii(self):
+        last_directory = str(self._settings.value("paths/last_import_directory", "") or "")
+        start_directory = self._import_directory or last_directory
+        if start_directory and not Path(start_directory).is_dir():
+            start_directory = ""
+        paths, _selected_filter = QtWidgets.QFileDialog.getOpenFileNames(
+            self,
+            self.translator("import"),
+            start_directory,
+            self.translator("ascii_filter"),
+        )
+        self._import_chromatogram_paths(paths)
+
+    @staticmethod
+    def _classify_dropped_urls(urls):
+        paths = []
+        for url in urls:
+            if not url.isLocalFile():
+                return None, []
+            path = Path(url.toLocalFile())
+            if not path.is_file():
+                return None, []
+            paths.append(str(path))
+        if not paths:
+            return None, []
+        suffixes = [Path(path).suffix.lower() for path in paths]
+        if all(suffix in (".txt", ".gcd") for suffix in suffixes):
+            return "chromatograms", paths
+        if len(paths) == 1 and suffixes[0] == ".hplcproj":
+            return "project", paths
+        return None, []
+
+    def dragEnterEvent(self, event):
+        mime_data = event.mimeData()
+        if mime_data is not None and mime_data.hasUrls():
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event):
+        mime_data = event.mimeData()
+        urls = mime_data.urls() if mime_data is not None and mime_data.hasUrls() else []
+        drop_kind, paths = self._classify_dropped_urls(urls)
+        if drop_kind is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.translator("warning"),
+                self.translator("invalid_file_drop"),
+            )
+            event.acceptProposedAction()
+            return
+        if drop_kind == "chromatograms":
+            self._import_chromatogram_paths(paths)
+        elif self._confirm_unsaved():
+            self._open_project_path(paths[0])
+        event.acceptProposedAction()
 
     def edit_preferences(self):
         before = self._capture_analysis_state()
@@ -3417,20 +3467,26 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if not path:
             return
+        self._open_project_path(path)
+
+    def _open_project_path(self, path: str) -> bool:
         try:
-            self.project = load_project(path)
+            project = load_project(path)
+            for dataset in project.datasets:
+                recalculate_dataset_peaks(dataset)
+            self.project = project
             self._settings.setValue("paths/last_project_directory", str(Path(path).parent))
             self._merge_global_presets_into_project()
             self._view_initialized = False
             self._view_history = []
             self._reset_undo_history()
-            for dataset in self.project.datasets:
-                recalculate_dataset_peaks(dataset)
             self.translator.set_language(self.project.ui_language)
             self._refresh_all()
             self._retranslate()
+            return True
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
+            return False
 
     def save_project(self) -> bool:
         if not self.project.project_path:

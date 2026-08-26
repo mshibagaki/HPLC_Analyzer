@@ -565,14 +565,22 @@ class GuiTests(unittest.TestCase):
         window.project.rebuild_run_index(create_missing=False)
         window._refresh_dataset_table(0)
 
-        window.dataset_table.item(0, 1).setText("Shared run label")
+        label_column = next(
+            column
+            for column in range(window.dataset_table.columnCount())
+            if window.dataset_table.horizontalHeaderItem(column).text()
+            in ("ラベル", "Label")
+        )
+        window.dataset_table.item(0, label_column).setText("Shared run label")
         self.app.processEvents()
 
         self.assertEqual(
             [dataset.label for dataset in window.project.datasets],
             ["Shared run label", "Shared run label"],
         )
-        self.assertEqual(window.dataset_table.item(1, 1).text(), "Shared run label")
+        self.assertEqual(
+            window.dataset_table.item(1, label_column).text(), "Shared run label"
+        )
         labels = window.axes.get_legend_handles_labels()[1]
         labels.extend(window.axes_right.get_legend_handles_labels()[1])
         self.assertIn("Shared run label_280 nm", labels)

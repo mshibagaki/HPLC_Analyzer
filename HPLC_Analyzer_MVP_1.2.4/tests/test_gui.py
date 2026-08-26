@@ -17,6 +17,7 @@ from hplc_app.database import database_sections
 from hplc_app.dialogs import (
     AxisLabelsDialog,
     BatchMetadataDialog,
+    DirectoryImportDialog,
     GradientDialog,
     LabDatabaseDialog,
     MetadataDialog,
@@ -80,6 +81,43 @@ class RowDropEvent:
 
     def ignore(self):
         self.ignored = True
+
+
+class FakeProgressDialog:
+    cancel_after = None
+    instances = []
+
+    def __init__(self, label, cancel_text, minimum, maximum, parent):
+        self.label = label
+        self.cancel_text = cancel_text
+        self.minimum = minimum
+        self.maximum = maximum
+        self.parent = parent
+        self.values = []
+        self.closed = False
+        self._canceled = False
+        self.__class__.instances.append(self)
+
+    def setWindowModality(self, _modality):
+        pass
+
+    def setMinimumDuration(self, _duration):
+        pass
+
+    def setValue(self, value):
+        self.values.append(value)
+        if (
+            self.cancel_after is not None
+            and value >= self.cancel_after
+            and value < self.maximum
+        ):
+            self._canceled = True
+
+    def wasCanceled(self):
+        return self._canceled
+
+    def close(self):
+        self.closed = True
 
 
 class GuiTests(unittest.TestCase):
@@ -2079,6 +2117,135 @@ class GuiTests(unittest.TestCase):
             warning.assert_called_once()
             self.assertIn("broken.gcd", warning.call_args.args[2])
             self.assertIn("GCD is not an OLE compound file", warning.call_args.args[2])
+        window.project.dirty = False
+        window.close()
+
+    def test_directory_import_dialog_previews_relative_paths_and_empty_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "B.TXT").write_text("b", encoding="utf-8")
+            (root / "a.gcd").write_text("a", encoding="utf-8")
+            (root / "ignored.csv").write_text("ignored", encoding="utf-8")
+            nested = root / "sub"
+            nested.mkdir()
+            (nested / "c.TXT").write_text("c", encoding="utf-8")
+
+            dialog = DirectoryImportDialog(str(root), "en")
+            self.assertEqual(dialog.directory_path, root)
+            self.assertEqual(dialog.group_label, root.name)
+            self.assertEqual(
+                [
+                    dialog.preview_list.item(index).text()
+                    for index in range(dialog.preview_list.count())
+                ],
+                ["a.gcd", "B.TXT"],
+            )
+            self.assertTrue(dialog.import_button.isEnabled())
+
+            dialog.recursive_checkbox.setChecked(True)
+            self.app.processEvents()
+            self.assertEqual(
+                [
+                    dialog.preview_list.item(index).text()
+                    for index in range(dialog.preview_list.count())
+                ],
+                ["a.gcd", "B.TXT", "sub/c.TXT"],
+            )
+            dialog.close()
+
+        with tempfile.TemporaryDirectory() as empty_directory:
+            empty_dialog = DirectoryImportDialog(empty_directory, "en")
+            self.assertEqual(empty_dialog.preview_list.count(), 0)
+            self.assertFalse(empty_dialog.import_button.isEnabled())
+            with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                empty_dialog._accept()
+            warning.assert_called_once()
+            self.assertIn("No TXT/GCD", warning.call_args.args[2])
+            empty_dialog.close()
+
+    def test_directory_import_sets_group_order_and_last_directory(self):
+        window = self.make_window()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            later = root / "B.TXT"
+            earlier = root / "a.TXT"
+            later.write_bytes((SAMPLES / "225120.TXT").read_bytes())
+            earlier.write_bytes((SAMPLES / "210601.TXT").read_bytes())
+            fake_dialog = SimpleNamespace(
+                directory_path=root,
+                group_label="pac1",
+                files=[earlier, later],
+            )
+            FakeProgressDialog.cancel_after = None
+            FakeProgressDialog.instances = []
+            with patch(
+                "hplc_app.gui.DirectoryImportDialog",
+                return_value=fake_dialog,
+            ), patch(
+                "hplc_app.gui.dialog_exec",
+                return_value=True,
+            ), patch.object(
+                QtWidgets,
+                "QProgressDialog",
+                FakeProgressDialog,
+            ):
+                imported = window.import_directory()
+
+            self.assertEqual(imported, 2)
+            self.assertEqual(
+                [
+                    dataset.original_filename
+                    for dataset in window.project.datasets[-2:]
+                ],
+                ["a.TXT", "B.TXT"],
+            )
+            self.assertEqual(
+                [
+                    dataset.measurement.group
+                    for dataset in window.project.datasets[-2:]
+                ],
+                ["pac1", "pac1"],
+            )
+            self.assertEqual(
+                self.settings.value("paths/last_import_directory"),
+                str(root),
+            )
+            self.assertEqual(FakeProgressDialog.instances[0].values, [0, 1, 2, 2])
+            self.assertTrue(FakeProgressDialog.instances[0].closed)
+        window.project.dirty = False
+        window.close()
+
+    def test_directory_import_cancel_keeps_completed_files_and_skips_remaining(self):
+        window = self.make_window()
+        paths = [
+            str(SAMPLES / "210601.TXT"),
+            str(SAMPLES / "191720.TXT"),
+        ]
+        FakeProgressDialog.cancel_after = 1
+        FakeProgressDialog.instances = []
+        with patch.object(
+            QtWidgets,
+            "QProgressDialog",
+            FakeProgressDialog,
+        ), patch(
+            "hplc_app.gui.load_chromatogram_file",
+            wraps=load_ascii_file,
+        ) as loader:
+            imported = window._import_chromatogram_paths(
+                paths,
+                group_label="cancel-group",
+                show_progress=True,
+            )
+
+        self.assertEqual(imported, 1)
+        self.assertEqual(loader.call_count, 1)
+        self.assertEqual(
+            window.project.datasets[-1].measurement.group,
+            "cancel-group",
+        )
+        self.assertIn("1", window.statusBar().currentMessage())
+        self.assertTrue(FakeProgressDialog.instances[0].closed)
+        FakeProgressDialog.cancel_after = None
         window.project.dirty = False
         window.close()
 

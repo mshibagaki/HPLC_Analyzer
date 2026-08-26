@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .analysis import validate_gradient
-from .import_batch import discover_chromatogram_files
 from .database import (
     database_section_titles,
     database_sections,
     export_database_csvs,
 )
+from .import_batch import discover_chromatogram_files
 from .models import (
     AnalysisMethod,
     Dataset,
@@ -114,7 +114,7 @@ class DirectoryImportDialog(QtWidgets.QDialog):
             self.files = discover_chromatogram_files(
                 directory, self.recursive_checkbox.isChecked()
             )
-        except ValueError:
+        except (OSError, ValueError):
             self.files = []
         root = Path(directory) if directory else None
         for path in self.files:
@@ -146,6 +146,10 @@ class DirectoryImportDialog(QtWidgets.QDialog):
         return self.group_edit.text().strip() or Path(
             self.directory_edit.text().strip()
         ).name
+
+    @property
+    def directory_path(self):
+        return Path(self.directory_edit.text().strip())
 
 
 class TextAnnotationDialog(QtWidgets.QDialog):

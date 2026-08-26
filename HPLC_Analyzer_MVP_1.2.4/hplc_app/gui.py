@@ -315,10 +315,13 @@ class DatasetTableWidget(QtWidgets.QTableWidget):
     def dropEvent(self, event):
         if self._forward_file_drop("dropEvent", event):
             return
-        source_row = self.currentRow()
-        if not (0 <= source_row < self.rowCount()):
+        selected_rows = sorted(
+            {index.row() for index in self.selectionModel().selectedRows()}
+        )
+        if len(selected_rows) != 1:
             event.ignore()
             return
+        source_row = selected_rows[0]
         position = self._event_position(event)
         index = self.indexAt(position)
         if index.isValid():
@@ -752,7 +755,12 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self.dataset_title)
         self.dataset_table = DatasetTableWidget(0, 10)
         self.dataset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.dataset_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        extended_selection = (
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.ExtendedSelection
+        )
+        self.dataset_table.setSelectionMode(extended_selection)
         self.dataset_table.setWordWrap(False)
         self.dataset_table.verticalHeader().setVisible(False)
         self.dataset_table.itemChanged.connect(self._dataset_item_changed)
@@ -1506,6 +1514,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if 0 <= row < len(self.project.datasets):
             return self.project.datasets[row]
         return None
+
+    def _selected_dataset_rows(self):
+        selection = self.dataset_table.selectionModel()
+        if selection is None:
+            return []
+        return sorted(
+            {
+                index.row()
+                for index in selection.selectedRows()
+                if 0 <= index.row() < len(self.project.datasets)
+            }
+        )
 
     def _dataset_item_changed(self, item: QtWidgets.QTableWidgetItem):
         if self._updating_table:

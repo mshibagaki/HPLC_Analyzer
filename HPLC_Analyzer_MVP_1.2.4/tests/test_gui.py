@@ -1269,6 +1269,95 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(window.project.dirty)
         window.close()
 
+    def test_dataset_table_supports_range_and_non_contiguous_row_selection(self):
+        window = self.make_window()
+        third = load_ascii_file(str(SAMPLES / "191720.TXT"))
+        third.label = third.short_label = "Ch3"
+        window.project.datasets.append(third)
+        window._refresh_all(0)
+        extended_selection = (
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.ExtendedSelection
+        )
+        self.assertEqual(window.dataset_table.selectionMode(), extended_selection)
+        visibility = [dataset.visible for dataset in window.project.datasets]
+        model = window.dataset_table.model()
+        selection_model = window.dataset_table.selectionModel()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        toggle = (
+            QtCore.QItemSelectionModel.SelectionFlag.Toggle
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Toggle
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+
+        selection_model.clearSelection()
+        selection_model.select(
+            QtCore.QItemSelection(
+                model.index(0, 0), model.index(2, model.columnCount() - 1)
+            ),
+            select | rows,
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1, 2])
+
+        selection_model.clearSelection()
+        selection_model.select(model.index(0, 0), select | rows)
+        selection_model.select(model.index(2, 0), select | rows)
+        self.assertEqual(window._selected_dataset_rows(), [0, 2])
+        selection_model.select(model.index(0, 0), toggle | rows)
+        self.assertEqual(window._selected_dataset_rows(), [2])
+        self.assertEqual(
+            [dataset.visible for dataset in window.project.datasets], visibility
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_multiple_selected_dataset_rows_cannot_be_drag_reordered(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(0)
+        selection_model = window.dataset_table.selectionModel()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+        selection_model.select(
+            window.dataset_table.model().index(1, 0), select | rows
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1])
+        target_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(1, 0)
+        )
+        event = RowDropEvent(target_rect.bottomRight() - QtCore.QPoint(1, 1))
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.ignored)
+        self.assertFalse(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
+        )
+        self.assertFalse(window.project.dirty)
+        self.assertEqual(window._undo_stack, [])
+        window.close()
+
     def test_chromatogram_drag_without_source_row_is_ignored(self):
         window = self.make_window()
         window.show()

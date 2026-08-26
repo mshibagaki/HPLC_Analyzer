@@ -381,6 +381,89 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_project_location_distinguishes_unsaved_and_saved_paths(self):
+        window = self.make_window()
+        self.assertIn("未保存", window.project_location_label.text())
+        self.assertEqual(
+            window.project_location_label.toolTip(),
+            "プロジェクト: 未保存",
+        )
+
+        window.set_language("en")
+        self.assertIn("Not saved yet", window.project_location_label.text())
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / ("日本語_" + "long-name-" * 20 + ".hplcproj")
+            window.project.project_path = str(destination)
+            window.project.dirty = True
+            window._update_title()
+            absolute_path = str(destination.absolute())
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "Project: " + absolute_path,
+            )
+            self.assertEqual(
+                window.project_location_label.accessibleName(),
+                "Project: " + absolute_path,
+            )
+            self.assertIn(destination.name + "*", window.windowTitle())
+            self.assertLessEqual(window.project_location_label.width(), 520)
+        window.project.dirty = False
+        window.close()
+
+    def test_project_location_updates_after_save_open_and_new(self):
+        window = self.make_window()
+        with tempfile.TemporaryDirectory() as directory:
+            first_path = Path(directory) / "保存先.hplcproj"
+            window.project.project_path = str(first_path)
+            window.project.dirty = True
+            self.assertTrue(window.save_project())
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: " + str(first_path.absolute()),
+            )
+
+            second_path = Path(directory) / "opened.hplcproj"
+            window.project.project_path = str(second_path)
+            window.project.dirty = True
+            self.assertTrue(window.save_project())
+            window.new_project()
+            self.assertIn("未保存", window.project_location_label.text())
+
+            save_as_path = Path(directory) / "名前を付けて保存"
+            with patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
+                QtWidgets.QFileDialog,
+                "getSaveFileName",
+                return_value=(str(save_as_path), ""),
+            ):
+                self.assertTrue(window.save_project_as())
+            saved_as_project = Path(str(save_as_path) + ".hplcproj")
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: " + str(saved_as_project.absolute()),
+            )
+            window.new_project()
+
+            with patch.object(
+                QtWidgets.QFileDialog,
+                "getOpenFileName",
+                return_value=(str(second_path), ""),
+            ):
+                window.open_project()
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: " + str(second_path.absolute()),
+            )
+            self.assertIn(second_path.name, window.windowTitle())
+
+            window.new_project()
+            self.assertEqual(window.project.project_path, "")
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: 未保存",
+            )
+        window.project.dirty = False
+        window.close()
+
     def test_zoom_ticks_and_peak_changes_preserve_current_view(self):
         window = self.make_window()
         window.project.method.x_tick_mode = "auto"

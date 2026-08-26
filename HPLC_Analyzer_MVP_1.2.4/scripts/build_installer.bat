@@ -7,14 +7,16 @@ set "ISS_FILE="
 set "SETUP_FILE="
 set "PYTHON_EXE=python"
 if defined HPLC_PYTHON_EXE set "PYTHON_EXE=%HPLC_PYTHON_EXE%"
+call scripts\load_version.bat "%PYTHON_EXE%"
+if errorlevel 1 exit /b 1
 
 if /i "%TARGET%"=="windows11-x64" (
   set "ISS_FILE=installer\windows11_x64.iss"
-  set "SETUP_FILE=dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe"
+  set "SETUP_FILE=dist\installers\HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe"
 )
 if /i "%TARGET%"=="windows7-x86" (
   set "ISS_FILE=installer\windows7_x86.iss"
-  set "SETUP_FILE=dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe"
+  set "SETUP_FILE=dist\installers\HPLC_Analyzer_Setup_%APP_VERSION%_Windows7_x86.exe"
 )
 
 if not defined ISS_FILE (
@@ -23,7 +25,7 @@ if not defined ISS_FILE (
   exit /b 2
 )
 
-"%PYTHON_EXE%" scripts\verify_installer.py --target "%TARGET%" --script "%ISS_FILE%"
+"%PYTHON_EXE%" scripts\verify_installer.py --target "%TARGET%" --script "%ISS_FILE%" --version "%APP_VERSION%"
 if errorlevel 1 exit /b 1
 
 if /i "%TARGET%"=="windows7-x86" (
@@ -52,10 +54,10 @@ if not defined ISCC_EXE (
 )
 
 echo [INFO] Installer compiler: %ISCC_EXE%
-"%ISCC_EXE%" "%ISS_FILE%"
+"%ISCC_EXE%" "--define=AppVersion=%APP_VERSION%" "--define=AppVersionNumeric=%APP_VERSION_NUMERIC%" "%ISS_FILE%"
 if errorlevel 1 exit /b 1
 
-"%PYTHON_EXE%" scripts\verify_installer.py --target "%TARGET%" --script "%ISS_FILE%" --setup "%SETUP_FILE%"
+"%PYTHON_EXE%" scripts\verify_installer.py --target "%TARGET%" --script "%ISS_FILE%" --setup "%SETUP_FILE%" --version "%APP_VERSION%"
 if errorlevel 1 exit /b 1
 
 echo [OK] Offline installer: %SETUP_FILE%

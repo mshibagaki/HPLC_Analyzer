@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
-import json
 import math
 from pathlib import Path
 import tempfile
@@ -61,7 +60,14 @@ from .naming import (
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
-from .preset_store import load_preset_store, save_preset_store
+from .preset_store import (
+    load_preset_store_with_metadata,
+    merge_preset_sources,
+    normalize_preset_metadata,
+    record_preset_deleted,
+    record_preset_saved,
+    save_preset_store,
+)
 from .project_io import (
     load_project,
     save_project,
@@ -74,12 +80,28 @@ from .rendering import (
     normalize_render_quality,
     screen_series,
 )
+from .settings_store import (
+    ApplicationSettings,
+    DATABASE_PATH,
+    FIGURE_FORMAT,
+    IMPORT_DIRECTORY,
+    LAST_IMPORT_DIRECTORY,
+    LAST_PROJECT_DIRECTORY,
+    LAST_SAVE_DIRECTORY,
+    LEGACY_CONDITION_PRESETS,
+    LEGACY_GRADIENT_PRESETS,
+    NAMING_AUTHOR,
+    RENDERING_QUALITY,
+    SAVE_DIRECTORY,
+    UI_LANGUAGE,
+)
 from .qt_compat import (
     QAction,
     QActionGroup,
     CHECKED,
     ITEM_IS_EDITABLE,
     QT_API,
+    STANDARD_SAVE_SHORTCUT,
     UNCHECKED,
     USER_ROLE,
     QtCore,
@@ -111,6 +133,19 @@ COLORS = (
 
 INTEGRATION_BOUNDARY_COLOR = "#9ca3af"
 AVAILABLE_PLOT_FONTS = {font.name for font in font_manager.fontManager.ttflist}
+
+DATASET_VISIBLE_COLUMN = 0
+DATASET_RUN_ID_COLUMN = 1
+DATASET_LABEL_COLUMN = 2
+DATASET_WAVELENGTH_COLUMN = 3
+DATASET_GROUP_COLUMN = 4
+DATASET_Y_AXIS_COLUMN = 5
+DATASET_AUV_COLUMN = 6
+DATASET_X_SHIFT_COLUMN = 7
+DATASET_OFFSET_COLUMN = 8
+DATASET_COLOR_COLUMN = 9
+DATASET_SOURCE_COLUMN = 10
+DATASET_COLUMN_COUNT = 11
 
 
 def _resolved_plot_font(family: str):
@@ -267,39 +302,123 @@ class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
         style.drawControl(control, styled, painter, styled.widget)
 
 
+class DatasetTableWidget(QtWidgets.QTableWidget):
+    """Request Project-backed row moves instead of moving table items directly."""
+
+    rowMoveRequested = QtCore.Signal(int, int)
+
+    def __init__(self, rows=0, columns=0, parent=None):
+        super().__init__(rows, columns, parent)
+        internal_move = (
+            QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.InternalMove
+        )
+        move_action = (
+            QtCore.Qt.DropAction.MoveAction if QT_API == 6 else QtCore.Qt.MoveAction
+        )
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(internal_move)
+        self.setDragDropOverwriteMode(False)
+        self.setDefaultDropAction(move_action)
+
+    @staticmethod
+    def _event_position(event):
+        if QT_API == 6:
+            position = event.position()
+            return position.toPoint() if hasattr(position, "toPoint") else position
+        return event.pos()
+
+    def _forward_file_drop(self, method_name, event) -> bool:
+        mime_data = event.mimeData()
+        if mime_data is None or not mime_data.hasUrls():
+            return False
+        handler = getattr(self.window(), method_name, None)
+        if callable(handler):
+            handler(event)
+        else:
+            event.ignore()
+        return True
+
+    def dragEnterEvent(self, event):
+        if self._forward_file_drop("dragEnterEvent", event):
+            return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        if self._forward_file_drop("dropEvent", event):
+            return
+        selected_rows = sorted(
+            {index.row() for index in self.selectionModel().selectedRows()}
+        )
+        if len(selected_rows) != 1:
+            event.ignore()
+            return
+        source_row = selected_rows[0]
+        position = self._event_position(event)
+        index = self.indexAt(position)
+        if index.isValid():
+            insertion_row = index.row()
+            if position.y() >= self.visualRect(index).center().y():
+                insertion_row += 1
+        else:
+            insertion_row = self.rowCount()
+        target_row = insertion_row - 1 if insertion_row > source_row else insertion_row
+        if 0 <= target_row < self.rowCount() and target_row != source_row:
+            self.rowMoveRequested.emit(source_row, target_row)
+        event.acceptProposedAction()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
-        self._settings = QtCore.QSettings("Research Tools", APP_NAME)
+        self._settings = ApplicationSettings()
         settings_conditions = sanitize_condition_presets(
-            self._read_json_setting("presets/conditions")
+            self._settings.get(LEGACY_CONDITION_PRESETS)
         )
-        settings_gradients = self._read_json_setting("presets/gradients")
-        stored_conditions, stored_gradients = load_preset_store()
-        stored_conditions.update(deepcopy(settings_conditions))
-        stored_gradients.update(deepcopy(settings_gradients))
+        settings_gradients = self._settings.get(LEGACY_GRADIENT_PRESETS)
+        (
+            stored_conditions,
+            stored_gradients,
+            stored_metadata,
+        ) = load_preset_store_with_metadata()
+        merged_conditions, merged_gradients = merge_preset_sources(
+            settings_conditions,
+            settings_gradients,
+            stored_conditions,
+            stored_gradients,
+        )
         self._global_condition_presets = sanitize_condition_presets(
-            stored_conditions
+            merged_conditions
         )
-        self._global_gradient_presets = stored_gradients
+        self._global_gradient_presets = merged_gradients
+        self._global_preset_metadata = normalize_preset_metadata(
+            self._global_condition_presets,
+            self._global_gradient_presets,
+            stored_metadata,
+        )
+        self._application_language = self._settings.get(UI_LANGUAGE)
         if self._global_condition_presets or self._global_gradient_presets:
             # v1.1.4 and earlier used QSettings only. Mirror those values into
             # a version-independent JSON file on first v1.1.5 launch, and
             # restore QSettings from that file if a future build changes path.
-            self._write_json_setting(
-                "presets/conditions", self._global_condition_presets
+            self._settings.set(
+                LEGACY_CONDITION_PRESETS, self._global_condition_presets
             )
-            self._write_json_setting(
-                "presets/gradients", self._global_gradient_presets
+            self._settings.set(
+                LEGACY_GRADIENT_PRESETS, self._global_gradient_presets
             )
             self._settings.sync()
             self._save_global_preset_file()
         self.project = Project(
+            ui_language=self._application_language,
             condition_presets=deepcopy(self._global_condition_presets),
             gradient_presets=deepcopy(self._global_gradient_presets),
         )
-        self.translator = Translator(self.project.ui_language)
+        self.translator = Translator(self._application_language)
         self._updating_table = False
         self._span_selector = None
         self._span_selector_mode = None
@@ -319,20 +438,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tick_update_guard = False
         self._undo_stack = []
         self._redo_stack = []
-        self._import_directory = str(self._settings.value("paths/import_directory", "") or "")
-        self._save_directory = str(self._settings.value("paths/save_directory", "") or "")
-        self._database_path = str(
-            self._settings.value("database/path", "") or ""
-        )
-        self._figure_export_format = str(
-            self._settings.value("export/figure_format", "png") or "png"
-        ).lower()
-        if self._figure_export_format not in ("png", "svg", "pdf"):
-            self._figure_export_format = "png"
-        self._render_quality = normalize_render_quality(
-            self._settings.value("rendering/quality", ""),
-            default_render_quality(),
-        )
+        self._import_directory = self._settings.get(IMPORT_DIRECTORY)
+        self._save_directory = self._settings.get(SAVE_DIRECTORY)
+        self._database_path = self._settings.get(DATABASE_PATH)
+        self._figure_export_format = self._settings.get(FIGURE_FORMAT)
+        self._render_quality = self._settings.get(RENDERING_QUALITY)
         self.axes_right = None
         self.axes_gradient = None
         self._overview_dataset_lines = {}
@@ -347,26 +457,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_all()
         self.resize(1500, 900)
 
-    def _read_json_setting(self, key: str):
-        raw = self._settings.value(key, "")
-        if isinstance(raw, dict):
-            return deepcopy(raw)
-        if not raw:
-            return {}
-        try:
-            value = json.loads(str(raw))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return {}
-        return value if isinstance(value, dict) else {}
-
-    def _write_json_setting(self, key: str, value):
-        self._settings.setValue(key, json.dumps(value, ensure_ascii=False))
-
     def _save_global_preset_file(self):
         try:
             save_preset_store(
                 self._global_condition_presets,
                 self._global_gradient_presets,
+                metadata=self._global_preset_metadata,
             )
         except (OSError, TypeError, ValueError):
             # QSettings remains the fallback if the roaming-profile directory
@@ -379,10 +475,35 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._global_condition_presets = deepcopy(self.project.condition_presets)
         self._global_gradient_presets = deepcopy(self.project.gradient_presets)
-        self._write_json_setting("presets/conditions", self._global_condition_presets)
-        self._write_json_setting("presets/gradients", self._global_gradient_presets)
+        self._reconcile_global_preset_metadata()
+        self._settings.set(
+            LEGACY_CONDITION_PRESETS, self._global_condition_presets
+        )
+        self._settings.set(LEGACY_GRADIENT_PRESETS, self._global_gradient_presets)
         self._settings.sync()
         self._save_global_preset_file()
+
+    def _reconcile_global_preset_metadata(self):
+        for kind, presets in (
+            ("conditions", self._global_condition_presets),
+            ("gradients", self._global_gradient_presets),
+        ):
+            records = self._global_preset_metadata.setdefault(kind, {})
+            for name in presets:
+                if name not in records:
+                    record_preset_saved(
+                        self._global_preset_metadata, kind, "", name
+                    )
+            for name in list(records):
+                if name not in presets:
+                    record_preset_deleted(
+                        self._global_preset_metadata, kind, name
+                    )
+        self._global_preset_metadata = normalize_preset_metadata(
+            self._global_condition_presets,
+            self._global_gradient_presets,
+            self._global_preset_metadata,
+        )
 
     def _merge_global_presets_into_project(self):
         project_conditions = sanitize_condition_presets(self.project.condition_presets)
@@ -394,10 +515,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, payload in project_conditions.items():
             if name not in self._global_condition_presets:
                 self._global_condition_presets[name] = deepcopy(payload)
+                record_preset_saved(
+                    self._global_preset_metadata, "conditions", "", name
+                )
                 imported = True
         for name, payload in project_gradients.items():
             if name not in self._global_gradient_presets:
                 self._global_gradient_presets[name] = deepcopy(payload)
+                record_preset_saved(
+                    self._global_preset_metadata, "gradients", "", name
+                )
                 imported = True
         merged_conditions = project_conditions
         merged_conditions.update(deepcopy(self._global_condition_presets))
@@ -406,15 +533,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.condition_presets = merged_conditions
         self.project.gradient_presets = merged_gradients
         if imported:
-            self._write_json_setting("presets/conditions", self._global_condition_presets)
-            self._write_json_setting("presets/gradients", self._global_gradient_presets)
+            self._settings.set(
+                LEGACY_CONDITION_PRESETS, self._global_condition_presets
+            )
+            self._settings.set(
+                LEGACY_GRADIENT_PRESETS, self._global_gradient_presets
+            )
             self._settings.sync()
             self._save_global_preset_file()
 
     def _default_save_path(self, filename: str) -> str:
-        last_directory = str(
-            self._settings.value("paths/last_save_directory", "") or ""
-        )
+        last_directory = self._settings.get(LAST_SAVE_DIRECTORY)
         directory = self._save_directory or last_directory
         if directory and Path(directory).is_dir():
             return str(Path(directory) / filename)
@@ -423,8 +552,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _remember_save_path(self, path: str):
         directory = Path(path).parent
         if directory.is_dir():
-            self._settings.setValue("paths/last_save_directory", str(directory))
-            self._settings.sync()
+            self._settings.set(LAST_SAVE_DIRECTORY, str(directory), sync=True)
 
     def _is_lightweight_rendering(self) -> bool:
         return self._render_quality == LIGHTWEIGHT
@@ -575,8 +703,7 @@ class MainWindow(QtWidgets.QMainWindow):
         changed = normalized != self._render_quality
         self._render_quality = normalized
         if persist:
-            self._settings.setValue("rendering/quality", normalized)
-            self._settings.sync()
+            self._settings.set(RENDERING_QUALITY, normalized, sync=True)
         if changed:
             self._set_figure_layout_quality()
             if replot and hasattr(self, "axes"):
@@ -673,6 +800,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
+        self.project_location_label = QtWidgets.QLabel()
+        self.project_location_label.setMaximumWidth(520)
+        self.statusBar().addPermanentWidget(self.project_location_label)
         root = QtWidgets.QVBoxLayout(central)
         splitter = QtWidgets.QSplitter()
         root.addWidget(splitter, 1)
@@ -685,14 +815,22 @@ class MainWindow(QtWidgets.QMainWindow):
         font.setBold(True)
         self.dataset_title.setFont(font)
         left_layout.addWidget(self.dataset_title)
-        self.dataset_table = QtWidgets.QTableWidget(0, 10)
+        self.dataset_table = DatasetTableWidget(0, DATASET_COLUMN_COUNT)
         self.dataset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.dataset_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        extended_selection = (
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.ExtendedSelection
+        )
+        self.dataset_table.setSelectionMode(extended_selection)
         self.dataset_table.setWordWrap(False)
         self.dataset_table.verticalHeader().setVisible(False)
         self.dataset_table.itemChanged.connect(self._dataset_item_changed)
         self.dataset_table.itemSelectionChanged.connect(self._dataset_selection_changed)
-        self.dataset_table.setItemDelegateForColumn(9, LeftElideDelegate(self.dataset_table))
+        self.dataset_table.rowMoveRequested.connect(self.move_dataset_to)
+        self.dataset_table.setItemDelegateForColumn(
+            DATASET_SOURCE_COLUMN, LeftElideDelegate(self.dataset_table)
+        )
         self.dataset_table.viewport().installEventFilter(self)
         left_layout.addWidget(self.dataset_table, 1)
         button_grid = QtWidgets.QGridLayout()
@@ -986,6 +1124,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _capture_analysis_state(self):
         dataset_fields = (
+            "run_id",
             "label",
             "short_label",
             "measurement",
@@ -999,6 +1138,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         return {
             "method": deepcopy(self.project.method),
+            "runs": deepcopy(self.project.runs),
             "annotations": deepcopy(self.project.annotations),
             "condition_presets": deepcopy(self.project.condition_presets),
             "gradient_presets": deepcopy(self.project.gradient_presets),
@@ -1013,6 +1153,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _restore_analysis_state(self, state):
         self.project.method = deepcopy(state["method"])
+        self.project.runs = deepcopy(state.get("runs", self.project.runs))
         self.project.annotations = deepcopy(state.get("annotations", []))
         self.project.condition_presets = deepcopy(state["condition_presets"])
         self.project.gradient_presets = deepcopy(state["gradient_presets"])
@@ -1033,6 +1174,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
             for field, value in values.items():
                 setattr(dataset, field, deepcopy(value))
+        self.project.rebuild_run_index(create_missing=False)
 
     def _push_undo_snapshot(self, state, label: str):
         self._undo_stack.append((label, state))
@@ -1041,7 +1183,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_undo_actions()
 
     def _history_label(self, japanese: str, english: str) -> str:
-        return japanese if self.project.ui_language == "ja" else english
+        return japanese if self._application_language == "ja" else english
 
     def _reset_undo_history(self):
         self._undo_stack = []
@@ -1122,10 +1264,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def move_selected_dataset(self, direction: int):
         row = self.dataset_table.currentRow()
         target = row + (-1 if direction < 0 else 1)
-        if not (0 <= row < len(self.project.datasets)) or not (
-            0 <= target < len(self.project.datasets)
+        self.move_dataset_to(row, target)
+
+    def move_dataset_to(self, row: int, target: int) -> bool:
+        if (
+            not (0 <= row < len(self.project.datasets))
+            or not (0 <= target < len(self.project.datasets))
+            or row == target
         ):
-            return
+            return False
         before = self._capture_analysis_state()
         dataset = self.project.datasets.pop(row)
         self.project.datasets.insert(target, dataset)
@@ -1139,6 +1286,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_dataset_table(target)
         self._plot()
         self._update_title()
+        return True
 
     def _update_dataset_order_buttons(self):
         row = self.dataset_table.currentRow()
@@ -1152,6 +1300,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.new_action = self._action(self.new_project)
         self.open_action = self._action(self.open_project)
         self.save_action = self._action(self.save_project)
+        self.save_action.setShortcut(STANDARD_SAVE_SHORTCUT)
         self.save_as_action = self._action(self.save_project_as)
         self.import_action = self._action(self.import_ascii)
         self.export_figure_action = self._action(self.export_figure)
@@ -1258,6 +1407,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dataset_table.setHorizontalHeaderLabels(
             (
                 t("visible"),
+                t("run_id"),
                 t("label"),
                 t("wavelength"),
                 t("group"),
@@ -1334,14 +1484,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select_all_peaks_button.setText(t("select_all_peaks"))
         self.peak_title.setText(t("peaks"))
         self._set_peak_headers()
-        self.japanese_action.setChecked(self.project.ui_language == "ja")
-        self.english_action.setChecked(self.project.ui_language == "en")
+        self.japanese_action.setChecked(self._application_language == "ja")
+        self.english_action.setChecked(self._application_language == "en")
         self._update_undo_actions()
         self._update_title()
         self._plot()
 
     def _set_peak_headers(self):
-        ja = self.project.ui_language == "ja"
+        ja = self._application_language == "ja"
         headers = (
             "#",
             "開始 (min)" if ja else "Start (min)",
@@ -1366,15 +1516,36 @@ class MainWindow(QtWidgets.QMainWindow):
         self.peak_table.setHorizontalHeaderLabels(headers)
 
     def set_language(self, language: str):
-        self.project.ui_language = language
-        self.translator.set_language(language)
-        self.project.dirty = True
+        self._application_language = language if language in ("ja", "en") else "ja"
+        self._settings.set(
+            UI_LANGUAGE, self._application_language, sync=True
+        )
+        self.translator.set_language(self._application_language)
         self._retranslate()
 
     def _update_title(self):
         marker = "*" if self.project.dirty else ""
         name = Path(self.project.project_path).name if self.project.project_path else self.project.title
         self.setWindowTitle("%s%s — %s %s" % (name, marker, APP_NAME, APP_VERSION))
+        if self.project.project_path:
+            absolute_path = str(Path(self.project.project_path).absolute())
+            location = self.translator(
+                "project_location_saved", path=absolute_path
+            )
+        else:
+            location = self.translator("project_location_unsaved")
+        elide_mode = (
+            QtCore.Qt.TextElideMode.ElideMiddle
+            if QT_API == 6
+            else QtCore.Qt.ElideMiddle
+        )
+        self.project_location_label.setText(
+            self.project_location_label.fontMetrics().elidedText(
+                location, elide_mode, 500
+            )
+        )
+        self.project_location_label.setToolTip(location)
+        self.project_location_label.setAccessibleName(location)
 
     def _refresh_all(self, selected_row: Optional[int] = None):
         self._refresh_dataset_table(selected_row)
@@ -1392,25 +1563,47 @@ class MainWindow(QtWidgets.QMainWindow):
             show = _read_only_item("")
             show.setCheckState(CHECKED if dataset.visible else UNCHECKED)
             show.setData(USER_ROLE, dataset.id)
-            self.dataset_table.setItem(row, 0, show)
+            self.dataset_table.setItem(row, DATASET_VISIBLE_COLUMN, show)
+            run_id = _read_only_item(dataset.run_id)
+            run_id.setData(USER_ROLE, dataset.run_id)
+            run_id.setToolTip(dataset.run_id)
+            self.dataset_table.setItem(row, DATASET_RUN_ID_COLUMN, run_id)
             label = QtWidgets.QTableWidgetItem(dataset.label)
             label.setData(USER_ROLE, dataset.id)
-            self.dataset_table.setItem(row, 1, label)
+            self.dataset_table.setItem(row, DATASET_LABEL_COLUMN, label)
             self.dataset_table.setItem(
                 row,
-                2,
+                DATASET_WAVELENGTH_COLUMN,
                 QtWidgets.QTableWidgetItem(_format(dataset.measurement.wavelength_nm)),
             )
-            self.dataset_table.setItem(row, 3, QtWidgets.QTableWidgetItem(dataset.measurement.group))
-            self.dataset_table.setItem(row, 4, QtWidgets.QTableWidgetItem(str(dataset.y_axis)))
-            self.dataset_table.setItem(row, 5, QtWidgets.QTableWidgetItem(_format(dataset.measurement.aux_range_au_per_v)))
-            self.dataset_table.setItem(row, 6, QtWidgets.QTableWidgetItem(_format(dataset.x_shift_min)))
-            self.dataset_table.setItem(row, 7, QtWidgets.QTableWidgetItem(_format(dataset.offset)))
+            self.dataset_table.setItem(
+                row,
+                DATASET_GROUP_COLUMN,
+                QtWidgets.QTableWidgetItem(dataset.measurement.group),
+            )
+            self.dataset_table.setItem(
+                row, DATASET_Y_AXIS_COLUMN, QtWidgets.QTableWidgetItem(str(dataset.y_axis))
+            )
+            self.dataset_table.setItem(
+                row,
+                DATASET_AUV_COLUMN,
+                QtWidgets.QTableWidgetItem(_format(dataset.measurement.aux_range_au_per_v)),
+            )
+            self.dataset_table.setItem(
+                row,
+                DATASET_X_SHIFT_COLUMN,
+                QtWidgets.QTableWidgetItem(_format(dataset.x_shift_min)),
+            )
+            self.dataset_table.setItem(
+                row,
+                DATASET_OFFSET_COLUMN,
+                QtWidgets.QTableWidgetItem(_format(dataset.offset)),
+            )
             color_value = dataset.color or COLORS[row % len(COLORS)]
             color_item = _read_only_item(color_value)
             color_item.setBackground(QtGui.QColor(color_value))
             color_item.setForeground(QtGui.QColor("#ffffff" if QtGui.QColor(color_value).lightness() < 128 else "#000000"))
-            self.dataset_table.setItem(row, 8, color_item)
+            self.dataset_table.setItem(row, DATASET_COLOR_COLUMN, color_item)
             source_text = dataset.original_path or dataset.original_filename
             source = _read_only_item(source_text)
             source.setToolTip(dataset.original_path)
@@ -1419,9 +1612,10 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 alignment = QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
             source.setTextAlignment(alignment)
-            self.dataset_table.setItem(row, 9, source)
+            self.dataset_table.setItem(row, DATASET_SOURCE_COLUMN, source)
         self.dataset_table.resizeColumnsToContents()
-        self.dataset_table.setColumnWidth(9, 360)
+        self.dataset_table.setColumnWidth(DATASET_RUN_ID_COLUMN, 160)
+        self.dataset_table.setColumnWidth(DATASET_SOURCE_COLUMN, 360)
         self.dataset_table.horizontalHeader().setStretchLastSection(True)
         self._updating_table = False
         if self.project.datasets:
@@ -1435,6 +1629,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return self.project.datasets[row]
         return None
 
+    def _selected_dataset_rows(self):
+        selection = self.dataset_table.selectionModel()
+        if selection is None:
+            return []
+        return sorted(
+            {
+                index.row()
+                for index in selection.selectedRows()
+                if 0 <= index.row() < len(self.project.datasets)
+            }
+        )
+
     def _dataset_item_changed(self, item: QtWidgets.QTableWidgetItem):
         if self._updating_table:
             return
@@ -1443,38 +1649,40 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         dataset = self.project.datasets[row]
         before = self._capture_analysis_state()
+        label_changed = False
         try:
-            if column == 0:
+            if column == DATASET_VISIBLE_COLUMN:
                 dataset.visible = item.checkState() == CHECKED
-            elif column == 1:
+            elif column == DATASET_LABEL_COLUMN:
+                label_changed = True
                 old_label = dataset.label
                 dataset.label = item.text().strip() or dataset.original_filename
                 if not dataset.short_label or dataset.short_label == old_label:
                     dataset.short_label = dataset.label
-            elif column == 2:
+            elif column == DATASET_WAVELENGTH_COLUMN:
                 text = item.text().strip()
                 wavelength = float(text) if text else None
                 if wavelength is not None and wavelength <= 0:
                     raise ValueError("Wavelength must be positive")
                 dataset.measurement.wavelength_nm = wavelength
                 recalculate_dataset_peaks(dataset)
-            elif column == 3:
+            elif column == DATASET_GROUP_COLUMN:
                 dataset.measurement.group = item.text().strip()
-            elif column == 4:
+            elif column == DATASET_Y_AXIS_COLUMN:
                 axis = int(item.text().strip())
                 if axis not in (1, 2):
                     raise ValueError("Y axis must be 1 or 2")
                 dataset.y_axis = axis
-            elif column == 5:
+            elif column == DATASET_AUV_COLUMN:
                 text = item.text().strip()
                 dataset.measurement.aux_range_au_per_v = float(text) if text else None
                 if dataset.measurement.aux_range_au_per_v is not None and dataset.measurement.aux_range_au_per_v <= 0:
                     raise ValueError("AU/V must be positive")
                 recalculate_dataset_peaks(dataset)
-            elif column == 6:
+            elif column == DATASET_X_SHIFT_COLUMN:
                 dataset.x_shift_min = float(item.text().strip() or "0")
                 recalculate_dataset_peaks(dataset)
-            elif column == 7:
+            elif column == DATASET_OFFSET_COLUMN:
                 dataset.offset = float(item.text().strip() or "0")
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), str(exc))
@@ -1484,6 +1692,8 @@ class MainWindow(QtWidgets.QMainWindow):
             before, self._history_label("クロマトグラム設定", "Chromatogram settings")
         )
         self.project.dirty = True
+        if label_changed:
+            self._refresh_dataset_table(row)
         self._refresh_peak_table()
         self._plot()
         self._update_title()
@@ -2452,7 +2662,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = TextAnnotationDialog(
             annotation,
             self.project.datasets,
-            self.project.ui_language,
+            self._application_language,
             self,
             allow_delete=True,
         )
@@ -2493,7 +2703,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = TextAnnotationDialog(
             annotation,
             self.project.datasets,
-            self.project.ui_language,
+            self._application_language,
             self,
         )
         accepted = bool(dialog_exec(dialog))
@@ -2675,8 +2885,12 @@ class MainWindow(QtWidgets.QMainWindow):
         row = next((i for i, item in enumerate(self.project.datasets) if item.id == dataset.id), -1)
         if row >= 0:
             self._updating_table = True
-            self.dataset_table.item(row, 6).setText(_format(dataset.x_shift_min))
-            self.dataset_table.item(row, 7).setText(_format(dataset.offset))
+            self.dataset_table.item(row, DATASET_X_SHIFT_COLUMN).setText(
+                _format(dataset.x_shift_min)
+            )
+            self.dataset_table.item(row, DATASET_OFFSET_COLUMN).setText(
+                _format(dataset.offset)
+            )
             self._updating_table = False
         self._plot()
         self._update_title()
@@ -2755,17 +2969,13 @@ class MainWindow(QtWidgets.QMainWindow):
                     x_right = full_right
             self.axes.set_xlim(x_left, x_right)
         if mode in ("both", "y"):
-            selected = self._selected_dataset()
-            selected_axis = self.axes_right if (
-                selected is not None and selected.y_axis == 2 and self.axes_right is not None
-            ) else self.axes
             zoomable_axes = tuple(
                 axis for axis in (self.axes, self.axes_right) if axis is not None
             )
             targets = (
                 [axis for axis in y_axes if axis in zoomable_axes]
                 if y_axes is not None
-                else [source_axis if source_axis in zoomable_axes else selected_axis]
+                else list(zoomable_axes)
             )
             center_map = y_centers or {}
             for target_axis in targets:
@@ -3015,7 +3225,7 @@ class MainWindow(QtWidgets.QMainWindow):
         peak = dataset.peaks[row]
         peak_id = peak.id
         before = self._capture_analysis_state()
-        dialog = PeakRangeDialog(peak, float(dataset.time_min[0]), float(dataset.time_min[-1]), self.project.ui_language, self)
+        dialog = PeakRangeDialog(peak, float(dataset.time_min[0]), float(dataset.time_min[-1]), self._application_language, self)
         if dialog_exec(dialog):
             peak.start_min = dialog.start.value()
             peak.end_min = dialog.end.value()
@@ -3088,7 +3298,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self,
                 APP_NAME,
                 "条件に一致する新しいピーク候補はありません。"
-                if self.project.ui_language == "ja"
+                if self._application_language == "ja"
                 else "No new peak candidates matched the current settings.",
             )
             return
@@ -3136,14 +3346,16 @@ class MainWindow(QtWidgets.QMainWindow):
         paths = [str(path) for path in paths]
         if not paths:
             return 0
-        self._settings.setValue("paths/last_import_directory", str(Path(paths[0]).parent))
+        self._settings.set(
+            LAST_IMPORT_DIRECTORY, str(Path(paths[0]).parent), sync=True
+        )
         imported = 0
         errors: List[str] = []
         for path in paths:
             try:
                 dataset = load_chromatogram_file(path)
                 dataset.color = COLORS[len(self.project.datasets) % len(COLORS)]
-                self.project.datasets.append(dataset)
+                self.project.add_dataset(dataset)
                 imported += 1
             except Exception as exc:
                 errors.append("%s: %s" % (Path(path).name, exc))
@@ -3157,7 +3369,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return imported
 
     def import_ascii(self):
-        last_directory = str(self._settings.value("paths/last_import_directory", "") or "")
+        last_directory = self._settings.get(LAST_IMPORT_DIRECTORY)
         start_directory = self._import_directory or last_directory
         if start_directory and not Path(start_directory).is_dir():
             start_directory = ""
@@ -3219,7 +3431,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = PreferencesDialog(
             self.project.method,
             self._import_directory,
-            self.project.ui_language,
+            self._application_language,
             self,
             save_directory=self._save_directory,
             database_path=self._database_path,
@@ -3230,10 +3442,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._import_directory = dialog.import_directory_value
         self._save_directory = dialog.save_directory_value
         self._database_path = dialog.database_path_value
-        self._settings.setValue("paths/import_directory", self._import_directory)
-        self._settings.setValue("paths/save_directory", self._save_directory)
-        self._settings.setValue("database/path", self._database_path)
-        self._settings.sync()
+        self._settings.set_many(
+            {
+                IMPORT_DIRECTORY: self._import_directory,
+                SAVE_DIRECTORY: self._save_directory,
+                DATABASE_PATH: self._database_path,
+            }
+        )
         render_quality_changed = dialog.render_quality_value != self._render_quality
         self._set_render_quality(
             dialog.render_quality_value,
@@ -3302,7 +3517,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
         dialog = LabDatabaseDialog(
-            self._database_path, self.project.ui_language, self
+            self._database_path, self._application_language, self
         )
         dialog_exec(dialog)
 
@@ -3310,15 +3525,16 @@ class MainWindow(QtWidgets.QMainWindow):
         row = self.dataset_table.currentRow()
         if not (0 <= row < len(self.project.datasets)):
             return
+        dataset = self.project.datasets[row]
         answer = QtWidgets.QMessageBox.question(
             self,
             self.translator("warning"),
-            ("選択データをプロジェクトから削除しますか？" if self.project.ui_language == "ja" else "Remove the selected data from this project?"),
+            self.translator("confirm_remove_dataset", label=dataset.label),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:
             return
-        del self.project.datasets[row]
+        self.project.remove_dataset_at(row)
         self._reset_undo_history()
         self.project.dirty = True
         self._refresh_all(max(0, row - 1))
@@ -3329,7 +3545,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
         before = self._capture_analysis_state()
-        dialog = MetadataDialog(dataset, self.project.ui_language, self)
+        dialog = MetadataDialog(dataset, self._application_language, self)
         if dialog_exec(dialog):
             try:
                 recalculate_dataset_peaks(dataset)
@@ -3362,7 +3578,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def edit_axis_labels(self):
         before = self._capture_analysis_state()
-        dialog = AxisLabelsDialog(self.project.method, self.project.ui_language, self)
+        dialog = AxisLabelsDialog(self.project.method, self._application_language, self)
         if not dialog_exec(dialog):
             return
         dialog.apply_to_method(self.project.method)
@@ -3380,10 +3596,12 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog = BatchMetadataDialog(
             self.project,
             selected.id if selected is not None else "",
-            self.project.ui_language,
+            self._application_language,
             self,
+            preset_metadata=self._global_preset_metadata,
         )
         if dialog_exec(dialog):
+            self._global_preset_metadata = dialog.preset_metadata
             for dataset in self.project.datasets:
                 try:
                     recalculate_dataset_peaks(dataset)
@@ -3407,12 +3625,14 @@ class MainWindow(QtWidgets.QMainWindow):
         before = self._capture_analysis_state()
         dialog = GradientDialog(
             dataset,
-            self.project.ui_language,
+            self._application_language,
             self,
             presets=self.project.gradient_presets,
+            preset_metadata=self._global_preset_metadata,
         )
         if dialog_exec(dialog):
             self.project.gradient_presets = dialog.presets
+            self._global_preset_metadata = dialog.preset_metadata
             self._persist_global_presets()
             try:
                 recalculate_dataset_peaks(dataset)
@@ -3445,14 +3665,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._confirm_unsaved():
             return
         self.project = Project(
-            ui_language=self.project.ui_language,
+            ui_language=self._application_language,
             condition_presets=deepcopy(self._global_condition_presets),
             gradient_presets=deepcopy(self._global_gradient_presets),
         )
         self._view_initialized = False
         self._view_history = []
         self._reset_undo_history()
-        self.translator.set_language(self.project.ui_language)
+        self.translator.set_language(self._application_language)
         self._refresh_all()
         self._retranslate()
 
@@ -3462,7 +3682,7 @@ class MainWindow(QtWidgets.QMainWindow):
         path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
             self,
             self.translator("open"),
-            str(self._settings.value("paths/last_project_directory", "") or ""),
+            self._settings.get(LAST_PROJECT_DIRECTORY),
             self.translator("project_filter"),
         )
         if not path:
@@ -3471,16 +3691,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _open_project_path(self, path: str) -> bool:
         try:
-            project = load_project(path)
-            for dataset in project.datasets:
-                recalculate_dataset_peaks(dataset)
-            self.project = project
-            self._settings.setValue("paths/last_project_directory", str(Path(path).parent))
+            self.project = load_project(path)
+            self._settings.set(
+                LAST_PROJECT_DIRECTORY, str(Path(path).parent), sync=True
+            )
             self._merge_global_presets_into_project()
             self._view_initialized = False
             self._view_history = []
             self._reset_undo_history()
-            self.translator.set_language(self.project.ui_language)
+            for dataset in self.project.datasets:
+                recalculate_dataset_peaks(dataset)
+            self.translator.set_language(self._application_language)
             self._refresh_all()
             self._retranslate()
             return True
@@ -3514,10 +3735,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def save_project_as(self) -> bool:
         parts = suggest_project_name_parts(
             self.project,
-            default_author=str(self._settings.value("naming/author", "") or ""),
+            default_author=self._settings.get(NAMING_AUTHOR),
         )
         naming_dialog = ProjectNamingDialog(
-            parts, self.project.ui_language, self
+            parts, self._application_language, self
         )
         if not dialog_exec(naming_dialog):
             return False
@@ -3534,8 +3755,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.lower().endswith(".hplcproj"):
             path += ".hplcproj"
         apply_project_name_parts(self.project, parts)
-        self._settings.setValue("naming/author", self.project.author)
-        self._settings.sync()
+        self._settings.set(NAMING_AUTHOR, self.project.author, sync=True)
         self.project.project_path = path
         return self.save_project()
 
@@ -3590,8 +3810,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             path += ".%s" % selected_format
         self._figure_export_format = selected_format
-        self._settings.setValue("export/figure_format", selected_format)
-        self._settings.sync()
+        self._settings.set(FIGURE_FORMAT, selected_format, sync=True)
         try:
             self._save_figure_file(path)
             self._remember_save_path(path)
@@ -3688,7 +3907,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path.lower().endswith(".csv"):
             path += ".csv"
         try:
-            export_metadata_csv(path, self.project.datasets, self.project.ui_language)
+            export_metadata_csv(path, self.project.datasets, self._application_language)
             self._remember_save_path(path)
             self.statusBar().showMessage(self.translator("saved", path=path), 5000)
         except Exception as exc:
@@ -3713,7 +3932,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             actual = export_analysis_report_pdf(
-                path, self.project, datasets, self.project.ui_language
+                path, self.project, datasets, self._application_language
             )
             self._remember_save_path(actual)
             self.statusBar().showMessage(self.translator("saved", path=actual), 7000)
@@ -3781,12 +4000,12 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             with tempfile.TemporaryDirectory(prefix="hplc_report_") as directory:
                 pages = render_analysis_report_pages(
-                    directory, self.project, datasets, self.project.ui_language
+                    directory, self.project, datasets, self._application_language
                 )
                 self._draw_report_pages_to_printer(printer, pages)
             self.statusBar().showMessage(
                 "印刷ジョブを送信しました。"
-                if self.project.ui_language == "ja"
+                if self._application_language == "ja"
                 else "The report was sent to the printer.",
                 7000,
             )
@@ -3794,11 +4013,11 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
 
     def show_quantitation_help(self):
-        dialog = QuantitationHelpDialog(self.project.ui_language, self)
+        dialog = QuantitationHelpDialog(self._application_language, self)
         dialog_exec(dialog)
 
     def about(self):
-        if self.project.ui_language == "ja":
+        if self._application_language == "ja":
             text = (
                 "島津GCsolution / LCsolution / PACsolutionのASCIIクロマトグラムとPACsolution GCDを、"
                 "元データを保持したまま管理・重ね描き・積分・自動ピーク検出・定量・作図し、"

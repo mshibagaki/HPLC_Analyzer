@@ -41,6 +41,8 @@ if not defined PYTHON_CMD (
 
 %PYTHON_CMD% scripts\verify_windows11_x64.py --interpreter
 if errorlevel 1 goto :failed
+call scripts\load_version.bat %PYTHON_CMD%
+if errorlevel 1 goto :failed
 
 if not exist .venv-win11-x64\Scripts\python.exe (
   %PYTHON_CMD% -m venv .venv-win11-x64
@@ -67,6 +69,9 @@ python -m unittest discover -s tests -v
 if errorlevel 1 goto :failed
 set "QT_QPA_PLATFORM="
 set "HPLC_ANALYZER_BUILD_DEBUG="
+set "HPLC_VERSION_FILE=%PROJECT_ROOT%\build\version-info\windows11-x64.txt"
+python scripts\write_windows_version_info.py --target windows11-x64 --output "%HPLC_VERSION_FILE%"
+if errorlevel 1 goto :failed
 python -m PyInstaller --noconfirm --clean --distpath dist\windows11-x64 --workpath build\windows11-x64 HPLC_Analyzer.spec
 if errorlevel 1 goto :failed
 python scripts\verify_windows11_x64.py --exe dist\windows11-x64\HPLC_Analyzer.exe
@@ -77,7 +82,7 @@ if errorlevel 1 goto :failed
 echo.
 echo Build complete ^(Windows 11 x64 / 64-bit^):
 echo   App      : dist\windows11-x64\HPLC_Analyzer.exe
-echo   Installer: dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe
+echo   Installer: dist\installers\%WINDOWS11_INSTALLER_NAME%
 if not defined HPLC_NO_PAUSE pause
 exit /b 0
 

@@ -154,7 +154,7 @@ def export_metadata_csv(path: str, datasets: Iterable[Dataset], language: str = 
                     meta.molar_absorptivity_214,
                     meta.molar_absorptivity_280,
                     meta.molecular_weight_g_mol,
-                    dataset.gradient_preset_name,
+                    dataset.effective_gradient_preset_name(),
                     dataset.y_axis,
                     dataset.x_shift_min,
                     dataset.offset,

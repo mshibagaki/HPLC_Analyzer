@@ -10,6 +10,7 @@ import numpy as np
 
 from .gcd_parser import CFB_SIGNATURE, GcdParseError, parse_gcd_bytes
 from .models import Dataset, MeasurementMetadata
+from .timestamps import acquisition_timestamp
 
 
 class ParseError(ValueError):
@@ -192,7 +193,9 @@ def dataset_from_bytes(raw: bytes, source_path: str = "", label: str = "") -> Da
         instrument_name=parsed.metadata.get("Configration.Instrument Name", "")
         or parsed.metadata.get("Configuration.Instrument Name", ""),
         method_name=parsed.metadata.get("Original Files.Method File", ""),
-        acquisition_datetime=parsed.metadata.get("Sample Information.Acquisition Date", ""),
+        acquisition_datetime=acquisition_timestamp(
+            parsed.metadata, original_filename
+        ),
     )
     dataset = Dataset(
         label=display_label,

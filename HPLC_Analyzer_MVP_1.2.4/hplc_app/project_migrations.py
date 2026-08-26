@@ -12,6 +12,7 @@ from copy import deepcopy
 from typing import Any, Callable, Dict
 
 from . import PROJECT_FORMAT_MAJOR, PROJECT_SCHEMA_VERSION
+from .timestamps import acquisition_timestamp
 
 
 Manifest = Dict[str, Any]
@@ -132,6 +133,170 @@ def migrate_101_to_102(manifest: Manifest) -> Manifest:
     return migrated
 
 
+_RUN_MEASUREMENT_FIELDS = (
+    "sample_name",
+    "sample_id",
+    "group",
+    "replicate",
+    "tags",
+    "comments",
+    "instrument_name",
+    "method_name",
+    "flow_rate_ml_min",
+    "column_name",
+    "column_temperature_c",
+    "injection_volume_ul",
+    "cell_path_length_cm",
+    "analyte_name",
+    "molar_absorptivity_214",
+    "molar_absorptivity_280",
+    "molecular_weight_g_mol",
+    "solvents",
+    "gradient",
+)
+
+_RUN_MEASUREMENT_DEFAULTS = {
+    "sample_name": "",
+    "sample_id": "",
+    "group": "",
+    "replicate": "",
+    "tags": [],
+    "comments": "",
+    "instrument_name": "",
+    "method_name": "",
+    "flow_rate_ml_min": None,
+    "column_name": "",
+    "column_temperature_c": None,
+    "injection_volume_ul": None,
+    "cell_path_length_cm": 1.0,
+    "analyte_name": "",
+    "molar_absorptivity_214": None,
+    "molar_absorptivity_280": None,
+    "molecular_weight_g_mol": None,
+    "solvents": {},
+    "gradient": [],
+}
+
+
+def _migration_run_id(dataset: Manifest, index: int, used: set) -> str:
+    source_id = str(dataset.get("id", "") or (index + 1))
+    base = "run-" + source_id
+    candidate = base
+    suffix = 2
+    while candidate in used:
+        candidate = "%s-%d" % (base, suffix)
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def migrate_102_to_103(manifest: Manifest) -> Manifest:
+    """Create exactly one authoritative Run for each legacy Dataset."""
+    migrated = _with_schema(manifest, 103)
+    datasets = migrated.get("datasets", [])
+    if datasets is None:
+        datasets = []
+        migrated["datasets"] = datasets
+    if not isinstance(datasets, list):
+        raise ProjectMigrationError("Project datasets must be an array")
+
+    runs = []
+    used_ids = set()
+    for index, dataset in enumerate(datasets):
+        if not isinstance(dataset, dict):
+            raise ProjectMigrationError("Each project dataset must be an object")
+        measurement = dataset.get("measurement", {})
+        if measurement is None:
+            measurement = {}
+        if not isinstance(measurement, dict):
+            raise ProjectMigrationError("Dataset measurement must be an object")
+        run_id = _migration_run_id(dataset, index, used_ids)
+        run = {
+            "id": run_id,
+            "timestamp": acquisition_timestamp(
+                {
+                    "Sample Information.Acquisition Date": deepcopy(
+                        measurement.get("acquisition_datetime", "")
+                    )
+                },
+                str(dataset.get("original_filename", "") or ""),
+            ),
+            "gradient_preset_name": deepcopy(
+                dataset.get("gradient_preset_name", "")
+            ),
+        }
+        for field_name in _RUN_MEASUREMENT_FIELDS:
+            run[field_name] = deepcopy(
+                measurement.get(field_name, _RUN_MEASUREMENT_DEFAULTS[field_name])
+            )
+        if not isinstance(run["tags"], list):
+            run["tags"] = []
+        if not isinstance(run["solvents"], dict):
+            run["solvents"] = {}
+        if not isinstance(run["gradient"], list):
+            run["gradient"] = []
+        dataset["run_id"] = run_id
+        runs.append(run)
+    migrated["runs"] = runs
+    return migrated
+
+
+def migrate_103_to_104(manifest: Manifest) -> Manifest:
+    """Promote display labels to the shared Run authority.
+
+    Existing schema 103 files may contain different Dataset labels for one
+    Run.  An explicit Run label wins; otherwise the first referencing Dataset
+    in manifest order wins.  The same canonical values are projected back to
+    every Dataset for older v1 readers.
+    """
+    migrated = _with_schema(manifest, 104)
+    runs = migrated.get("runs", [])
+    datasets = migrated.get("datasets", [])
+    if not isinstance(runs, list):
+        raise ProjectMigrationError("Project runs must be an array")
+    if not isinstance(datasets, list):
+        raise ProjectMigrationError("Project datasets must be an array")
+
+    run_index = {}
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ProjectMigrationError("Each project Run must be an object")
+        run_id = str(run.get("id", "") or "")
+        if not run_id:
+            raise ProjectMigrationError("Run ID must be non-empty")
+        if run_id in run_index:
+            raise ProjectMigrationError("Run IDs must be unique")
+        run_index[run_id] = run
+
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            raise ProjectMigrationError("Each project Dataset must be an object")
+        run_id = str(dataset.get("run_id", "") or "")
+        run = run_index.get(run_id)
+        if run is None:
+            raise ProjectMigrationError(
+                "Dataset references a missing Run: %s" % run_id
+            )
+        if not str(run.get("label", "") or "").strip():
+            run["label"] = str(
+                dataset.get("label", "")
+                or dataset.get("original_filename", "")
+                or ""
+            )
+        if not str(run.get("short_label", "") or "").strip():
+            run["short_label"] = str(
+                dataset.get("short_label", "") or run.get("label", "") or ""
+            )
+
+    for dataset in datasets:
+        run = run_index[str(dataset.get("run_id", "") or "")]
+        dataset["label"] = str(run.get("label", "") or "")
+        dataset["short_label"] = str(
+            run.get("short_label", "") or run.get("label", "") or ""
+        )
+    return migrated
+
+
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -146,6 +311,8 @@ LEGACY_MIGRATIONS: Dict[int, Migration] = {
 V1_MIGRATIONS: Dict[int, Migration] = {
     100: migrate_100_to_101,
     101: migrate_101_to_102,
+    102: migrate_102_to_103,
+    103: migrate_103_to_104,
 }
 
 

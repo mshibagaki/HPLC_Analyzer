@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from contextlib import closing
 import csv
+import ast
 import math
 import json
 import os
@@ -10,9 +11,12 @@ from pathlib import Path
 import re
 import sqlite3
 import struct
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 import zipfile
 
 import numpy as np
@@ -38,16 +42,26 @@ from hplc_app.models import (
     AnalysisMethod,
     Dataset,
     GradientPoint,
+    MeasurementMetadata,
     PeakRegion,
     Project,
+    Run,
     Solvent,
     TextAnnotation,
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
 from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
-from hplc_app.preset_store import load_preset_store, save_preset_store
-from hplc_app.project_io import load_project, save_project
+from hplc_app.preset_store import (
+    load_preset_store,
+    load_preset_store_with_metadata,
+    merge_preset_sources,
+    record_preset_saved,
+    record_preset_used,
+    save_preset_store,
+    stable_preset_names,
+)
+from hplc_app.project_io import ProjectError, load_project, save_project
 from hplc_app.project_migrations import (
     ProjectMigrationError,
     migrate_project_manifest,
@@ -64,8 +78,32 @@ from hplc_app.rendering import (
     minmax_decimate,
     screen_series,
 )
+from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
+from hplc_app.settings_store import (
+    ApplicationSettings,
+    DATABASE_PATH,
+    FIGURE_FORMAT,
+    IMPORT_DIRECTORY,
+    LAST_IMPORT_DIRECTORY,
+    LAST_PROJECT_DIRECTORY,
+    LAST_SAVE_DIRECTORY,
+    LEGACY_CONDITION_PRESETS,
+    LEGACY_GRADIENT_PRESETS,
+    NAMING_AUTHOR,
+    RENDERING_QUALITY,
+    SAVE_DIRECTORY,
+    SETTING_SPECS,
+    UI_LANGUAGE,
+)
 from scripts.windows7_import_preflight import EVENT_LOG_COMMAND, PROBES
 from scripts.inspect_gcd import _safe_dump_name
+from scripts.create_upgrade_test_fixture import create_fixture
+from scripts.installer_data_guard import (
+    build_snapshot as build_installer_data_snapshot,
+    compare_snapshots as compare_installer_data_snapshots,
+    read_snapshot as read_installer_data_snapshot,
+    write_snapshot as write_installer_data_snapshot,
+)
 from scripts.verify_windows7_x86 import PE_MACHINE_I386, read_pe_machine
 from scripts.verify_windows7_offline_bundle import (
     EXPECTED_RELATIVE_FILES as WINDOWS7_OFFLINE_FILES,
@@ -88,6 +126,32 @@ from tests.gcd_fixtures import (
     with_u16,
     with_u32,
     with_u64,
+)
+from scripts.package_windows7_offline_bundle import (
+    archive_root_name,
+    default_archive_path,
+)
+from scripts.artifact_names import artifact_filename, installer_basename
+from scripts.read_version import (
+    VersionError,
+    read_version,
+    windows_numeric_version,
+)
+from scripts.release_checksums import (
+    read_sha256sums,
+    verify_sha256sums,
+    write_sha256sums,
+)
+from scripts.release_consistency import (
+    read_pinned_requirements,
+    verify_offline_archive,
+    verify_release_assets,
+    verify_source_consistency,
+)
+from scripts.write_windows_version_info import (
+    expected_version_strings,
+    render_version_info,
+    write_version_info,
 )
 
 
@@ -268,6 +332,66 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(restored.sha256, original.sha256)
             np.testing.assert_array_equal(restored.time_min, original.time_min)
             np.testing.assert_array_equal(restored.intensity_uv, original.intensity_uv)
+    def test_acquisition_timestamp_priority_is_explicit_and_unambiguous(self):
+        metadata = {
+            "Sample Information.Acquisition Date": "2026/05/07 19:33:54",
+            "Header.Output Date": "2099/12/31",
+            "Header.Output Time": "23:59:59",
+        }
+        self.assertEqual(
+            acquisition_timestamp(metadata, "20260508_005353.TXT"),
+            "2026-05-07T19:33:54",
+        )
+        self.assertEqual(
+            acquisition_timestamp(
+                {"Sample Information.Acquisition Date": "vendor-local-time"},
+                "20260508_005353.TXT",
+            ),
+            "vendor-local-time",
+        )
+        self.assertEqual(
+            acquisition_timestamp(
+                {"Header.Output Date": "2026/05/08"},
+                "20260507_193354.TXT",
+            ),
+            "2026-05-07T19:33:54",
+        )
+        self.assertEqual(
+            acquisition_timestamp(
+                {
+                    "Header.Output Date": "2026/05/08",
+                    "Header.Output Time": "00:53:53",
+                },
+                "210601.TXT",
+            ),
+            "",
+        )
+        for filename in (
+            "20260507-193354.gcd",
+            "2026-05-07_19-33-54.TXT",
+            "2026_05_07_19_33_54.txt",
+        ):
+            self.assertEqual(
+                timestamp_from_filename(filename), "2026-05-07T19:33:54"
+            )
+        for ambiguous in (
+            "210601.TXT",
+            "20260507193354.TXT",
+            "sample_20260507_193354.TXT",
+            "20261340_996099.TXT",
+        ):
+            self.assertEqual(timestamp_from_filename(ambiguous), "")
+
+    def test_ascii_import_keeps_label_separate_from_run_timestamp(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        self.assertEqual(dataset.label, "210601")
+        self.assertEqual(
+            dataset.measurement.acquisition_datetime, "2026-05-07T19:33:54"
+        )
+        project = Project(datasets=[dataset])
+        run = project.run_for(dataset)
+        self.assertEqual(run.timestamp, "2026-05-07T19:33:54")
+        self.assertEqual(dataset.label, "210601")
 
 
 class AnalysisTests(unittest.TestCase):
@@ -539,19 +663,145 @@ class ProjectTests(unittest.TestCase):
             ["kept_during_migration"]
         )
 
-    def test_schema_102_remains_current_without_run_model(self):
+    def test_schema_102_creates_one_stable_run_per_legacy_dataset(self):
         manifest = {
             "format_major": 1,
             "schema_version": 102,
             "method": {},
-            "datasets": [{"measurement": {"column_name": "C4"}, "peaks": []}],
+            "datasets": [
+                {
+                    "id": "same-source",
+                    "label": "same label",
+                    "original_filename": "20260507_120000.TXT",
+                    "measurement": {
+                        "sample_name": "sample A",
+                        "acquisition_datetime": "2026-05-07T12:00:00",
+                        "wavelength_nm": 214.0,
+                        "column_name": "C4",
+                    },
+                    "peaks": [{"retention_time_min": 3.2}],
+                    "source_metadata": {"kept": "unchanged"},
+                },
+                {
+                    "id": "same-source",
+                    "label": "same label",
+                    "original_filename": "20260507_120000.TXT",
+                    "measurement": {
+                        "sample_name": "sample A",
+                        "acquisition_datetime": "2026-05-07T12:00:00",
+                        "wavelength_nm": 280.0,
+                        "column_name": "C4",
+                    },
+                    "peaks": [{"retention_time_min": 3.2}],
+                    "source_metadata": {"kept": "unchanged"},
+                },
+            ],
+        }
+        untouched = deepcopy(manifest)
+        migrated = migrate_project_manifest(manifest)
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], 104)
+        self.assertEqual(len(migrated["runs"]), 2)
+        self.assertEqual(
+            [item["id"] for item in migrated["runs"]],
+            ["run-same-source", "run-same-source-2"],
+        )
+        self.assertEqual(
+            [item["run_id"] for item in migrated["datasets"]],
+            ["run-same-source", "run-same-source-2"],
+        )
+        self.assertEqual(
+            [item["label"] for item in migrated["runs"]],
+            ["same label", "same label"],
+        )
+        self.assertEqual(
+            migrated["datasets"][0]["measurement"],
+            untouched["datasets"][0]["measurement"],
+        )
+        self.assertEqual(
+            migrated["datasets"][1]["peaks"],
+            untouched["datasets"][1]["peaks"],
+        )
+        self.assertEqual(
+            migrated["datasets"][0]["source_metadata"],
+            untouched["datasets"][0]["source_metadata"],
+        )
+        self.assertEqual(migrate_project_manifest(migrated), migrated)
+
+    def test_run_migration_uses_strict_timestamp_fallback_without_relabeling(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 102,
+            "method": {},
+            "datasets": [
+                {
+                    "id": "known-timestamp",
+                    "label": "Keep this user label",
+                    "original_filename": "20260507_193354.TXT",
+                    "measurement": {"acquisition_datetime": ""},
+                    "source_metadata": {
+                        "Header.Output Date": "2099/12/31",
+                        "Header.Output Time": "23:59:59",
+                    },
+                },
+                {
+                    "id": "ambiguous-number",
+                    "label": "Also keep this label",
+                    "original_filename": "210601.TXT",
+                    "measurement": {"acquisition_datetime": ""},
+                },
+            ],
         }
         migrated = migrate_project_manifest(manifest)
-        self.assertEqual(migrated["schema_version"], 102)
-        self.assertNotIn("runs", migrated)
-        self.assertNotIn("run_id", migrated["datasets"][0])
         self.assertEqual(
-            migrated["datasets"][0]["measurement"]["column_name"], "C4"
+            [run["timestamp"] for run in migrated["runs"]],
+            ["2026-05-07T19:33:54", ""],
+        )
+        self.assertEqual(
+            [dataset["label"] for dataset in migrated["datasets"]],
+            ["Keep this user label", "Also keep this label"],
+        )
+        self.assertEqual(manifest["datasets"][0]["label"], "Keep this user label")
+    def test_schema_103_promotes_first_dataset_label_to_shared_run(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 103,
+            "runs": [{"id": "run-shared", "sample_name": "sample A"}],
+            "datasets": [
+                {
+                    "id": "channel-214",
+                    "run_id": "run-shared",
+                    "label": "sample A",
+                    "short_label": "A",
+                    "measurement": {"wavelength_nm": 214.0},
+                },
+                {
+                    "id": "channel-280",
+                    "run_id": "run-shared",
+                    "label": "conflicting legacy label",
+                    "short_label": "conflict",
+                    "measurement": {"wavelength_nm": 280.0},
+                },
+            ],
+        }
+        untouched = deepcopy(manifest)
+        migrated = migrate_project_manifest(manifest)
+
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], 104)
+        self.assertEqual(migrated["runs"][0]["label"], "sample A")
+        self.assertEqual(migrated["runs"][0]["short_label"], "A")
+        self.assertEqual(
+            [dataset["label"] for dataset in migrated["datasets"]],
+            ["sample A", "sample A"],
+        )
+        self.assertEqual(
+            [dataset["short_label"] for dataset in migrated["datasets"]],
+            ["A", "A"],
+        )
+        self.assertEqual(
+            [dataset["measurement"]["wavelength_nm"] for dataset in migrated["datasets"]],
+            [214.0, 280.0],
         )
 
     def test_manifest_migration_rejects_invalid_structures_clearly(self):
@@ -604,13 +854,388 @@ class ProjectTests(unittest.TestCase):
             )
             self.assertEqual(saved_path, path)
             payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["format_version"], 1)
-            self.assertEqual(payload["written_by"], "1.2.4")
+            self.assertEqual(payload["format_version"], 2)
             self.assertEqual(payload["written_by"], APP_VERSION)
             conditions, gradients = load_preset_store(path)
             self.assertEqual(conditions["280 nm C4"]["wavelength_nm"], 280.0)
             self.assertNotIn("label", conditions["280 nm C4"])
             self.assertIn("10-90 B", gradients)
+            metadata = payload["preset_metadata"]
+            condition_metadata = metadata["conditions"]["280 nm C4"]
+            self.assertTrue(condition_metadata["id"])
+            self.assertTrue(condition_metadata["created_at"])
+            self.assertEqual(condition_metadata["last_used_at"], "")
+
+    def test_format1_preset_metadata_migration_rename_and_usage_are_stable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "presets.json"
+            legacy = {
+                "format_version": 1,
+                "written_by": "1.2.4",
+                "condition_presets": {"Legacy B": {"wavelength_nm": 280.0}},
+                "gradient_presets": {"Legacy A": {"gradient": [], "solvents": {}}},
+            }
+            path.write_text(json.dumps(legacy), encoding="utf-8")
+            conditions, gradients, metadata = load_preset_store_with_metadata(path)
+            condition_record = metadata["conditions"]["Legacy B"]
+            original_id = condition_record["id"]
+            self.assertTrue(original_id)
+            self.assertEqual(condition_record["created_at"], "")
+            self.assertEqual(condition_record["updated_at"], "")
+            self.assertEqual(condition_record["last_used_at"], "")
+            again = load_preset_store_with_metadata(path)[2]
+            self.assertEqual(
+                again["conditions"]["Legacy B"]["id"], original_id
+            )
+
+            conditions["Renamed B"] = conditions.pop("Legacy B")
+            record_preset_saved(
+                metadata,
+                "conditions",
+                "Legacy B",
+                "Renamed B",
+                now="2026-08-26T12:00:00+09:00",
+            )
+            record_preset_used(
+                metadata,
+                "conditions",
+                "Renamed B",
+                now="2026-08-26T12:30:00+09:00",
+            )
+            save_preset_store(conditions, gradients, path, metadata=metadata)
+            loaded_conditions, _loaded_gradients, loaded_metadata = (
+                load_preset_store_with_metadata(path)
+            )
+            self.assertNotIn("Legacy B", loaded_conditions)
+            renamed = loaded_metadata["conditions"]["Renamed B"]
+            self.assertEqual(renamed["id"], original_id)
+            self.assertEqual(renamed["created_at"], "")
+            self.assertEqual(
+                renamed["updated_at"], "2026-08-26T12:00:00+09:00"
+            )
+            self.assertEqual(
+                renamed["last_used_at"], "2026-08-26T12:30:00+09:00"
+            )
+            self.assertEqual(
+                stable_preset_names(
+                    ["Legacy A", "Renamed B"],
+                    loaded_metadata,
+                    "conditions",
+                ),
+                ["Legacy A", "Renamed B"],
+            )
+
+    def test_application_version_is_single_valid_source_for_runtime_and_builds(self):
+        version_file = ROOT / "hplc_app" / "version.py"
+        self.assertEqual(read_version(version_file), APP_VERSION)
+        self.assertEqual(
+            windows_numeric_version(APP_VERSION),
+            ".".join(APP_VERSION.split("-")[0].split("+")[0].split(".") + ["0"]),
+        )
+        literal_definitions = []
+        version_assignment = re.compile(r"^APP_VERSION\s*=\s*['\"]", re.MULTILINE)
+        for directory in (ROOT / "hplc_app", ROOT / "scripts"):
+            for path in directory.glob("*.py"):
+                if version_assignment.search(path.read_text(encoding="utf-8")):
+                    literal_definitions.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual(literal_definitions, ["hplc_app/version.py"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory) / "version.py"
+            temporary.write_text('APP_VERSION = "1.3.0-rc.2+build.5"\n', encoding="utf-8")
+            self.assertEqual(read_version(temporary), "1.3.0-rc.2+build.5")
+            self.assertEqual(
+                windows_numeric_version(read_version(temporary)), "1.3.0.0"
+            )
+            for invalid_source in (
+                'APP_VERSION = "01.3.0"\n',
+                'APP_VERSION = "1.3"\n',
+                'APP_VERSION = "1.3.0-01"\n',
+                'APP_VERSION = make_version()\n',
+                'OTHER_VERSION = "1.3.0"\n',
+                'APP_VERSION = "1.3.0"\nAPP_VERSION = "1.3.1"\n',
+            ):
+                temporary.write_text(invalid_source, encoding="utf-8")
+                with self.assertRaises(VersionError):
+                    read_version(temporary)
+            with self.assertRaises(VersionError):
+                windows_numeric_version("65536.0.0")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "read_version.py"),
+                    "--version-file",
+                    str(temporary),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            )
+            self.assertEqual(completed.returncode, 1)
+            self.assertIn("[ERROR]", completed.stderr)
+
+        reader = ROOT / "scripts" / "read_version.py"
+        completed = subprocess.run(
+            [sys.executable, str(reader)],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(completed.stdout.strip(), APP_VERSION)
+        reader_source = reader.read_text(encoding="utf-8")
+        self.assertNotIn("import hplc_app", reader_source)
+        self.assertNotIn("PySide", reader_source)
+        self.assertNotIn("numpy", reader_source.lower())
+        self.assertNotIn("matplotlib", reader_source.lower())
+
+        self.assertEqual(
+            archive_root_name(APP_VERSION), "HPLC_Analyzer_MVP_" + APP_VERSION
+        )
+        self.assertEqual(
+            default_archive_path(Path("C:/build"), APP_VERSION).name,
+            "HPLC_Analyzer_{0}_Windows7_Offline_Build.zip".format(APP_VERSION),
+        )
+        for relative in (
+            "build_windows11.bat",
+            "build_windows7_offline.bat",
+            "build_all_windows.bat",
+            "package_windows7_offline_bundle.bat",
+            "scripts/build_installer.bat",
+        ):
+            batch = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("load_version.bat", batch)
+        installer_helper = (ROOT / "scripts" / "build_installer.bat").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("--define=AppVersion=%APP_VERSION%", installer_helper)
+        self.assertIn(
+            "--define=AppVersionNumeric=%APP_VERSION_NUMERIC%", installer_helper
+        )
+        self.assertIn(
+            "--define=ArtifactBaseName=%ARTIFACT_BASE_NAME%", installer_helper
+        )
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        project = Project(title="version propagation", datasets=[dataset])
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = Path(directory) / "version.hplcproj"
+            save_project(str(project_path), project)
+            with zipfile.ZipFile(project_path) as archive:
+                manifest = json.loads(archive.read("project.json").decode("utf-8"))
+            self.assertEqual(manifest["application_version"], APP_VERSION)
+            database_path = Path(directory) / "version.sqlite3"
+            sync_project_to_database(str(database_path), project)
+            with closing(sqlite3.connect(str(database_path))) as connection:
+                saved_version = connection.execute(
+                    "SELECT saved_with_version FROM projects"
+                ).fetchone()[0]
+            self.assertEqual(saved_version, APP_VERSION)
+
+    def test_release_artifact_names_and_windows_metadata_are_canonical(self):
+        stable = "1.3.0"
+        prerelease = "1.3.0-rc.2+build.5"
+        expected = {
+            "windows11-installer": "HPLC_Analyzer_Setup_1.3.0_Windows11_x64.exe",
+            "windows7-installer": "HPLC_Analyzer_Setup_1.3.0_Windows7_x86.exe",
+            "windows7-offline": "HPLC_Analyzer_1.3.0_Windows7_Offline_Build.zip",
+        }
+        for target, filename in expected.items():
+            self.assertEqual(artifact_filename(target, stable), filename)
+        self.assertEqual(
+            artifact_filename("windows11-installer", prerelease),
+            "HPLC_Analyzer_Setup_1.3.0-rc.2+build.5_Windows11_x64.exe",
+        )
+        self.assertEqual(
+            installer_basename("windows7-installer", stable),
+            "HPLC_Analyzer_Setup_1.3.0_Windows7_x86",
+        )
+        with self.assertRaises(ValueError):
+            installer_basename("windows7-offline", stable)
+
+        release_resource = render_version_info(
+            prerelease, "windows11-x64"
+        )
+        debug_resource = render_version_info(
+            prerelease, "windows7-x86", debug=True
+        )
+        ast.parse(release_resource)
+        ast.parse(debug_resource)
+        self.assertIn("filevers=(1, 3, 0, 0)", release_resource)
+        self.assertIn("'ProductVersion', '1.3.0-rc.2+build.5'", release_resource)
+        self.assertIn("flags=0", release_resource)
+        self.assertIn("flags=1", debug_resource)
+        self.assertIn("HPLC Analyzer diagnostic console", debug_resource)
+        self.assertEqual(
+            expected_version_strings("windows7-x86", debug=True, version=stable)[
+                "OriginalFilename"
+            ],
+            "HPLC_Analyzer_Debug.exe",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "version-info.txt"
+            self.assertEqual(
+                write_version_info(path, stable, "windows11-x64"), path
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), render_version_info(stable, "windows11-x64"))
+
+        loader = (ROOT / "scripts" / "load_version.bat").read_text(
+            encoding="utf-8"
+        )
+        spec = (ROOT / "HPLC_Analyzer.spec").read_text(encoding="utf-8")
+        self.assertIn("artifact_names.py", loader)
+        self.assertIn('version=version_file', spec)
+        self.assertIn('version=debug_version_file', spec)
+        self.assertIn("HPLC_VERSION_FILE", spec)
+        self.assertIn("HPLC_DEBUG_VERSION_FILE", spec)
+        for filename in expected.values():
+            self.assertNotIn(filename.replace("1.3.0", "%APP_VERSION%"), loader)
+
+    def test_release_checksums_cover_exactly_the_three_final_assets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release_dir = Path(directory)
+            targets = (
+                "windows11-installer",
+                "windows7-installer",
+                "windows7-offline",
+            )
+            for index, target in enumerate(targets):
+                (release_dir / artifact_filename(target, APP_VERSION)).write_bytes(
+                    ("asset-{0}".format(index)).encode("ascii")
+                )
+            checksums = write_sha256sums(release_dir, APP_VERSION)
+            self.assertEqual(checksums.name, "SHA256SUMS.txt")
+            self.assertEqual(verify_sha256sums(release_dir, APP_VERSION), [])
+            entries = read_sha256sums(checksums)
+            self.assertEqual(
+                set(entries),
+                {
+                    artifact_filename(target, APP_VERSION)
+                    for target in targets
+                },
+            )
+            with self.assertRaises(FileExistsError):
+                write_sha256sums(release_dir, APP_VERSION)
+            changed = release_dir / artifact_filename(
+                "windows11-installer", APP_VERSION
+            )
+            changed.write_bytes(b"changed after checksum")
+            self.assertEqual(
+                verify_sha256sums(release_dir, APP_VERSION),
+                ["SHA-256 mismatch: {0}".format(changed.name)],
+            )
+            checksums.write_text(
+                "0" * 64 + "  ../outside.exe\n", encoding="ascii"
+            )
+            with self.assertRaises(ValueError):
+                read_sha256sums(checksums)
+
+    def test_release_consistency_checks_identity_schema_pins_and_assets(self):
+        self.assertEqual(
+            verify_source_consistency(ROOT, "v" + APP_VERSION, PROJECT_SCHEMA_VERSION),
+            [],
+        )
+        self.assertTrue(
+            any(
+                "does not match APP_VERSION" in error
+                for error in verify_source_consistency(
+                    ROOT, "9.9.9", PROJECT_SCHEMA_VERSION
+                )
+            )
+        )
+        self.assertTrue(
+            any(
+                "does not match source schema" in error
+                for error in verify_source_consistency(
+                    ROOT, APP_VERSION, PROJECT_SCHEMA_VERSION + 1
+                )
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            unpinned = Path(directory) / "requirements.txt"
+            unpinned.write_text("numpy>=1.20\nnumpy==1.20.3\n", encoding="utf-8")
+            _pins, errors = read_pinned_requirements(unpinned)
+            self.assertTrue(any("not an exact == pin" in error for error in errors))
+
+            release_dir = Path(directory) / "release"
+            release_dir.mkdir()
+            for target in ("windows11-installer", "windows7-installer"):
+                (release_dir / artifact_filename(target, APP_VERSION)).write_bytes(
+                    b"synthetic installer"
+                )
+            offline = release_dir / artifact_filename(
+                "windows7-offline", APP_VERSION
+            )
+            archive_root = "HPLC_Analyzer_MVP_" + APP_VERSION
+            with zipfile.ZipFile(offline, "w") as archive:
+                archive.writestr(
+                    archive_root + "/hplc_app/version.py",
+                    'APP_VERSION = "{0}"\n'.format(APP_VERSION),
+                )
+                archive.writestr(
+                    archive_root + "/hplc_app/__init__.py",
+                    "PROJECT_FORMAT_MAJOR = 1\nPROJECT_SCHEMA_VERSION = {0}\n".format(
+                        PROJECT_SCHEMA_VERSION
+                    ),
+                )
+            self.assertEqual(
+                verify_offline_archive(offline, APP_VERSION, PROJECT_SCHEMA_VERSION),
+                [],
+            )
+            write_sha256sums(release_dir, APP_VERSION)
+            metadata = {
+                "CompanyName": "Research Tools",
+                "ProductName": "HPLC Analyzer",
+                "ProductVersion": APP_VERSION,
+            }
+            numeric = tuple(
+                int(part)
+                for part in windows_numeric_version(APP_VERSION).split(".")
+            )
+
+            def fake_metadata(path):
+                values = dict(metadata)
+                platform = (
+                    "Windows 11 64-bit"
+                    if "Windows11" in Path(path).name
+                    else "Windows 7 32-bit"
+                )
+                values["FileDescription"] = (
+                    "HPLC Analyzer {0} installer for {1}".format(
+                        APP_VERSION, platform
+                    )
+                )
+                return values, numeric
+
+            with mock.patch(
+                "scripts.release_consistency.verify_source_consistency",
+                return_value=[],
+            ), mock.patch(
+                "scripts.release_consistency._read_pe_metadata",
+                side_effect=fake_metadata,
+            ):
+                self.assertEqual(
+                    verify_release_assets(
+                        ROOT,
+                        release_dir,
+                        APP_VERSION,
+                        PROJECT_SCHEMA_VERSION,
+                    ),
+                    [],
+                )
+                (release_dir / "unapproved-debug.exe").write_bytes(b"extra")
+                self.assertTrue(
+                    any(
+                        "unexpected file in Release directory" in error
+                        for error in verify_release_assets(
+                            ROOT,
+                            release_dir,
+                            APP_VERSION,
+                            PROJECT_SCHEMA_VERSION,
+                        )
+                    )
+                )
 
     def test_project_round_trip_embeds_raw_ascii_and_origin(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -670,6 +1295,189 @@ class ProjectTests(unittest.TestCase):
                 manifest = json.loads(archive.read("project.json").decode("utf-8"))
             self.assertEqual(manifest["format_major"], PROJECT_FORMAT_MAJOR)
             self.assertEqual(manifest["schema_version"], PROJECT_SCHEMA_VERSION)
+            self.assertNotIn("preset_metadata", manifest)
+
+    def test_shared_run_is_authoritative_and_dataset_channels_stay_independent(self):
+        run = Run(
+            id="run-shared",
+            timestamp="2026-05-07T12:00:00",
+            sample_name="sample A",
+            column_name="C4",
+            cell_path_length_cm=0.2,
+            molar_absorptivity_214=12500.0,
+            molar_absorptivity_280=8500.0,
+        )
+        first = Dataset(
+            run_id=run.id,
+            label="214 channel",
+            measurement=MeasurementMetadata(
+                wavelength_nm=214.0, aux_range_au_per_v=1.0
+            ),
+        )
+        second = Dataset(
+            run_id=run.id,
+            label="280 channel",
+            measurement=MeasurementMetadata(
+                wavelength_nm=280.0, aux_range_au_per_v=2.0
+            ),
+        )
+        project = Project(runs=[run], datasets=[first, second])
+
+        self.assertIs(project.run_for(first), run)
+        self.assertIs(project._run_index[run.id], run)
+        self.assertIs(first.bound_run(), second.bound_run())
+        first.measurement.sample_name = "renamed sample"
+        first.gradient_preset_name = "10-90 B"
+        self.assertEqual(second.measurement.sample_name, "renamed sample")
+        self.assertEqual(second.gradient_preset_name, "10-90 B")
+        self.assertEqual(first.measurement.wavelength_nm, 214.0)
+        self.assertEqual(second.measurement.wavelength_nm, 280.0)
+        self.assertEqual(first.measurement.aux_range_au_per_v, 1.0)
+        self.assertEqual(second.measurement.aux_range_au_per_v, 2.0)
+        self.assertEqual(first.label, "214 channel")
+        self.assertEqual(second.label, "214 channel")
+        second.label = "shared display label"
+        second.short_label = "shared"
+        self.assertEqual(first.label, "shared display label")
+        self.assertEqual(first.short_label, "shared")
+        first.measurement = MeasurementMetadata(
+            sample_name="replacement metadata",
+            column_name="C18",
+            wavelength_nm=220.0,
+            aux_range_au_per_v=4.0,
+        )
+        self.assertEqual(run.sample_name, "replacement metadata")
+        self.assertEqual(second.measurement.column_name, "C18")
+        self.assertEqual(first.measurement.wavelength_nm, 220.0)
+        self.assertEqual(second.measurement.wavelength_nm, 280.0)
+
+    def test_shared_run_round_trip_preserves_sources_peaks_and_channel_values(self):
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        first.measurement.wavelength_nm = 214.0
+        first.measurement.aux_range_au_per_v = 1.0
+        second.measurement.wavelength_nm = 280.0
+        second.measurement.aux_range_au_per_v = 2.0
+        first.peaks = [PeakRegion(start_min=1.0, end_min=2.0)]
+        recalculate_dataset_peaks(first)
+        run = Run.from_measurement(first.measurement, run_id="run-two-channel")
+        run.sample_name = "shared sample"
+        first.run_id = run.id
+        second.run_id = run.id
+        project = Project(runs=[run], datasets=[first, second])
+        original_time = [dataset.time_min.copy() for dataset in project.datasets]
+        original_signal = [dataset.intensity_uv.copy() for dataset in project.datasets]
+        original_raw = [dataset.raw_bytes for dataset in project.datasets]
+        original_sources = [deepcopy(dataset.source_metadata) for dataset in project.datasets]
+        original_peak = deepcopy(first.peaks[0])
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "shared-run.hplcproj")
+            save_project(path, project)
+            loaded = load_project(path)
+
+        self.assertEqual(len(loaded.runs), 1)
+        self.assertEqual(loaded.runs[0].timestamp, "2026-05-07T19:33:54")
+        self.assertEqual(
+            [dataset.run_id for dataset in loaded.datasets],
+            ["run-two-channel", "run-two-channel"],
+        )
+        self.assertIs(loaded.datasets[0].bound_run(), loaded.datasets[1].bound_run())
+        self.assertEqual(loaded.datasets[0].label, loaded.datasets[1].label)
+        self.assertEqual(loaded.datasets[0].short_label, loaded.datasets[1].short_label)
+        self.assertEqual(loaded.datasets[0].measurement.sample_name, "shared sample")
+        self.assertEqual(
+            [dataset.measurement.wavelength_nm for dataset in loaded.datasets],
+            [214.0, 280.0],
+        )
+        self.assertEqual(
+            [dataset.measurement.aux_range_au_per_v for dataset in loaded.datasets],
+            [1.0, 2.0],
+        )
+        for index, dataset in enumerate(loaded.datasets):
+            np.testing.assert_array_equal(dataset.time_min, original_time[index])
+            np.testing.assert_array_equal(dataset.intensity_uv, original_signal[index])
+            self.assertEqual(dataset.raw_bytes, original_raw[index])
+            self.assertEqual(dataset.source_metadata, original_sources[index])
+        restored_peak = loaded.datasets[0].peaks[0]
+        self.assertEqual(restored_peak.start_min, original_peak.start_min)
+        self.assertEqual(restored_peak.end_min, original_peak.end_min)
+        self.assertEqual(restored_peak.retention_time_min, original_peak.retention_time_min)
+        self.assertEqual(restored_peak.raw_area_uv_sec, original_peak.raw_area_uv_sec)
+        self.assertEqual(restored_peak.area_mau_sec, original_peak.area_mau_sec)
+
+    def test_run_values_win_conflicts_and_are_projected_for_old_readers(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        dataset.measurement.sample_name = "run authority"
+        dataset.measurement.column_name = "Run C4"
+        dataset.measurement.wavelength_nm = 280.0
+        project = Project(datasets=[dataset])
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "run-authority.hplcproj")
+            save_project(path, project)
+            with zipfile.ZipFile(path, "r") as source:
+                contents = {name: source.read(name) for name in source.namelist()}
+            manifest = json.loads(contents["project.json"].decode("utf-8"))
+            run_label = manifest["runs"][0]["label"]
+            manifest["datasets"][0]["label"] = "legacy label conflict"
+            manifest["datasets"][0]["short_label"] = "legacy short conflict"
+            manifest["datasets"][0]["measurement"]["sample_name"] = "legacy conflict"
+            manifest["datasets"][0]["measurement"]["column_name"] = "Legacy C18"
+            manifest["datasets"][0]["measurement"]["wavelength_nm"] = 214.0
+            contents["project.json"] = json.dumps(
+                manifest, ensure_ascii=False
+            ).encode("utf-8")
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as destination:
+                for name, payload in contents.items():
+                    destination.writestr(name, payload)
+
+            loaded = load_project(path)
+            restored = loaded.datasets[0]
+            self.assertEqual(restored.label, run_label)
+            self.assertEqual(restored.short_label, manifest["runs"][0]["short_label"])
+            self.assertEqual(restored.measurement.sample_name, "run authority")
+            self.assertEqual(restored.measurement.column_name, "Run C4")
+            self.assertEqual(restored.measurement.wavelength_nm, 214.0)
+            save_project(path, loaded)
+            with zipfile.ZipFile(path, "r") as archive:
+                resaved = json.loads(archive.read("project.json").decode("utf-8"))
+            compatibility = resaved["datasets"][0]["measurement"]
+            self.assertEqual(resaved["datasets"][0]["label"], run_label)
+            self.assertEqual(
+                resaved["datasets"][0]["short_label"],
+                resaved["runs"][0]["short_label"],
+            )
+            self.assertEqual(compatibility["sample_name"], "run authority")
+            self.assertEqual(compatibility["column_name"], "Run C4")
+            self.assertEqual(compatibility["wavelength_nm"], 214.0)
+
+    def test_project_load_rejects_missing_and_duplicate_run_references(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        project = Project(datasets=[dataset])
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "invalid-runs.hplcproj")
+            save_project(path, project)
+            with zipfile.ZipFile(path, "r") as source:
+                original = {name: source.read(name) for name in source.namelist()}
+
+            def write_manifest(manifest):
+                contents = dict(original)
+                contents["project.json"] = json.dumps(manifest).encode("utf-8")
+                with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as destination:
+                    for name, payload in contents.items():
+                        destination.writestr(name, payload)
+
+            missing = json.loads(original["project.json"].decode("utf-8"))
+            missing["datasets"][0]["run_id"] = "missing-run"
+            write_manifest(missing)
+            with self.assertRaisesRegex(ProjectError, "Run reference is invalid"):
+                load_project(path)
+
+            duplicate = json.loads(original["project.json"].decode("utf-8"))
+            duplicate["runs"].append(deepcopy(duplicate["runs"][0]))
+            write_manifest(duplicate)
+            with self.assertRaisesRegex(ProjectError, "Run collection is invalid"):
+                load_project(path)
 
     def test_screen_render_quality_is_not_written_to_project_files(self):
         project = Project(datasets=[load_ascii_file(str(SAMPLES / "210601.TXT"))])
@@ -1018,6 +1826,7 @@ class ProjectTests(unittest.TestCase):
         dataset = dataset_from_bytes(raw, source_path=r"C:\\Data1\\Ch2\\2026_05_07\\210601.TXT")
         self.assertEqual(dataset.y_axis, 2)
 
+
     def test_chromatogram_csv_has_two_columns_and_batch_export(self):
         first = load_ascii_file(str(SAMPLES / "210601.TXT"))
         second = load_ascii_file(str(SAMPLES / "225120.TXT"))
@@ -1115,7 +1924,8 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("--exe dist\\windows7-x86\\HPLC_Analyzer_Debug.exe", batch)
         self.assertGreaterEqual(batch.count("--startup-smoke-test"), 2)
         self.assertIn("build_installer.bat windows7-x86", batch)
-        self.assertIn("HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe", batch)
+        self.assertIn("%WINDOWS7_INSTALLER_NAME%", batch)
+        self.assertIn("write_windows_version_info.py --target windows7-x86", batch)
         self.assertIn('name="HPLC_Analyzer_Debug"', spec)
         self.assertIn("console=True", spec)
         self.assertIn("debug=True", spec)
@@ -1335,7 +2145,8 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("--exe dist\\windows11-x64\\HPLC_Analyzer.exe", batch)
         self.assertIn("build_installer.bat windows11-x64", batch)
         self.assertIn("HPLC_ANALYZER_TEST_SETTINGS_DIR", batch)
-        self.assertIn("HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe", batch)
+        self.assertIn("%WINDOWS11_INSTALLER_NAME%", batch)
+        self.assertIn("write_windows_version_info.py --target windows11-x64", batch)
         self.assertIn("Python 3.11 x64", requirements)
         self.assertIn("EXPECTED_PYTHON = (3, 11)", verifier)
         self.assertIn("PE_MACHINE_AMD64 = 0x8664", verifier)
@@ -1370,6 +2181,99 @@ class ProjectTests(unittest.TestCase):
             scripts["windows7-x86"].read_text(encoding="utf-8"),
         )
 
+    def test_installer_upgrade_fixture_and_guard_cover_user_owned_data(self):
+        qsettings = {
+            "hive": "HKEY_CURRENT_USER",
+            "key": r"Software\Research Tools\HPLC Analyzer",
+            "tree": {
+                "values": {
+                    "ui/language": {"type": 1, "value": "en"},
+                    "rendering/quality": {"type": 1, "value": "lightweight"},
+                },
+                "subkeys": {},
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_root = Path(directory) / "fixture"
+            paths, manifest = create_fixture(fixture_root, ROOT)
+            self.assertTrue(manifest.is_file())
+            snapshot = build_installer_data_snapshot(paths, qsettings)
+            baseline_path = Path(directory) / "evidence" / "before.json"
+            write_installer_data_snapshot(baseline_path, snapshot)
+            baseline = read_installer_data_snapshot(baseline_path)
+            self.assertEqual(
+                compare_installer_data_snapshots(
+                    baseline, build_installer_data_snapshot(paths, qsettings)
+                ),
+                [],
+            )
+
+            project = load_project(
+                str(Path(paths["projects"]) / "upgrade-preservation.hplcproj")
+            )
+            raw = Path(paths["raw"]) / "upgrade-canary.TXT"
+            self.assertEqual(project.datasets[0].raw_bytes, raw.read_bytes())
+            conditions, gradients = load_preset_store(Path(paths["presets"]))
+            self.assertIn("Canary 280 nm", conditions)
+            self.assertEqual(
+                gradients["Canary gradient"]["metadata_note"],
+                "must survive installer operations",
+            )
+            self.assertTrue(database_sections(paths["database"])["projects"])
+
+            raw.write_bytes(raw.read_bytes() + b"changed")
+            errors = compare_installer_data_snapshots(
+                baseline, build_installer_data_snapshot(paths, qsettings)
+            )
+            self.assertTrue(
+                any("protected file changed: raw/" in error for error in errors)
+            )
+            changed_settings = deepcopy(qsettings)
+            changed_settings["tree"]["values"]["ui/language"]["value"] = "ja"
+            errors = compare_installer_data_snapshots(
+                baseline, build_installer_data_snapshot(paths, changed_settings)
+            )
+            self.assertIn("QSettings registry changed", errors)
+
+    def test_installer_policy_and_upgrade_evidence_forbid_user_data_management(self):
+        guide = (ROOT.parent / ".github" / "INSTALLER_UPGRADE_TEST.md").read_text(
+            encoding="utf-8"
+        )
+        evidence = (
+            ROOT.parent / ".github" / "INSTALLER_UPGRADE_EVIDENCE.md"
+        ).read_text(encoding="utf-8")
+        for required in (
+            "Clean install",
+            "v1.2.4 → v1.3.0",
+            "Uninstall",
+            "Reinstall",
+            "QSettings",
+            "presets.json",
+            "SQLite",
+            ".hplcproj",
+            "raw ASCII",
+            "user export",
+            "physical Windows 7 SP1 32-bit/Core 2",
+        ):
+            self.assertIn(required, guide)
+        self.assertIn("Data guard result", evidence)
+        self.assertIn("Previous Stable installer filename / SHA-256", evidence)
+        with tempfile.TemporaryDirectory() as directory:
+            unsafe = Path(directory) / "unsafe.iss"
+            original = (ROOT / "installer" / "windows11_x64.iss").read_text(
+                encoding="utf-8"
+            )
+            unsafe.write_text(
+                original
+                + "\n[UninstallDelete]\n"
+                + 'Type: filesandordirs; Name: "{userappdata}\\presets.json"\n',
+                encoding="utf-8",
+            )
+            errors = verify_installer_script("windows11-x64", unsafe)
+            self.assertTrue(
+                any("must not manage protected user data" in error for error in errors)
+            )
+
     def test_installer_build_is_automatic_and_has_combined_entry_point(self):
         helper = (ROOT / "scripts" / "build_installer.bat").read_text(encoding="utf-8")
         combined = (ROOT / "build_all_windows.bat").read_text(encoding="utf-8")
@@ -1383,9 +2287,10 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("build_windows11.bat --no-pause", combined)
         self.assertIn("package_windows7_offline_bundle.bat --no-pause", combined)
         self.assertNotIn("build_windows7.bat --no-pause", combined)
-        self.assertIn("HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe", combined)
-        self.assertIn("HPLC_Analyzer_1.2.4_Windows7_Offline_Build.zip", combined)
-        self.assertIn('VERSION = "1.2.4"', packager)
+        self.assertIn("%WINDOWS11_INSTALLER_NAME%", combined)
+        self.assertIn("%WINDOWS7_OFFLINE_ARCHIVE_NAME%", combined)
+        self.assertNotIn('VERSION = "', packager)
+        self.assertIn("read_version", packager)
         self.assertIn("verify_bundle(root)", packager)
         self.assertIn("verify_dependency_closure(root)", packager)
         self.assertIn('"win7_offline"', packager)
@@ -1461,6 +2366,168 @@ class ProjectTests(unittest.TestCase):
             image = matplotlib_image.imread(pages[0])
             self.assertGreater(image.shape[0], image.shape[1])
             self.assertAlmostEqual(image.shape[0] / image.shape[1], 297.0 / 210.0, delta=0.02)
+
+
+class _FakeSettingsBackend:
+    def __init__(
+        self,
+        values=None,
+        status=0,
+        fail_value=False,
+        fail_set=False,
+        fail_sync=False,
+    ):
+        self.values = dict(values or {})
+        self.status_value = status
+        self.fail_value = fail_value
+        self.fail_set = fail_set
+        self.fail_sync = fail_sync
+
+    def value(self, key, default=None):
+        if self.fail_value:
+            raise OSError("read failed")
+        return self.values.get(key, default)
+
+    def setValue(self, key, value):
+        if self.fail_set:
+            raise OSError("write failed")
+        self.values[key] = value
+
+    def sync(self):
+        if self.fail_sync:
+            raise OSError("sync failed")
+
+    def status(self):
+        return self.status_value
+
+
+class ApplicationSettingsTests(unittest.TestCase):
+    def test_preset_json_is_authoritative_over_legacy_qsettings_fallback(self):
+        conditions, gradients = merge_preset_sources(
+            {
+                "shared": {"column_name": "legacy C4"},
+                "legacy only": {"column_name": "C8"},
+            },
+            {
+                "shared": {"gradient": [{"time_min": 1.0}]},
+                "legacy only": {"gradient": []},
+            },
+            {
+                "shared": {"column_name": "stored C18"},
+                "stored only": {"column_name": "C30"},
+            },
+            {
+                "shared": {"gradient": [{"time_min": 2.0}]},
+                "stored only": {"gradient": []},
+            },
+        )
+        self.assertEqual(conditions["shared"]["column_name"], "stored C18")
+        self.assertIn("legacy only", conditions)
+        self.assertIn("stored only", conditions)
+        self.assertEqual(gradients["shared"]["gradient"][0]["time_min"], 2.0)
+        self.assertIn("legacy only", gradients)
+        self.assertIn("stored only", gradients)
+
+    def test_all_application_keys_round_trip_without_renaming_legacy_keys(self):
+        expected_keys = {
+            "ui/language",
+            "paths/import_directory",
+            "paths/save_directory",
+            "paths/last_import_directory",
+            "paths/last_save_directory",
+            "paths/last_project_directory",
+            "database/path",
+            "rendering/quality",
+            "export/figure_format",
+            "naming/author",
+            "presets/conditions",
+            "presets/gradients",
+        }
+        self.assertEqual(set(SETTING_SPECS), expected_keys)
+        backend = _FakeSettingsBackend()
+        store = ApplicationSettings(backend)
+        values = {
+            UI_LANGUAGE: "en",
+            IMPORT_DIRECTORY: "C:/HPLC/import",
+            SAVE_DIRECTORY: "C:/HPLC/save",
+            LAST_IMPORT_DIRECTORY: "C:/HPLC/last-import",
+            LAST_SAVE_DIRECTORY: "C:/HPLC/last-save",
+            LAST_PROJECT_DIRECTORY: "C:/HPLC/projects",
+            DATABASE_PATH: "C:/HPLC/lab.sqlite3",
+            RENDERING_QUALITY: "lightweight",
+            FIGURE_FORMAT: "SVG",
+            NAMING_AUTHOR: "M Shiba",
+            LEGACY_CONDITION_PRESETS: {"C4": {"wavelength_nm": 280.0}},
+            LEGACY_GRADIENT_PRESETS: {"10-90 B": {"gradient": []}},
+        }
+        self.assertTrue(store.set_many(values))
+        self.assertEqual(store.get(UI_LANGUAGE), "en")
+        self.assertEqual(store.get(IMPORT_DIRECTORY), "C:/HPLC/import")
+        self.assertEqual(store.get(SAVE_DIRECTORY), "C:/HPLC/save")
+        self.assertEqual(store.get(LAST_IMPORT_DIRECTORY), "C:/HPLC/last-import")
+        self.assertEqual(store.get(LAST_SAVE_DIRECTORY), "C:/HPLC/last-save")
+        self.assertEqual(store.get(LAST_PROJECT_DIRECTORY), "C:/HPLC/projects")
+        self.assertEqual(store.get(DATABASE_PATH), "C:/HPLC/lab.sqlite3")
+        self.assertEqual(store.get(RENDERING_QUALITY), "lightweight")
+        self.assertEqual(store.get(FIGURE_FORMAT), "svg")
+        self.assertEqual(store.get(NAMING_AUTHOR), "M Shiba")
+        self.assertEqual(
+            store.get(LEGACY_CONDITION_PRESETS),
+            {"C4": {"wavelength_nm": 280.0}},
+        )
+        self.assertEqual(
+            store.get(LEGACY_GRADIENT_PRESETS),
+            {"10-90 B": {"gradient": []}},
+        )
+        self.assertIsInstance(backend.values[LEGACY_CONDITION_PRESETS], str)
+
+    def test_missing_corrupt_and_failed_settings_use_safe_fallbacks(self):
+        backend = _FakeSettingsBackend(
+            {
+                UI_LANGUAGE: "de",
+                IMPORT_DIRECTORY: 123,
+                RENDERING_QUALITY: "unsupported",
+                FIGURE_FORMAT: "bmp",
+                LEGACY_CONDITION_PRESETS: "not-json",
+                LEGACY_GRADIENT_PRESETS: "[]",
+            }
+        )
+        store = ApplicationSettings(backend)
+        self.assertEqual(store.get(UI_LANGUAGE), "ja")
+        self.assertEqual(store.get(IMPORT_DIRECTORY), "")
+        self.assertEqual(store.get(RENDERING_QUALITY), default_render_quality())
+        self.assertEqual(store.get(FIGURE_FORMAT), "png")
+        self.assertEqual(store.get(LEGACY_CONDITION_PRESETS), {})
+        self.assertEqual(store.get(LEGACY_GRADIENT_PRESETS), {})
+        self.assertEqual(
+            ApplicationSettings(_FakeSettingsBackend(fail_value=True)).get(
+                NAMING_AUTHOR
+            ),
+            "",
+        )
+        with self.assertRaisesRegex(KeyError, "Unknown application setting"):
+            store.get("unknown/key")
+
+    def test_write_and_sync_failures_are_non_fatal_and_reported(self):
+        self.assertFalse(
+            ApplicationSettings(_FakeSettingsBackend(fail_set=True)).set(
+                NAMING_AUTHOR, "M Shiba"
+            )
+        )
+        self.assertFalse(
+            ApplicationSettings(_FakeSettingsBackend(fail_sync=True)).set(
+                NAMING_AUTHOR, "M Shiba", sync=True
+            )
+        )
+        self.assertFalse(ApplicationSettings(_FakeSettingsBackend(status=1)).sync())
+
+    def test_gui_has_no_direct_qsettings_key_access(self):
+        gui_source = (ROOT / "hplc_app" / "gui.py").read_text(encoding="utf-8")
+        self.assertNotIn("QSettings(", gui_source)
+        self.assertNotIn("._settings.value(", gui_source)
+        self.assertNotIn("._settings.setValue(", gui_source)
+        for key in SETTING_SPECS:
+            self.assertNotIn('"%s"' % key, gui_source)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,18 @@
+#ifndef AppVersion
+  #error AppVersion must be supplied by scripts\build_installer.bat
+#endif
+#ifndef AppVersionNumeric
+  #error AppVersionNumeric must be supplied by scripts\build_installer.bat
+#endif
+#ifndef ArtifactBaseName
+  #error ArtifactBaseName must be supplied by scripts\build_installer.bat
+#endif
+
 [Setup]
 AppId={{D21F975D-644A-48D3-8A67-40DC7BD85AAF}
 AppName=HPLC Analyzer
-AppVersion=1.2.4
-AppVerName=HPLC Analyzer 1.2.4
+AppVersion={#AppVersion}
+AppVerName=HPLC Analyzer {#AppVersion}
 AppPublisher=Research Tools
 AppCopyright=Copyright (C) 2026
 DefaultDirName={autopf}\HPLC Analyzer
@@ -10,15 +20,16 @@ DefaultGroupName=HPLC Analyzer
 DisableProgramGroupPage=yes
 LicenseFile=LICENSE.txt
 OutputDir=dist\installers
-OutputBaseFilename=HPLC_Analyzer_Setup_1.2.4_Windows7_x86
+OutputBaseFilename={#ArtifactBaseName}
 SetupIconFile=assets\app_icon.ico
 UninstallDisplayIcon={app}\HPLC_Analyzer.exe
-UninstallDisplayName=HPLC Analyzer 1.2.4 (Windows 7 32-bit)
-VersionInfoVersion=1.2.4.0
+UninstallDisplayName=HPLC Analyzer {#AppVersion} (Windows 7 32-bit)
+VersionInfoVersion={#AppVersionNumeric}
 VersionInfoCompany=Research Tools
-VersionInfoDescription=HPLC Analyzer 1.2.4 installer for Windows 7 32-bit
+VersionInfoDescription=HPLC Analyzer {#AppVersion} installer for Windows 7 32-bit
 VersionInfoProductName=HPLC Analyzer
-VersionInfoProductVersion=1.2.4
+VersionInfoProductVersion={#AppVersionNumeric}
+VersionInfoProductTextVersion={#AppVersion}
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

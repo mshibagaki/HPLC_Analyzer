@@ -6,6 +6,17 @@ from PyInstaller.utils.hooks import collect_data_files
 datas = collect_data_files("matplotlib") + [
     ("assets/app_icon.png", "assets"),
 ]
+version_file = os.environ.get("HPLC_VERSION_FILE", "")
+if not version_file or not os.path.isfile(version_file):
+    raise RuntimeError("HPLC_VERSION_FILE must name a generated version-resource file")
+build_debug = os.environ.get("HPLC_ANALYZER_BUILD_DEBUG", "") == "1"
+debug_version_file = os.environ.get("HPLC_DEBUG_VERSION_FILE", "")
+if build_debug and (
+    not debug_version_file or not os.path.isfile(debug_version_file)
+):
+    raise RuntimeError(
+        "HPLC_DEBUG_VERSION_FILE must name the generated Debug version resource"
+    )
 
 a = Analysis(
     ["app.py"],
@@ -45,9 +56,10 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon="assets/app_icon.ico",
+    version=version_file,
 )
 
-if os.environ.get("HPLC_ANALYZER_BUILD_DEBUG", "") == "1":
+if build_debug:
     debug_exe = EXE(
         pyz,
         a.scripts,
@@ -66,4 +78,5 @@ if os.environ.get("HPLC_ANALYZER_BUILD_DEBUG", "") == "1":
         codesign_identity=None,
         entitlements_file=None,
         icon="assets/app_icon.ico",
+        version=debug_version_file,
     )

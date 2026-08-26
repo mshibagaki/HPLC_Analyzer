@@ -23,6 +23,13 @@ from .models import (
     sanitize_condition_presets,
 )
 from .naming import build_project_filename, normalize_analysis_date
+from .preset_store import (
+    normalize_preset_metadata,
+    record_preset_deleted,
+    record_preset_saved,
+    record_preset_used,
+    stable_preset_names,
+)
 from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
 from .qt_compat import CHECKED, ITEM_IS_EDITABLE, UNCHECKED, QtGui, QtWidgets, dialog_exec
 
@@ -451,13 +458,23 @@ class BatchMetadataDialog(QtWidgets.QDialog):
     }
     GRADIENT_COLUMN = 15
 
-    def __init__(self, project: Project, selected_dataset_id: str = "", language: str = "ja", parent=None):
+    def __init__(
+        self,
+        project: Project,
+        selected_dataset_id: str = "",
+        language: str = "ja",
+        parent=None,
+        preset_metadata=None,
+    ):
         super().__init__(parent)
         self.project = project
         self.language = language
         self.selected_dataset_id = selected_dataset_id
         self.presets = sanitize_condition_presets(project.condition_presets)
         self.gradient_presets = deepcopy(project.gradient_presets)
+        self.preset_metadata = normalize_preset_metadata(
+            self.presets, self.gradient_presets, deepcopy(preset_metadata)
+        )
         self.loaded_condition_preset_name = ""
         self.gradient_assignments = {}
         self.detail_overrides = {}
@@ -484,7 +501,13 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             QtWidgets.QLabel("グラジエントプリセット" if language == "ja" else "Gradient preset")
         )
         self.gradient_preset_combo = QtWidgets.QComboBox()
-        self.gradient_preset_combo.addItems(sorted(self.gradient_presets))
+        self.gradient_preset_combo.addItems(
+            stable_preset_names(
+                self.gradient_presets,
+                self.preset_metadata,
+                "gradients",
+            )
+        )
         self.apply_gradient_button = QtWidgets.QPushButton(
             "チェック行へ適用" if language == "ja" else "Apply to checked rows"
         )
@@ -557,7 +580,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 format_optional(dataset.measurement.molar_absorptivity_214),
                 format_optional(dataset.measurement.molar_absorptivity_280),
                 format_optional(dataset.measurement.molecular_weight_g_mol),
-                dataset.gradient_preset_name,
+                dataset.effective_gradient_preset_name(),
             )
             for column, value in enumerate(values, start=1):
                 item = QtWidgets.QTableWidgetItem(value)
@@ -622,7 +645,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             format_optional(dataset.measurement.molar_absorptivity_214),
             format_optional(dataset.measurement.molar_absorptivity_280),
             format_optional(dataset.measurement.molecular_weight_g_mol),
-            dataset.gradient_preset_name,
+            dataset.effective_gradient_preset_name(),
         )
         for column, value in enumerate(values, start=1):
             self.table.item(row, column).setText(value)
@@ -680,12 +703,19 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         dialog = MetadataDialog(working, self.language, self)
         if dialog_exec(dialog):
             self.detail_overrides[original.id] = working
+            for related_row, dataset in enumerate(self.project.datasets):
+                if dataset.run_id == original.run_id:
+                    self.table.item(related_row, 1).setText(working.label)
             self._refresh_row_from_dataset(row, working)
             self.table.selectRow(row)
 
     def _refresh_presets(self, selected_name: str = ""):
         self.preset_combo.clear()
-        self.preset_combo.addItems(sorted(self.presets))
+        self.preset_combo.addItems(
+            stable_preset_names(
+                self.presets, self.preset_metadata, "conditions"
+            )
+        )
         if selected_name:
             index = self.preset_combo.findText(selected_name)
             if index >= 0:
@@ -708,9 +738,14 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         name = name.strip()
         if not accepted or not name:
             return
+        if initial_name and initial_name != name:
+            self.presets.pop(initial_name, None)
         self.presets[name] = {
             field: deepcopy(getattr(dataset.measurement, field)) for field in PRESET_FIELDS
         }
+        record_preset_saved(
+            self.preset_metadata, "conditions", initial_name, name
+        )
         self.loaded_condition_preset_name = name
         self._refresh_presets(name)
 
@@ -718,6 +753,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         name = self.preset_combo.currentText()
         if name in self.presets:
             del self.presets[name]
+            record_preset_deleted(self.preset_metadata, "conditions", name)
             if self.loaded_condition_preset_name == name:
                 self.loaded_condition_preset_name = ""
             self._refresh_presets()
@@ -753,7 +789,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         preset = self.presets.get(name)
         if not preset:
             return
-        for row in self._checked_rows():
+        checked_rows = self._checked_rows()
+        for row in checked_rows:
             for field, column in self.FIELD_COLUMNS.items():
                 value = preset.get(field)
                 if value is None or (isinstance(value, str) and not value.strip()):
@@ -761,15 +798,20 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 text = value if isinstance(value, str) else format_optional(value)
                 self.table.item(row, column).setText(text)
         self.loaded_condition_preset_name = name
+        if checked_rows:
+            record_preset_used(self.preset_metadata, "conditions", name)
 
     def _apply_gradient_preset(self):
         name = self.gradient_preset_combo.currentText()
         if name not in self.gradient_presets:
             return
-        for row in self._checked_rows():
+        checked_rows = self._checked_rows()
+        for row in checked_rows:
             dataset = self.project.datasets[row]
             self.gradient_assignments[dataset.id] = name
             self.table.item(row, self.GRADIENT_COLUMN).setText(name)
+        if checked_rows:
+            record_preset_used(self.preset_metadata, "gradients", name)
 
     def _cell_text(self, row: int, column: int) -> str:
         item = self.table.item(row, column)
@@ -807,7 +849,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         for row, (dataset, axis, numeric) in enumerate(parsed_rows):
             override = self.detail_overrides.get(dataset.id)
             if override is not None:
-                dataset.measurement = deepcopy(override.measurement)
+                self.project.replace_dataset_measurement(
+                    dataset, deepcopy(override.measurement)
+                )
                 dataset.short_label = override.short_label
             old_label = dataset.label
             dataset.label = self._cell_text(row, 1) or dataset.original_filename
@@ -1463,13 +1507,26 @@ class QuantitationHelpDialog(QtWidgets.QDialog):
 
 
 class GradientDialog(QtWidgets.QDialog):
-    def __init__(self, dataset: Dataset, language: str = "ja", parent=None, presets=None):
+    def __init__(
+        self,
+        dataset: Dataset,
+        language: str = "ja",
+        parent=None,
+        presets=None,
+        preset_metadata=None,
+    ):
         super().__init__(parent)
         self.dataset = dataset
         self.language = language
         self.presets = deepcopy(presets or {})
-        self.applied_preset_name = dataset.gradient_preset_name
-        self.last_loaded_preset_name = dataset.gradient_preset_name
+        self.preset_metadata = deepcopy(preset_metadata or {})
+        normalized = normalize_preset_metadata(
+            {}, self.presets, self.preset_metadata
+        )
+        self.preset_metadata.setdefault("conditions", {})
+        self.preset_metadata["gradients"] = normalized["gradients"]
+        self.applied_preset_name = dataset.effective_gradient_preset_name()
+        self.last_loaded_preset_name = dataset.effective_gradient_preset_name()
         self._loading_preset = False
         self.setWindowTitle("グラジエントプログラム" if language == "ja" else "Gradient program")
         self.resize(800, 560)
@@ -1572,7 +1629,11 @@ class GradientDialog(QtWidgets.QDialog):
 
     def _refresh_presets(self, selected_name: str = ""):
         self.preset_combo.clear()
-        self.preset_combo.addItems(sorted(self.presets))
+        self.preset_combo.addItems(
+            stable_preset_names(
+                self.presets, self.preset_metadata, "gradients"
+            )
+        )
         if selected_name:
             index = self.preset_combo.findText(selected_name)
             if index >= 0:
@@ -1623,10 +1684,15 @@ class GradientDialog(QtWidgets.QDialog):
         name = name.strip()
         if not accepted or not name:
             return
+        if initial_name and initial_name != name:
+            self.presets.pop(initial_name, None)
         self.presets[name] = {
             "gradient": [asdict(point) for point in points],
             "solvents": {line: asdict(solvent) for line, solvent in solvents.items()},
         }
+        record_preset_saved(
+            self.preset_metadata, "gradients", initial_name, name
+        )
         self.applied_preset_name = name
         self.last_loaded_preset_name = name
         self._refresh_presets(name)
@@ -1650,6 +1716,7 @@ class GradientDialog(QtWidgets.QDialog):
                 composition_edit.setText(solvent.get("composition", ""))
             self.applied_preset_name = name
             self.last_loaded_preset_name = name
+            record_preset_used(self.preset_metadata, "gradients", name)
         finally:
             self._loading_preset = False
 
@@ -1657,6 +1724,7 @@ class GradientDialog(QtWidgets.QDialog):
         name = self.preset_combo.currentText()
         if name in self.presets:
             del self.presets[name]
+            record_preset_deleted(self.preset_metadata, "gradients", name)
             if self.applied_preset_name == name:
                 self.applied_preset_name = ""
             if self.last_loaded_preset_name == name:

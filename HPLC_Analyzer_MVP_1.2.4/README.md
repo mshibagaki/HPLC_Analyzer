@@ -276,7 +276,30 @@ Amount (nmol) = Area_mAU_sec × Q_mL_min × 1000 / (60 × epsilon × l_cm)
 
 v1系列では`.hplcproj`の基本フィールドとプロジェクトIDを維持します。今後のv1.xはv1.0.0で保存したファイルを読み込める方針です。v1.1.4で追加した秒単位の面積と、旧v1.x向けの分単位互換値はv1.2.4でも保持します。一般的な互換性と同様に、古いアプリが将来追加された機能を完全に再現できることまでは保証しません。
 
+### Run IDとデータ項目の所属（schema 104）
+
+1回の物理的な測定を`Run`、その測定から得た波長別などの各信号を`Dataset`として保存します。`Dataset.run_id`は必ず同じプロジェクト内の`Run.id`を参照し、Runの検索はID索引から行います。
+
+- **Runが正本**：表示ラベル／短縮ラベル、測定日時、サンプル名／ID／グループ／反復／タグ／コメント、装置名、メソッド名、流量、カラム名／温度、注入量、セル光路長、分析対象物名、214/280 nmのモル吸光係数、分子量、溶媒組成、グラジエント、グラジエントプリセット名
+- **Datasetが正本**：波長、AU/V、元ファイル追跡情報と元データ、表示設定、積分ピーク
+
+セル光路長と214/280 nmのモル吸光係数は同じ測定内で共有するためRunに置き、検出波長とAU/Vはチャンネルごとに異なり得るためDatasetに置きます。同じRun IDを持つDatasetの表示ラベルと短縮ラベルは自動的に同期します。
+
+schema 102以前のプロジェクトは、ラベル、時刻、元ファイル名が同じでも自動的にまとめず、旧Dataset 1件につきRun 1件を決定的なIDで作成します。schema 103で同じRunを共有しながらDatasetラベルが異なる場合は、Runに保存済みのラベル、なければ先頭Datasetのラベルを正本として同期します。移行では元データ、追跡情報、積分範囲と科学計算値を変更しません。新形式の保存時も各Datasetの従来`label`、`short_label`、`measurement`欄へRunの正本値を投影するため、Runを認識しない旧v1アプリは従来項目を読み取れます。Runと互換欄の値が食い違う場合はRunを正本として扱います。
+
 プリセットはプロジェクトにも保存されますが、ソフト側にも記憶されます。別のプロジェクトを開いた場合や新規プロジェクトを作成した場合も、保存済みプリセットを利用できます。v1.1.5以降は、従来のWindows設定を初回起動時にユーザーのアプリ設定フォルダー内の`presets.json`へ自動移行し、以後は両方へ同期します。v1.2.4を更新インストールまたはアンインストールしても、このユーザー設定ファイルは削除しません。
+
+`presets.json` format 2では、条件／グラジエントの値を従来どおりのpayloadに保ったまま、stable ID、作成・更新・最終利用日時を`preset_metadata`へ分離して保存します。format 1の既存presetは内容と名前を維持し、判明しない作成日時を推測しません。preset名を変更してもstable IDは維持されます。Project内のpreset snapshotにはApplication側の利用履歴metadataを保存しません。
+
+### 設定データの保存場所と責務
+
+- **Application settings（QSettings）**：UI言語用の設定枠、読み込み／保存／直近フォルダー、研究室DBパス、画面描画品質、図の出力形式、命名用の測定者を保存します。Windows上の従来の保存先とキー名を維持します。
+- **Persistent preset data（`presets.json`）**：条件プリセットとグラジエントプリセットの正本です。旧版のQSettings内プリセット値は、移行元および`presets.json`を読めない場合のfallbackとして残します。
+- **Project-specific settings（`.hplcproj`）**：解析条件、表示状態、クロマトグラム、積分結果、注釈など、そのプロジェクト固有の状態を保存します。画面描画品質はApplication settingsであり、Projectには保存しません。
+
+Application settingsのキー、既定値、型変換、不正値fallback、保存処理は`hplc_app/settings_store.py`へ集約しています。設定が欠損・破損している場合や一時的に保存できない場合も、安全な既定値で起動し、Projectやプリセットを削除しません。
+
+画面言語はApplication settingの`ui/language`が正規値です。一度Englishへ変更すると次回起動、新規Project、別Projectを開いた後もEnglishを維持します。既存`.hplcproj`の`ui_language`は旧版との互換性のためそのまま保存しますが、Projectを開くだけでApplication言語を切り替えません。画面言語の変更だけではProjectをdirtyにしません。
 
 ## 研究室共通データベースの設定
 
@@ -297,6 +320,8 @@ SQLiteは単一ファイル内でトランザクション更新し、別PCの書
 セットアップEXEをダブルクリックし、日本語または英語を選んで画面に従います。アプリ本体、README、ライセンス、3つのサンプルデータがインストールされ、スタートメニューへ登録されます。デスクトップショートカットはセットアップ画面で選択できます。Windows 7版には通常版、診断用デバッグ版、Windows 7対応のMicrosoft Visual C++ 2015-2019 x86ランタイムが含まれ、必要な場合だけランタイムを先に導入します。
 
 同じ系列の新しいセットアップEXEを実行すると、同じ製品として更新インストールされます。更新前にHPLC Analyzerを終了してください。プリセット、読み込み／保存先、研究室DBパス等のユーザー設定、`.hplcproj`、元GCD・ASCII、研究室DBはインストールフォルダー外にあるため、更新やアンインストールでは削除されません。アンインストールはWindowsの「プログラムと機能」から実行します。
+
+Release前のclean install、旧版からのupgrade、uninstall、reinstallでは、専用fixtureとbyte比較を使ってこの保持契約を確認します。手順と記録様式は[Installer Upgrade Test](../.github/INSTALLER_UPGRADE_TEST.md)および[Evidence Template](../.github/INSTALLER_UPGRADE_EVIDENCE.md)にあります。Windows 11とWindows 7の両方が必須で、Windows 7の合格にはWindows 7 SP1 32-bit / Core 2実機での記録が必要です。
 
 v1.1.5以前の単体EXEはインストーラーの管理対象ではないため、自動削除されません。混同を避ける場合は、v1.2.4の起動確認後に旧EXEを手動で整理してください。
 
@@ -370,6 +395,37 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 
 Windows 7版とWindows 11版は同じアプリケーションバージョンを使用します。依存パッケージやビルド環境は異なりますが、OSごとに別のアプリケーションバージョン番号は付けません。`.hplcproj`互換性を壊す可能性がある変更は、バージョン番号だけで判断せず、移行・後方読込処理と両OS間の互換性確認を伴う必要があります。
 
+Pull Requestと`main`更新では[Level 2 CI](../.github/CI_POLICY.md)がsource契約とWindows offscreen testを検証します。CI成功は、Windows 11の正式installer実機確認やWindows 7 SP1 32-bit/Core 2での完全offline build・実機確認の代替にはなりません。
+
+Application versionの機械可読な正規値は`hplc_app/version.py`の`APP_VERSION`だけです。リリース時は最初にこの1行を更新し、`python scripts/read_version.py`と`python scripts/read_version.py --format windows`が成功することを確認してください。build batchはこの値を読み取り、GUI、project/preset/DB、installer metadata、成果物名、Windows 7 offline archiveへ自動的に伝播します。取得不能またはSemVerとして不正な場合、buildは停止します。その後、READMEの「現在の安定版」や成果物例、`README_Windows7_Offline.txt`等のリリース文書を確認します。ただし、リリース履歴、互換性説明、例示中にある過去のversion番号は履歴情報なので、一括置換しません。
+
+正式なRelease成果物名は、正規バージョンから自動生成する次の3種類です。pre-releaseやbuild metadataを含む場合も、SemVer文字列を省略せず名前へ残します。
+
+- `HPLC_Analyzer_Setup_<version>_Windows11_x64.exe`
+- `HPLC_Analyzer_Setup_<version>_Windows7_x86.exe`
+- `HPLC_Analyzer_<version>_Windows7_Offline_Build.zip`
+
+Windows EXEとinstallerの文字列版（FileVersion / ProductVersion）はSemVerを保持します。Windowsの固定数値版は`MAJOR.MINOR.PATCH.0`とし、pre-releaseとbuild metadataは数値へ入れません。各数値要素はWindows version resourceの制約に合わせて0〜65535です。通常版とWindows 7 Debug版は同じProductVersionを使い、FileDescription、元のファイル名、Debug flagで用途を区別します。
+
+Windows 7 Debug版は、通常版が起動しない場合に原因を確認するためinstallerへ同梱する診断ツールです。独立したRelease成果物としては公開せず、通常の解析には通常版を使用します。installerの固定AppIdはOS版・更新版を通じて変更しません。
+
+Release候補のsource整合性は、GitHub Releaseに記載するversionとproject schemaを明示して確認します。Application version、installer定義、固定依存、Windows 7 offline manifestとwheel閉包のいずれかが一致しなければ失敗します。
+
+```bat
+python scripts\release_consistency.py source --release-version v1.2.4 --project-schema 104
+```
+
+Windows 11 installer、Windows 7 installer、Windows 7 Offline Build Kitの署名と最終ファイル名が確定した後、3ファイルだけを置いたRelease用directoryでchecksumを生成します。署名やrenameの前に最終checksumを作ってはいけません。既存の`SHA256SUMS.txt`は誤操作防止のため`--force`なしでは上書きされません。
+
+```bat
+python scripts\release_checksums.py write --release-dir dist\release
+python scripts\release_consistency.py assets --release-version v1.2.4 --project-schema 104 --release-dir dist\release
+```
+
+`assets`検査は、3つの正規artifact名、両installerのversion resource、Offline Build Kit内のApplication versionとproject schema、`SHA256SUMS.txt`の完全一致を確認します。GitHubへuploadした後もclean directoryへ再downloadし、`python scripts\release_checksums.py verify --release-dir <directory>`で再検証します。
+
+RCからStableへ昇格する手順は[Release Process](../.github/RELEASE_PROCESS.md)、実施記録は[Release Checklist](../.github/RELEASE_CHECKLIST.md)、GitHub Release本文は[Release Template](../.github/RELEASE_TEMPLATE.md)を使用します。Windows 11とWindows 7実機、upgrade/data preservation、project互換性、checksumが揃うまでStableにはしません。
+
 ## 現在の制限
 
 - ASCIIは今回の3ファイルと同じ `[Chromatogram (Ch1)]` / `R.Time` / `Intensity`構造が対象です。GCDはPACsolution 2.2系のOLE Compound File構造を持ち、`Status`、`Intensity Data`、`Peak Table`ストリームを含む実例で検証しています。別世代・別構造のGCDは推測で読み込まず、明示的なエラーにします。
@@ -402,7 +458,7 @@ python scripts\verify_gcd_against_ascii.py ..\rawdata
 python scripts\inspect_gcd.py path\to\sample.gcd
 ```
 
-コア56件・GUI47件の計103件では、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、synthetic CFBによるFAT/DIFAT/mini-FATと破損GCDの防御、GCD/ASCII混在import、画面用min/max間引きのピーク保持、解析値（面積・保持時間・FWHM・%Area）の不変性、軽量モードでも高品質出力が元データを使うこと、二軸・%B・積分範囲・zoom/pan、通常版／Debug版のスモークテスト順序を回帰対象にしています。既存のプロジェクト互換、プリセット移行、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
+テストでは、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、synthetic CFBによるFAT/DIFAT/mini-FATと破損GCDの防御、GCD/ASCII混在import、画面用min/max間引き、解析値の不変性、二軸・%B・積分範囲・zoom/panを回帰対象にしています。Run IDの旧Project移行、Run正本とDataset互換値、共有Runの保存・Undo、Application settingsの既存キー引継ぎ・型変換・不正値fallback・保存失敗、`presets.json`優先の旧プリセット移行、既存のプロジェクト互換、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
 
 ## ファイル構成
 
@@ -412,6 +468,7 @@ hplc_app/parser.py        対応形式の判定とDataset生成
 hplc_app/gcd_parser.py    PACsolution GCD/OLEパーサー
 hplc_app/analysis.py      換算・積分・自動ピーク検出・定量
 hplc_app/project_io.py    プロジェクト保存
+hplc_app/settings_store.py Application settingsの一元管理
 hplc_app/preset_store.py  バージョン間で共有するプリセットJSON
 hplc_app/naming.py        統一保存名の提案
 hplc_app/database.py      研究室共通SQLite DB・CSV出力

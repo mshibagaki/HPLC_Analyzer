@@ -91,6 +91,8 @@ if not exist "%PYTHON_EXE%" (
 if errorlevel 1 goto :failed
 "%PYTHON_EXE%" scripts\verify_windows7_x86.py --interpreter
 if errorlevel 1 goto :failed
+call scripts\load_version.bat "%PYTHON_EXE%"
+if errorlevel 1 goto :failed
 "%PYTHON_EXE%" scripts\verify_windows7_offline_bundle.py --root "%PROJECT_ROOT%"
 if errorlevel 1 goto :failed
 "%PYTHON_EXE%" scripts\verify_windows7_wheelhouse.py --root "%PROJECT_ROOT%"
@@ -121,6 +123,12 @@ set "QT_QPA_PLATFORM=offscreen"
 if errorlevel 1 goto :failed
 set "QT_QPA_PLATFORM="
 
+set "HPLC_VERSION_FILE=%PROJECT_ROOT%\build\version-info\windows7-x86.txt"
+set "HPLC_DEBUG_VERSION_FILE=%PROJECT_ROOT%\build\version-info\windows7-x86-debug.txt"
+.venv-win7-x86\Scripts\python.exe scripts\write_windows_version_info.py --target windows7-x86 --output "%HPLC_VERSION_FILE%"
+if errorlevel 1 goto :failed
+.venv-win7-x86\Scripts\python.exe scripts\write_windows_version_info.py --target windows7-x86 --debug --output "%HPLC_DEBUG_VERSION_FILE%"
+if errorlevel 1 goto :failed
 set "HPLC_ANALYZER_BUILD_DEBUG=1"
 .venv-win7-x86\Scripts\python.exe -m PyInstaller --noconfirm --clean --distpath dist\windows7-x86 --workpath build\windows7-x86 HPLC_Analyzer.spec
 if errorlevel 1 goto :failed
@@ -169,7 +177,7 @@ echo.
 echo Build complete on Windows 7 SP1 x86:
 echo   Normal   : dist\HPLC_Analyzer.exe
 echo   Debug    : dist\HPLC_Analyzer_Debug.exe
-echo   Installer: dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe
+echo   Installer: dist\installers\%WINDOWS7_INSTALLER_NAME%
 if not defined HPLC_NO_PAUSE pause
 exit /b 0
 

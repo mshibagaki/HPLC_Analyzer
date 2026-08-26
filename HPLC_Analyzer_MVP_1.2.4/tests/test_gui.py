@@ -25,25 +25,61 @@ from hplc_app.dialogs import (
     QuantitationHelpDialog,
     TextAnnotationDialog,
 )
-from hplc_app.gui import MainWindow
+from hplc_app.gui import (
+    DATASET_LABEL_COLUMN,
+    DATASET_RUN_ID_COLUMN,
+    DATASET_SOURCE_COLUMN,
+    DATASET_WAVELENGTH_COLUMN,
+    DATASET_X_SHIFT_COLUMN,
+    MainWindow,
+)
 from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation
 from hplc_app.parser import load_ascii_file
-from hplc_app.preset_store import load_preset_store, preset_store_path
+from hplc_app.preset_store import (
+    load_preset_store,
+    load_preset_store_with_metadata,
+    preset_store_path,
+)
 from hplc_app.qt_compat import (
     ITEM_IS_EDITABLE,
     QT_API,
+    STANDARD_SAVE_SHORTCUT,
     QtCore,
     QtGui,
     QtPrintSupport,
     QtWidgets,
 )
 from hplc_app.report import render_analysis_report_pages
+from hplc_app.settings_store import ApplicationSettings
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from tests.gcd_fixtures import synthetic_gcd_bytes
 
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "sample_data"
+
+
+class RowDropEvent:
+    def __init__(self, position):
+        self._position = QtCore.QPoint(position)
+        self._mime_data = QtCore.QMimeData()
+        self.accepted = False
+        self.ignored = False
+
+    def mimeData(self):
+        return self._mime_data
+
+    def pos(self):
+        return self._position
+
+    def position(self):
+        return QtCore.QPointF(self._position)
+
+    def acceptProposedAction(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.ignored = True
 
 
 class GuiTests(unittest.TestCase):
@@ -205,6 +241,85 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_application_language_persists_without_dirtying_or_rewriting_project(self):
+        class MemorySettings:
+            def __init__(self):
+                self.values = {}
+
+            def value(self, key, default=None):
+                return self.values.get(key, default)
+
+            def setValue(self, key, value):
+                self.values[key] = value
+
+            def sync(self):
+                return None
+
+            def status(self):
+                return 0
+
+        backend = MemorySettings()
+        settings_factory = lambda: ApplicationSettings(backend)
+        with patch("hplc_app.gui.ApplicationSettings", side_effect=settings_factory):
+            first = MainWindow()
+            self.assertEqual(first._application_language, "ja")
+            legacy_language = first.project.ui_language
+            first.project.dirty = False
+            first.set_language("en")
+            self.assertEqual(first._application_language, "en")
+            self.assertEqual(first.translator.language, "en")
+            self.assertFalse(first.project.dirty)
+            self.assertEqual(first.project.ui_language, legacy_language)
+            first.close()
+
+            second = MainWindow()
+            self.assertEqual(second._application_language, "en")
+            self.assertEqual(second.translator.language, "en")
+            self.assertTrue(second.english_action.isChecked())
+            second.project.dirty = False
+            second.close()
+
+    def test_opening_legacy_project_does_not_change_application_language(self):
+        class MemorySettings:
+            def __init__(self):
+                self.values = {"ui/language": "en"}
+
+            def value(self, key, default=None):
+                return self.values.get(key, default)
+
+            def setValue(self, key, value):
+                self.values[key] = value
+
+            def sync(self):
+                return None
+
+            def status(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+            legacy_project = Project(ui_language="ja", datasets=[dataset])
+            path = str(Path(directory) / "legacy-language.hplcproj")
+            from hplc_app.project_io import save_project
+
+            save_project(path, legacy_project)
+            backend = MemorySettings()
+            settings_factory = lambda: ApplicationSettings(backend)
+            with patch(
+                "hplc_app.gui.ApplicationSettings", side_effect=settings_factory
+            ), patch.object(
+                QtWidgets.QFileDialog,
+                "getOpenFileName",
+                return_value=(path, ""),
+            ):
+                window = MainWindow()
+                window.open_project()
+                self.assertEqual(window.project.ui_language, "ja")
+                self.assertEqual(window._application_language, "en")
+                self.assertEqual(window.translator.language, "en")
+                self.assertFalse(window.project.dirty)
+                window.close()
+
     def test_lightweight_png_svg_pdf_export_temporarily_uses_full_data(self):
         window = self.make_lightweight_window()
         dataset = window.project.datasets[0]
@@ -253,8 +368,13 @@ class GuiTests(unittest.TestCase):
     def test_dual_axes_gradient_axis_full_path_and_exact_xlim(self):
         window = self.make_window()
         self.assertEqual(len(window.figure.axes), 3)
-        self.assertEqual(window.dataset_table.item(0, 9).text(), window.project.datasets[0].original_path)
-        self.assertEqual(window.dataset_table.item(0, 2).text(), "280")
+        self.assertEqual(
+            window.dataset_table.item(0, DATASET_SOURCE_COLUMN).text(),
+            window.project.datasets[0].original_path,
+        )
+        self.assertEqual(
+            window.dataset_table.item(0, DATASET_WAVELENGTH_COLUMN).text(), "280"
+        )
         self.assertAlmostEqual(window.axes.get_xlim()[0], 0.0, places=8)
         self.assertAlmostEqual(
             window.axes.get_xlim()[1],
@@ -264,6 +384,114 @@ class GuiTests(unittest.TestCase):
         ticks = window.axes.xaxis.get_major_locator().tick_values(0.0, 15.0)
         self.assertIn(5.0, ticks)
         self.assertIn(10.0, ticks)
+        window.project.dirty = False
+        window.close()
+
+    def test_run_id_column_keeps_dataset_rows_and_shows_shared_run(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        window._refresh_dataset_table(0)
+
+        self.assertEqual(window.dataset_table.rowCount(), 2)
+        first = window.dataset_table.item(0, DATASET_RUN_ID_COLUMN)
+        second = window.dataset_table.item(1, DATASET_RUN_ID_COLUMN)
+        self.assertEqual(first.text(), shared_run.id)
+        self.assertEqual(second.text(), shared_run.id)
+        self.assertEqual(first.toolTip(), shared_run.id)
+        self.assertFalse(bool(first.flags() & ITEM_IS_EDITABLE))
+        self.assertTrue(
+            bool(
+                window.dataset_table.item(0, DATASET_LABEL_COLUMN).flags()
+                & ITEM_IS_EDITABLE
+            )
+        )
+
+        window.project.dirty = False
+        window.close()
+
+    def test_project_location_distinguishes_unsaved_and_saved_paths(self):
+        window = self.make_window()
+        self.assertIn("未保存", window.project_location_label.text())
+        self.assertEqual(
+            window.project_location_label.toolTip(),
+            "プロジェクト: 未保存",
+        )
+
+        window.set_language("en")
+        self.assertIn("Not saved yet", window.project_location_label.text())
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / ("日本語_" + "long-name-" * 20 + ".hplcproj")
+            window.project.project_path = str(destination)
+            window.project.dirty = True
+            window._update_title()
+            absolute_path = str(destination.absolute())
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "Project: " + absolute_path,
+            )
+            self.assertEqual(
+                window.project_location_label.accessibleName(),
+                "Project: " + absolute_path,
+            )
+            self.assertIn(destination.name + "*", window.windowTitle())
+            self.assertLessEqual(window.project_location_label.width(), 520)
+        window.project.dirty = False
+        window.close()
+
+    def test_project_location_updates_after_save_open_and_new(self):
+        window = self.make_window()
+        with tempfile.TemporaryDirectory() as directory:
+            first_path = Path(directory) / "保存先.hplcproj"
+            window.project.project_path = str(first_path)
+            window.project.dirty = True
+            self.assertTrue(window.save_project())
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: " + str(first_path.absolute()),
+            )
+
+            second_path = Path(directory) / "opened.hplcproj"
+            window.project.project_path = str(second_path)
+            window.project.dirty = True
+            self.assertTrue(window.save_project())
+            window.new_project()
+            self.assertIn("未保存", window.project_location_label.text())
+
+            save_as_path = Path(directory) / "名前を付けて保存"
+            with patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
+                QtWidgets.QFileDialog,
+                "getSaveFileName",
+                return_value=(str(save_as_path), ""),
+            ):
+                self.assertTrue(window.save_project_as())
+            saved_as_project = Path(str(save_as_path) + ".hplcproj")
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: " + str(saved_as_project.absolute()),
+            )
+            window.new_project()
+
+            with patch.object(
+                QtWidgets.QFileDialog,
+                "getOpenFileName",
+                return_value=(str(second_path), ""),
+            ):
+                window.open_project()
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: " + str(second_path.absolute()),
+            )
+            self.assertIn(second_path.name, window.windowTitle())
+
+            window.new_project()
+            self.assertEqual(window.project.project_path, "")
+            self.assertEqual(
+                window.project_location_label.toolTip(),
+                "プロジェクト: 未保存",
+            )
         window.project.dirty = False
         window.close()
 
@@ -301,10 +529,14 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         original_x = window.axes.get_xlim()
         original_y = window.axes.get_ylim()
+        original_y2 = window.axes_right.get_ylim()
+        original_gradient = window.axes_gradient.get_ylim()
         window.project.method.zoom_axis = "x"
         window._zoom_view(0.8, center_x=8.0, source_axis=window.axes, center_y=original_y[0])
         self.assertLess(window.axes.get_xlim()[1] - window.axes.get_xlim()[0], original_x[1] - original_x[0])
         self.assertEqual(window.axes.get_ylim(), original_y)
+        self.assertEqual(window.axes_right.get_ylim(), original_y2)
+        self.assertEqual(window.axes_gradient.get_ylim(), original_gradient)
         event = SimpleNamespace(button=1, xdata=8.0, dblclick=True)
         window._on_canvas_press(event)
         self.assertAlmostEqual(window.axes.get_xlim()[0], original_x[0], places=6)
@@ -312,10 +544,63 @@ class GuiTests(unittest.TestCase):
 
         before_x = window.axes.get_xlim()
         before_y = window.axes.get_ylim()
+        before_y2 = window.axes_right.get_ylim()
+        window.dataset_table.selectRow(1)
         window.project.method.zoom_axis = "y"
-        window._zoom_view(0.8, center_x=8.0, source_axis=window.axes, center_y=sum(before_y) / 2.0)
+        window._zoom_view(
+            0.8,
+            center_x=8.0,
+            source_axis=window.axes_right,
+            center_y=sum(before_y2) / 2.0,
+        )
         self.assertEqual(window.axes.get_xlim(), before_x)
         self.assertLess(window.axes.get_ylim()[1] - window.axes.get_ylim()[0], before_y[1] - before_y[0])
+        self.assertLess(
+            window.axes_right.get_ylim()[1] - window.axes_right.get_ylim()[0],
+            before_y2[1] - before_y2[0],
+        )
+
+        window.project.datasets[1].visible = False
+        window.dataset_table.selectRow(0)
+        window._plot(preserve_view=False)
+        self.assertIsNone(window.axes_right)
+        y1_only = window.axes.get_ylim()
+        window._zoom_view(0.8, zoom_mode="y")
+        self.assertLess(
+            window.axes.get_ylim()[1] - window.axes.get_ylim()[0],
+            y1_only[1] - y1_only[0],
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_fixed_both_zoom_changes_x_y1_y2_but_not_gradient(self):
+        window = self.make_window()
+        before_x = window.axes.get_xlim()
+        before_y1 = window.axes.get_ylim()
+        before_y2 = window.axes_right.get_ylim()
+        before_gradient = window.axes_gradient.get_ylim()
+
+        window._zoom_view(
+            0.8,
+            center_x=sum(before_x) / 2.0,
+            source_axis=window.axes_right,
+            center_y=sum(before_y2) / 2.0,
+            zoom_mode="both",
+        )
+
+        self.assertLess(
+            window.axes.get_xlim()[1] - window.axes.get_xlim()[0],
+            before_x[1] - before_x[0],
+        )
+        self.assertLess(
+            window.axes.get_ylim()[1] - window.axes.get_ylim()[0],
+            before_y1[1] - before_y1[0],
+        )
+        self.assertLess(
+            window.axes_right.get_ylim()[1] - window.axes_right.get_ylim()[0],
+            before_y2[1] - before_y2[0],
+        )
+        self.assertEqual(window.axes_gradient.get_ylim(), before_gradient)
         window.project.dirty = False
         window.close()
 
@@ -520,7 +805,7 @@ class GuiTests(unittest.TestCase):
 
     def test_inline_label_change_updates_legend(self):
         window = self.make_window()
-        window.dataset_table.item(0, 1).setText("Updated label")
+        window.dataset_table.item(0, DATASET_LABEL_COLUMN).setText("Updated label")
         self.app.processEvents()
         labels = window.axes.get_legend_handles_labels()[1]
         self.assertIn("Updated label_280 nm", labels)
@@ -528,9 +813,41 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_inline_label_change_updates_every_dataset_in_the_same_run(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        window._refresh_dataset_table(0)
+
+        label_column = next(
+            column
+            for column in range(window.dataset_table.columnCount())
+            if window.dataset_table.horizontalHeaderItem(column).text()
+            in ("ラベル", "Label")
+        )
+        window.dataset_table.item(0, label_column).setText("Shared run label")
+        self.app.processEvents()
+
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets],
+            ["Shared run label", "Shared run label"],
+        )
+        self.assertEqual(
+            window.dataset_table.item(1, label_column).text(), "Shared run label"
+        )
+        labels = window.axes.get_legend_handles_labels()[1]
+        labels.extend(window.axes_right.get_legend_handles_labels()[1])
+        self.assertIn("Shared run label_280 nm", labels)
+        self.assertIn("Shared run label_214 nm", labels)
+
+        window.project.dirty = False
+        window.close()
+
     def test_wavelength_is_directly_editable_and_updates_legend(self):
         window = self.make_window()
-        wavelength_item = window.dataset_table.item(0, 2)
+        wavelength_item = window.dataset_table.item(0, DATASET_WAVELENGTH_COLUMN)
         self.assertTrue(bool(wavelength_item.flags() & ITEM_IS_EDITABLE))
         wavelength_item.setText("254.5")
         self.app.processEvents()
@@ -555,6 +872,33 @@ class GuiTests(unittest.TestCase):
         )
         window.undo()
         self.assertEqual(window.project.datasets[0].peaks[0].notes, "")
+        window.project.dirty = False
+        window.close()
+
+    def test_analysis_state_restores_shared_run_metadata_and_bindings(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        shared_run = window.project.run_for(first)
+        second.bind_run(shared_run)
+        window.project.runs[:] = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        original_name = first.measurement.sample_name
+        original_preset = first.gradient_preset_name
+        state = window._capture_analysis_state()
+
+        first.measurement.sample_name = "changed after snapshot"
+        second.gradient_preset_name = "changed gradient"
+        window._restore_analysis_state(state)
+
+        restored_first, restored_second = window.project.datasets
+        self.assertEqual(restored_first.measurement.sample_name, original_name)
+        self.assertEqual(restored_second.measurement.sample_name, original_name)
+        self.assertEqual(restored_first.gradient_preset_name, original_preset)
+        self.assertIs(restored_first.bound_run(), restored_second.bound_run())
+        self.assertIs(
+            window.project.run_for(restored_first), restored_first.bound_run()
+        )
+        self.assertEqual(len(window.project.runs), 1)
         window.project.dirty = False
         window.close()
 
@@ -619,7 +963,7 @@ class GuiTests(unittest.TestCase):
         dialog.aux_edit.setText("2.75")
         dialog._accept()
         self.assertEqual(dataset.measurement.aux_range_au_per_v, 2.75)
-        window.dataset_table.item(0, 6).setText("0.4")
+        window.dataset_table.item(0, DATASET_X_SHIFT_COLUMN).setText("0.4")
         self.app.processEvents()
         self.assertAlmostEqual(dataset.x_shift_min, 0.4, places=6)
         x_values = window._dataset_lines[dataset.id].get_xdata()
@@ -796,6 +1140,12 @@ class GuiTests(unittest.TestCase):
         self.assertNotIn("short_label", condition_dialog.presets["280 nm C4"])
         condition_dialog.preset_combo.setCurrentText("280 nm C4")
         condition_dialog._apply_preset()
+        condition_id = condition_dialog.preset_metadata["conditions"]["280 nm C4"]["id"]
+        self.assertTrue(
+            condition_dialog.preset_metadata["conditions"]["280 nm C4"][
+                "last_used_at"
+            ]
+        )
         self.assertEqual(condition_dialog.table.item(0, 1).text(), "Keep this label")
         with patch.object(
             QtWidgets.QInputDialog,
@@ -805,6 +1155,13 @@ class GuiTests(unittest.TestCase):
             condition_dialog._save_preset()
         self.assertEqual(get_text.call_args.args[4], "280 nm C4")
         self.assertIn("280 nm C4 revised", condition_dialog.presets)
+        self.assertNotIn("280 nm C4", condition_dialog.presets)
+        self.assertEqual(
+            condition_dialog.preset_metadata["conditions"]["280 nm C4 revised"][
+                "id"
+            ],
+            condition_id,
+        )
         self.assertNotIn("label", condition_dialog.presets["280 nm C4 revised"])
         condition_dialog.reject()
 
@@ -829,6 +1186,7 @@ class GuiTests(unittest.TestCase):
             selected, "ja", presets=gradient_presets
         )
         gradient_dialog._apply_preset()
+        gradient_id = gradient_dialog.preset_metadata["gradients"][gradient_name]["id"]
         gradient_dialog.table.item(0, 2).setText("20")
         self.assertEqual(gradient_dialog.applied_preset_name, "")
         self.assertEqual(gradient_dialog.last_loaded_preset_name, gradient_name)
@@ -840,6 +1198,13 @@ class GuiTests(unittest.TestCase):
             gradient_dialog._save_preset()
         self.assertEqual(get_text.call_args.args[4], gradient_name)
         self.assertIn("10-90 B revised", gradient_dialog.presets)
+        self.assertNotIn(gradient_name, gradient_dialog.presets)
+        self.assertEqual(
+            gradient_dialog.preset_metadata["gradients"]["10-90 B revised"][
+                "id"
+            ],
+            gradient_id,
+        )
         gradient_dialog.reject()
         window.project.dirty = False
         window.close()
@@ -941,6 +1306,39 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_batch_detail_editor_keeps_shared_run_labels_synchronized(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        dialog = BatchMetadataDialog(
+            window.project, window.project.datasets[0].id, "ja"
+        )
+
+        def edit_details(metadata_dialog):
+            metadata_dialog.fields["label"].setText("Shared batch label")
+            metadata_dialog.fields["short_label"].setText("Shared")
+            metadata_dialog._accept()
+            return 1
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_details):
+            dialog._edit_selected_details(0)
+        self.assertEqual(dialog.table.item(0, 1).text(), "Shared batch label")
+        self.assertEqual(dialog.table.item(1, 1).text(), "Shared batch label")
+        dialog._accept()
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets],
+            ["Shared batch label", "Shared batch label"],
+        )
+        self.assertEqual(
+            [dataset.short_label for dataset in window.project.datasets],
+            ["Shared", "Shared"],
+        )
+
+        window.project.dirty = False
+        window.close()
+
     def test_gradient_preset_can_be_applied_in_batch_and_axis_label_persists(self):
         window = self.make_window()
         window.project.gradient_presets["ACN method"] = {
@@ -1006,7 +1404,7 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(all(abs(text.get_fontsize() - 12.5) < 0.01 for text in window.axes.texts))
         self.assertTrue(all(text.get_color() == "#000000" for text in window.axes.texts))
 
-        window.dataset_table.item(0, 6).setText("5")
+        window.dataset_table.item(0, DATASET_X_SHIFT_COLUMN).setText("5")
         self.app.processEvents()
         self.assertNotEqual(dataset.peaks[0].gradient_b_pct, old_b)
 
@@ -1155,6 +1553,280 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_remove_dataset_confirmation_no_preserves_project_state(self):
+        window = self.make_window()
+        window.dataset_table.selectRow(0)
+        dataset_ids = [dataset.id for dataset in window.project.datasets]
+        window._undo_stack = ["keep undo"]
+        window._redo_stack = ["keep redo"]
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.No,
+        ) as question:
+            window.remove_dataset()
+
+        question.assert_called_once()
+        self.assertIn("Ch1", question.call_args.args[2])
+        self.assertIn("元に戻せません", question.call_args.args[2])
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], dataset_ids
+        )
+        self.assertFalse(window.project.dirty)
+        self.assertEqual(window.dataset_table.currentRow(), 0)
+        self.assertEqual(window._undo_stack, ["keep undo"])
+        self.assertEqual(window._redo_stack, ["keep redo"])
+        window.close()
+
+    def test_remove_dataset_confirmation_yes_deletes_only_selected_dataset(self):
+        window = self.make_window()
+        window.dataset_table.selectRow(1)
+        window._undo_stack = ["discard undo"]
+        window._redo_stack = ["discard redo"]
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ) as question:
+            window.remove_dataset()
+
+        question.assert_called_once()
+        self.assertIn("Ch2", question.call_args.args[2])
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets], ["Ch1"]
+        )
+        self.assertTrue(window.project.dirty)
+        self.assertEqual(window._undo_stack, [])
+        self.assertEqual(window._redo_stack, [])
+        window.project.dirty = False
+        window.close()
+
+    def test_remove_dataset_without_selection_does_nothing(self):
+        window = self.make_window()
+        window.dataset_table.clearSelection()
+        window.dataset_table.setCurrentCell(-1, -1)
+        dataset_ids = [dataset.id for dataset in window.project.datasets]
+
+        with patch.object(QtWidgets.QMessageBox, "question") as question:
+            window.remove_dataset()
+
+        question.assert_not_called()
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], dataset_ids
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_chromatogram_drag_reorders_project_plot_and_supports_undo_redo(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(0)
+        target_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(1, 0)
+        )
+        drop_position = QtCore.QPoint(
+            target_rect.center().x(), target_rect.bottom() - 1
+        )
+        event = RowDropEvent(drop_position)
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets],
+            list(reversed(original_ids)),
+        )
+        self.assertEqual(window.dataset_table.currentRow(), 1)
+        labels = [text.get_text() for text in window.axes.get_legend().get_texts()]
+        self.assertEqual(
+            labels[:2],
+            [dataset.legend_label() for dataset in window.project.datasets],
+        )
+        self.assertTrue(window.project.dirty)
+
+        window.undo()
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
+        )
+        window.redo()
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets],
+            list(reversed(original_ids)),
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_chromatogram_drag_same_position_is_no_op(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(0)
+        source_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(0, 0)
+        )
+        event = RowDropEvent(source_rect.center())
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
+        )
+        self.assertFalse(window.project.dirty)
+        self.assertEqual(window._undo_stack, [])
+        self.assertEqual(window._redo_stack, [])
+        window.close()
+
+    def test_chromatogram_drag_can_move_a_row_upward(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(1)
+        target_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(0, 0)
+        )
+        drop_position = QtCore.QPoint(target_rect.center().x(), target_rect.top() + 1)
+
+        window.dataset_table.dropEvent(RowDropEvent(drop_position))
+
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets],
+            list(reversed(original_ids)),
+        )
+        self.assertEqual(window.dataset_table.currentRow(), 0)
+        window.project.dirty = False
+        window.close()
+
+    def test_dataset_table_forwards_external_file_drops_to_main_window(self):
+        window = self.make_window()
+        mime_data = QtCore.QMimeData()
+        mime_data.setUrls(
+            [QtCore.QUrl.fromLocalFile(str(SAMPLES / "210601.TXT"))]
+        )
+        event = Mock()
+        event.mimeData.return_value = mime_data
+
+        with patch.object(window, "dropEvent") as main_drop:
+            window.dataset_table.dropEvent(event)
+
+        main_drop.assert_called_once_with(event)
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_dataset_table_supports_range_and_non_contiguous_row_selection(self):
+        window = self.make_window()
+        third = load_ascii_file(str(SAMPLES / "191720.TXT"))
+        third.label = third.short_label = "Ch3"
+        window.project.datasets.append(third)
+        window._refresh_all(0)
+        extended_selection = (
+            QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.ExtendedSelection
+        )
+        self.assertEqual(window.dataset_table.selectionMode(), extended_selection)
+        visibility = [dataset.visible for dataset in window.project.datasets]
+        model = window.dataset_table.model()
+        selection_model = window.dataset_table.selectionModel()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        toggle = (
+            QtCore.QItemSelectionModel.SelectionFlag.Toggle
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Toggle
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+
+        selection_model.clearSelection()
+        selection_model.select(
+            QtCore.QItemSelection(
+                model.index(0, 0), model.index(2, model.columnCount() - 1)
+            ),
+            select | rows,
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1, 2])
+
+        selection_model.clearSelection()
+        selection_model.select(model.index(0, 0), select | rows)
+        selection_model.select(model.index(2, 0), select | rows)
+        self.assertEqual(window._selected_dataset_rows(), [0, 2])
+        selection_model.select(model.index(0, 0), toggle | rows)
+        self.assertEqual(window._selected_dataset_rows(), [2])
+        self.assertEqual(
+            [dataset.visible for dataset in window.project.datasets], visibility
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_multiple_selected_dataset_rows_cannot_be_drag_reordered(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(0)
+        selection_model = window.dataset_table.selectionModel()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+        selection_model.select(
+            window.dataset_table.model().index(1, 0), select | rows
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1])
+        target_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(1, 0)
+        )
+        event = RowDropEvent(target_rect.bottomRight() - QtCore.QPoint(1, 1))
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.ignored)
+        self.assertFalse(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
+        )
+        self.assertFalse(window.project.dirty)
+        self.assertEqual(window._undo_stack, [])
+        window.close()
+
+    def test_chromatogram_drag_without_source_row_is_ignored(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.clearSelection()
+        window.dataset_table.setCurrentCell(-1, -1)
+        event = RowDropEvent(QtCore.QPoint(1, 1))
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.ignored)
+        self.assertFalse(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
     def test_plot_and_analysis_sections_are_separated_by_resizable_splitter(self):
         window = self.make_window()
         window.show()
@@ -1235,12 +1907,19 @@ class GuiTests(unittest.TestCase):
             }
         }
         first._persist_global_presets()
+        _conditions, _gradients, metadata = load_preset_store_with_metadata()
+        condition_id = metadata["conditions"]["280 nm C4"]["id"]
+        self.assertTrue(metadata["conditions"]["280 nm C4"]["created_at"])
         first.project.dirty = False
         first.close()
 
         second = MainWindow()
         self.assertIn("280 nm C4", second.project.condition_presets)
         self.assertIn("10-90 B", second.project.gradient_presets)
+        self.assertEqual(
+            second._global_preset_metadata["conditions"]["280 nm C4"]["id"],
+            condition_id,
+        )
         second.new_project()
         self.assertIn("280 nm C4", second.project.condition_presets)
         self.assertIn("10-90 B", second.project.gradient_presets)
@@ -1682,6 +2361,70 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(manager.tables["gradients"].rowCount(), 1)
             self.assertNotIn("peaks", manager.tables)
             manager.close()
+        window.project.dirty = False
+        window.close()
+
+    def test_save_action_uses_standard_shortcut_and_existing_project_path(self):
+        window = self.make_window()
+        self.assertEqual(
+            window.save_action.shortcut(),
+            QtGui.QKeySequence(STANDARD_SAVE_SHORTCUT),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = str(Path(directory) / "shortcut-save.hplcproj")
+            window.project.project_path = destination
+            window.project.dirty = True
+            window.save_action.trigger()
+            self.assertTrue(Path(destination).exists())
+            self.assertEqual(window.project.project_path, destination)
+            self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_save_action_opens_save_as_and_cancel_preserves_project_state(self):
+        window = self.make_window()
+        window.project.project_path = ""
+        window.project.dirty = True
+        original_state = (
+            window.project.project_path,
+            window.project.title,
+            window.project.author,
+            window.project.dirty,
+        )
+        with patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
+            QtWidgets.QFileDialog,
+            "getSaveFileName",
+            return_value=("", ""),
+        ) as chooser:
+            window.save_action.trigger()
+        chooser.assert_called_once()
+        self.assertEqual(
+            (
+                window.project.project_path,
+                window.project.title,
+                window.project.author,
+                window.project.dirty,
+            ),
+            original_state,
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_save_action_reports_write_failure_without_clearing_dirty_state(self):
+        window = self.make_window()
+        window.project.project_path = "C:/unwritable/shortcut-save.hplcproj"
+        window.project.dirty = True
+        with patch(
+            "hplc_app.gui.save_project",
+            side_effect=OSError("simulated write failure"),
+        ), patch.object(QtWidgets.QMessageBox, "critical") as critical:
+            window.save_action.trigger()
+        critical.assert_called_once()
+        self.assertIn("simulated write failure", critical.call_args.args[2])
+        self.assertEqual(
+            window.project.project_path,
+            "C:/unwritable/shortcut-save.hplcproj",
+        )
+        self.assertTrue(window.project.dirty)
         window.project.dirty = False
         window.close()
 

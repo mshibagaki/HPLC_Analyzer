@@ -87,7 +87,8 @@ def suggest_project_name_parts(
     )
     condition = str(project.condition_name or "").strip() or _single_or_mixed(
         (
-            dataset.measurement.method_name or dataset.gradient_preset_name
+            dataset.measurement.method_name
+            or dataset.effective_gradient_preset_name()
             for dataset in project.datasets
         ),
         "Condition",

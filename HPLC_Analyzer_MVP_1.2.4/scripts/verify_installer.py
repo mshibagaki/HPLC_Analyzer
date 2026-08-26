@@ -5,19 +5,23 @@ import struct
 import sys
 from pathlib import Path
 
+try:
+    from .read_version import read_version, validate_version, windows_numeric_version
+except ImportError:
+    from read_version import read_version, validate_version, windows_numeric_version
+
 
 APP_ID = "{{D21F975D-644A-48D3-8A67-40DC7BD85AAF}"
-APP_VERSION = "1.2.4"
+APP_VERSION = read_version()
+APP_VERSION_NUMERIC = windows_numeric_version(APP_VERSION)
 
 TARGETS = {
     "windows11-x64": {
         "required": (
-            "AppVersion=1.2.4",
             "MinVersion=10.0.22000",
             "ArchitecturesAllowed=x64compatible",
             "ArchitecturesInstallIn64BitMode=x64compatible",
             "dist\\windows11-x64\\HPLC_Analyzer.exe",
-            "OutputBaseFilename=HPLC_Analyzer_Setup_1.2.4_Windows11_x64",
         ),
         "forbidden": (
             "HPLC_Analyzer_Debug.exe",
@@ -26,7 +30,6 @@ TARGETS = {
     },
     "windows7-x86": {
         "required": (
-            "AppVersion=1.2.4",
             "MinVersion=6.1sp1",
             "ArchitecturesAllowed=x86compatible and not x64compatible",
             "ArchitecturesInstallIn64BitMode=",
@@ -36,7 +39,6 @@ TARGETS = {
             'Parameters: "/install /quiet /norestart"',
             "Check: VCRedistNeedsInstall",
             "function VCRedistNeedsInstall: Boolean;",
-            "OutputBaseFilename=HPLC_Analyzer_Setup_1.2.4_Windows7_x86",
         ),
         "forbidden": (
             "ArchitecturesInstallIn64BitMode=x64compatible",
@@ -45,6 +47,15 @@ TARGETS = {
 }
 
 COMMON_REQUIRED = (
+    "#ifndef AppVersion",
+    "#ifndef AppVersionNumeric",
+    "#ifndef ArtifactBaseName",
+    "AppVersion={#AppVersion}",
+    "AppVerName=HPLC Analyzer {#AppVersion}",
+    "VersionInfoVersion={#AppVersionNumeric}",
+    "VersionInfoProductVersion={#AppVersionNumeric}",
+    "VersionInfoProductTextVersion={#AppVersion}",
+    "OutputBaseFilename={#ArtifactBaseName}",
     "AppId=" + APP_ID,
     "AppName=HPLC Analyzer",
     "PrivilegesRequired=admin",
@@ -58,8 +69,20 @@ COMMON_REQUIRED = (
     '[Run]',
 )
 
+PROTECTED_DATA_MARKERS = (
+    "[UninstallDelete]",
+    "[InstallDelete]",
+    "Research Tools\\HPLC Analyzer",
+    "{userappdata}",
+    "{userdocs}",
+    "presets.json",
+    ".hplcproj",
+    ".sqlite",
+    "uninsdelete",
+)
 
-def verify_installer_script(target, path):
+
+def verify_installer_script(target, path, expected_version=APP_VERSION):
     """Return a list of human-readable configuration errors."""
     script_path = Path(path)
     try:
@@ -67,6 +90,10 @@ def verify_installer_script(target, path):
     except OSError as exc:
         return ["could not read {0}: {1}".format(script_path, exc)]
     errors = []
+    try:
+        validate_version(expected_version)
+    except ValueError as exc:
+        errors.append("invalid expected application version: {0}".format(exc))
     for fragment in COMMON_REQUIRED + TARGETS[target]["required"]:
         if fragment not in text:
             errors.append("missing required installer setting: {0}".format(fragment))
@@ -75,6 +102,14 @@ def verify_installer_script(target, path):
             errors.append("unexpected installer setting: {0}".format(fragment))
     if "[UninstallDelete]" in text or "Research Tools\\HPLC Analyzer" in text:
         errors.append("installer must not delete or relocate per-user HPLC Analyzer settings")
+    if "AppVersion={0}".format(expected_version) in text:
+        errors.append("installer must receive AppVersion through an Inno Setup define")
+    lowered = text.lower()
+    for marker in PROTECTED_DATA_MARKERS:
+        if marker.lower() in lowered:
+            errors.append(
+                "installer must not manage protected user data: {0}".format(marker)
+            )
     return errors
 
 
@@ -106,9 +141,19 @@ def main(argv=None):
     parser.add_argument("--target", choices=sorted(TARGETS), required=True)
     parser.add_argument("--script", required=True)
     parser.add_argument("--setup")
+    parser.add_argument("--version", default=APP_VERSION)
     args = parser.parse_args(argv)
 
-    errors = verify_installer_script(args.target, args.script)
+    errors = []
+    if args.version != APP_VERSION:
+        errors.append(
+            "build version {0} does not match canonical version {1}".format(
+                args.version, APP_VERSION
+            )
+        )
+    errors.extend(
+        verify_installer_script(args.target, args.script, args.version)
+    )
     if not errors:
         print("[OK] Installer configuration: {0}".format(args.script))
     if args.setup:

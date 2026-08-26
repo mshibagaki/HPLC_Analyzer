@@ -455,6 +455,26 @@ class BatchCellError(ValueError):
         self.reason = reason
 
 
+class BatchConditionTable(QtWidgets.QTableWidget):
+    """Condition table that routes standard clipboard shortcuts to its dialog."""
+
+    def __init__(self, rows: int, columns: int, parent=None):
+        super().__init__(rows, columns, parent)
+        self.copy_callback = None
+        self.paste_callback = None
+
+    def keyPressEvent(self, event):
+        if event.matches(QtGui.QKeySequence.Copy) and self.copy_callback:
+            self.copy_callback()
+            event.accept()
+            return
+        if event.matches(QtGui.QKeySequence.Paste) and self.paste_callback:
+            self.paste_callback()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class BatchMetadataDialog(QtWidgets.QDialog):
     """Editable condition overview with atomic validation and preset support."""
 
@@ -471,6 +491,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         "molar_absorptivity_280": 13,
         "molecular_weight_g_mol": 14,
     }
+    COLUMN_FIELDS = {column: field for field, column in FIELD_COLUMNS.items()}
     GRADIENT_COLUMN = 15
     EDITABLE_COLUMNS = frozenset(range(1, GRADIENT_COLUMN))
     RUN_SHARED_COLUMNS = frozenset((1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14))
@@ -560,9 +581,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         root.addLayout(selection_row)
 
         note = QtWidgets.QLabel(
-            "条件セルをダブルクリックすると直接編集できます。Run単位の値は同じRunの行へ同期され、OK時に全行を検証してから一括適用します。その他の項目は「選択行の詳細設定」で編集できます。"
+            "条件セルは直接編集でき、Shift/Ctrlで複数選択、Ctrl+C/Ctrl+Vで矩形範囲をコピー／貼り付けできます。Run単位の値は同じRunの行へ同期され、OK時に全行を検証してから一括適用します。"
             if language == "ja"
-            else "Double-click a condition cell to edit it directly. Run-level values are synchronized across the same Run, and every row is validated before changes are applied on OK. Use Edit selected row details for other fields."
+            else "Edit condition cells directly, use Shift/Ctrl for multi-selection, and use Ctrl+C/Ctrl+V for rectangular clipboard ranges. Run-level values are synchronized across the same Run, and every row is validated before changes are applied on OK."
         )
         note.setWordWrap(True)
         root.addWidget(note)
@@ -585,10 +606,10 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             "分子量" if language == "ja" else "Molecular weight",
             "グラジエント" if language == "ja" else "Gradient",
         )
-        self.table = QtWidgets.QTableWidget(len(project.datasets), len(headers))
+        self.table = BatchConditionTable(len(project.datasets), len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectItems)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         self.table.setEditTriggers(
             QtWidgets.QAbstractItemView.DoubleClicked
             | QtWidgets.QAbstractItemView.EditKeyPressed
@@ -635,6 +656,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.edit_details_button.clicked.connect(self._edit_selected_details)
         self.table.itemChanged.connect(self._table_item_changed)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
+        self.table.copy_callback = self._copy_selected_cells
+        self.table.paste_callback = self._paste_clipboard
         self._refresh_presets()
         selected_row = next(
             (
@@ -712,45 +735,159 @@ class BatchMetadataDialog(QtWidgets.QDialog):
     def _cell_error(self, row: int, column: int, ja: str, en: str):
         raise BatchCellError(row, column, ja if self.language == "ja" else en)
 
-    def _parse_row(self, row: int):
-        axis_text = self._cell_text(row, 3)
-        try:
-            axis = int(axis_text)
-        except ValueError:
-            self._cell_error(row, 3, "1または2を入力してください。", "Enter 1 or 2.")
-        if axis not in (1, 2):
-            self._cell_error(row, 3, "1または2を入力してください。", "Enter 1 or 2.")
+    def _validate_cell_value(self, row: int, column: int, text: str):
+        normalized = str(text).strip()
+        if column == 3:
+            try:
+                axis = int(normalized)
+            except ValueError:
+                self._cell_error(row, column, "1または2を入力してください。", "Enter 1 or 2.")
+            if axis not in (1, 2):
+                self._cell_error(row, column, "1または2を入力してください。", "Enter 1 or 2.")
+            return axis
 
+        field = self.COLUMN_FIELDS.get(column)
+        if field is None or field in ("column_name", "analyte_name"):
+            return normalized
+        try:
+            value = optional_float(normalized)
+        except ValueError:
+            self._cell_error(
+                row,
+                column,
+                "数値または空欄を入力してください。",
+                "Enter a number or leave the cell empty.",
+            )
+        if value is not None and not math.isfinite(value):
+            self._cell_error(
+                row,
+                column,
+                "有限の数値を入力してください。",
+                "Enter a finite number.",
+            )
+        if field in self.POSITIVE_FIELDS and value is not None and value <= 0:
+            self._cell_error(
+                row,
+                column,
+                "0より大きい値を入力してください。",
+                "Enter a value greater than zero.",
+            )
+        return value
+
+    def _parse_row(self, row: int):
+        axis = self._validate_cell_value(row, 3, self._cell_text(row, 3))
         numeric = {}
         for field, column in self.FIELD_COLUMNS.items():
             if field in ("column_name", "analyte_name"):
                 continue
-            text = self._cell_text(row, column)
-            try:
-                value = optional_float(text)
-            except ValueError:
-                self._cell_error(
-                    row,
-                    column,
-                    "数値または空欄を入力してください。",
-                    "Enter a number or leave the cell empty.",
-                )
-            if value is not None and not math.isfinite(value):
-                self._cell_error(
-                    row,
-                    column,
-                    "有限の数値を入力してください。",
-                    "Enter a finite number.",
-                )
-            if field in self.POSITIVE_FIELDS and value is not None and value <= 0:
-                self._cell_error(
-                    row,
-                    column,
-                    "0より大きい値を入力してください。",
-                    "Enter a value greater than zero.",
-                )
-            numeric[field] = value
+            numeric[field] = self._validate_cell_value(
+                row, column, self._cell_text(row, column)
+            )
         return axis, numeric
+
+    def _clipboard_warning(self, ja: str, en: str):
+        QtWidgets.QMessageBox.warning(
+            self,
+            "コピー／貼り付け" if self.language == "ja" else "Copy / paste",
+            ja if self.language == "ja" else en,
+        )
+
+    def _copy_selected_cells(self):
+        indexes = self.table.selectedIndexes()
+        if not indexes:
+            return
+        rows = sorted({index.row() for index in indexes})
+        columns = sorted({index.column() for index in indexes})
+        selected = {(index.row(), index.column()) for index in indexes}
+        rectangle_rows = range(rows[0], rows[-1] + 1)
+        rectangle_columns = range(columns[0], columns[-1] + 1)
+        rectangle = {
+            (row, column)
+            for row in rectangle_rows
+            for column in rectangle_columns
+        }
+        if selected != rectangle:
+            self._clipboard_warning(
+                "コピーするセルは1つの矩形範囲で選択してください。",
+                "Select one rectangular cell range to copy.",
+            )
+            return
+        lines = []
+        for row in rectangle_rows:
+            values = []
+            for column in rectangle_columns:
+                item = self.table.item(row, column)
+                if column == 0:
+                    values.append("1" if item and item.checkState() == CHECKED else "0")
+                else:
+                    values.append(item.text() if item is not None else "")
+            lines.append("\t".join(values))
+        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+
+    def _paste_clipboard(self):
+        text = QtWidgets.QApplication.clipboard().text()
+        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
+        if not normalized_text:
+            return
+        values = [line.split("\t") for line in normalized_text.split("\n")]
+        width = len(values[0])
+        if not width or any(len(row_values) != width for row_values in values):
+            self._clipboard_warning(
+                "列数が揃ったTSVを貼り付けてください。",
+                "Paste TSV rows with the same number of columns.",
+            )
+            return
+        start_row = self.table.currentRow()
+        start_column = self.table.currentColumn()
+        if start_row < 0 or start_column < 0:
+            return
+        if (
+            start_row + len(values) > self.table.rowCount()
+            or start_column + width > self.table.columnCount()
+        ):
+            self._clipboard_warning(
+                "貼り付け範囲が表の外にはみ出します。",
+                "The paste range extends beyond the table.",
+            )
+            return
+
+        proposed = []
+        shared_values = {}
+        try:
+            for row_offset, row_values in enumerate(values):
+                row = start_row + row_offset
+                dataset = self.project.datasets[row]
+                for column_offset, text_value in enumerate(row_values):
+                    column = start_column + column_offset
+                    if column not in self.EDITABLE_COLUMNS:
+                        self._cell_error(
+                            row,
+                            column,
+                            "この列には貼り付けできません。",
+                            "This column is not editable.",
+                        )
+                    parsed = self._validate_cell_value(row, column, text_value)
+                    if column in self.RUN_SHARED_COLUMNS:
+                        key = (dataset.run_id, column)
+                        if key in shared_values and shared_values[key] != parsed:
+                            self._cell_error(
+                                row,
+                                column,
+                                "同じRunの同じ項目に異なる値は貼り付けできません。",
+                                "Conflicting values cannot be pasted into the same Run field.",
+                            )
+                        shared_values[key] = parsed
+                    proposed.append((row, column, str(text_value).strip()))
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
+            return
+
+        for row, column, text_value in proposed:
+            self.table.item(row, column).setText(text_value)
+        self.table.clearSelection()
+        self.table.setCurrentCell(start_row, start_column)
+        for row, column, _text_value in proposed:
+            self.table.item(row, column).setSelected(True)
 
     def _show_cell_error(self, error: BatchCellError):
         item = self.table.item(error.row, error.column)

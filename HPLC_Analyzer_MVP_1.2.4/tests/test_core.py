@@ -9,7 +9,9 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import struct
 import tempfile
+import time
 import unittest
 import zipfile
 
@@ -42,7 +44,8 @@ from hplc_app.models import (
     TextAnnotation,
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
-from hplc_app.parser import dataset_from_bytes, load_ascii_file
+from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
+from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
 from hplc_app.preset_store import load_preset_store, save_preset_store
 from hplc_app.project_io import load_project, save_project
 from hplc_app.project_migrations import (
@@ -62,6 +65,7 @@ from hplc_app.rendering import (
     screen_series,
 )
 from scripts.windows7_import_preflight import EVENT_LOG_COMMAND, PROBES
+from scripts.inspect_gcd import _safe_dump_name
 from scripts.verify_windows7_x86 import PE_MACHINE_I386, read_pe_machine
 from scripts.verify_windows7_offline_bundle import (
     EXPECTED_RELATIVE_FILES as WINDOWS7_OFFLINE_FILES,
@@ -77,6 +81,13 @@ from scripts.verify_installer import (
     APP_ID as INSTALLER_APP_ID,
     verify_installer_script,
     verify_setup_executable,
+)
+from tests.gcd_fixtures import (
+    synthetic_gcd_bytes,
+    with_difat_cycle,
+    with_u16,
+    with_u32,
+    with_u64,
 )
 
 
@@ -99,6 +110,164 @@ class ParserTests(unittest.TestCase):
             self.assertEqual(dataset.measurement.method_name, method)
             self.assertEqual(dataset.measurement.instrument_name, "装置名1")
             self.assertEqual(len(dataset.sha256), 64)
+
+    def test_gcd_stream_values_are_parsed_without_resampling(self):
+        status = bytearray(12)
+        struct.pack_into("<I", status, 0, 500)
+        struct.pack_into("<I", status, 8, 3)
+        peak_table = bytearray(4 + 236 + 4)
+        struct.pack_into("<I", peak_table, 0, 1)
+        struct.pack_into("<I", peak_table, 8, 16)
+        struct.pack_into("<I", peak_table, 12, 576900)
+        struct.pack_into("<d", peak_table, 16, 244213.4)
+        struct.pack_into("<d", peak_table, 24, 4084.125)
+        struct.pack_into("<I", peak_table, 48, 540400)
+        struct.pack_into("<I", peak_table, 52, 723000)
+        struct.pack_into("<d", peak_table, 56, 59.0)
+        struct.pack_into("<d", peak_table, 156, 81.83238983154297)
+        parsed = parse_gcd_streams(
+            {
+                "Status": bytes(status),
+                "Intensity Data": struct.pack("<3d", -104.0, 12.5, 300.0),
+                "Peak Table": bytes(peak_table),
+                "System": "装置名1".encode("cp932") + b"\0",
+            }
+        )
+        np.testing.assert_array_equal(parsed.intensity_uv, [-104.0, 12.5, 300.0])
+        np.testing.assert_allclose(parsed.time_min, [0.0, 0.5 / 60.0, 1.0 / 60.0])
+        self.assertEqual(parsed.metadata["Chromatogram.Interval(msec)"], "500")
+        self.assertEqual(parsed.metadata["Configuration.Instrument Name"], "装置名1")
+        self.assertEqual(parsed.peak_table[0]["R.Time"], "9.615")
+        self.assertEqual(parsed.peak_table[0]["Area"], "244213")
+        self.assertEqual(parsed.peak_table[0]["Conc."], "81.83239")
+        for field in ("k'", "Plate #", "Plate Ht.", "Tailing", "Resolution", "Sep.Factor"):
+            self.assertEqual(parsed.peak_table[0][field], "")
+
+    def test_synthetic_cfb_exercises_fat_directory_and_mini_streams(self):
+        raw = synthetic_gcd_bytes()
+        parsed = parse_gcd_bytes(raw)
+        np.testing.assert_array_equal(parsed.intensity_uv, [-104.0, 12.5, 300.0])
+        np.testing.assert_allclose(
+            parsed.time_min, [0.0, 0.5 / 60.0, 1.0 / 60.0]
+        )
+        self.assertEqual(parsed.metadata["Chromatogram.Interval(msec)"], "500")
+        self.assertEqual(parsed.peak_table, [])
+        dataset = dataset_from_bytes(raw, source_path="synthetic.gcd")
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = os.path.join(directory, "synthetic-gcd.hplcproj")
+            save_project(project_path, Project(datasets=[dataset]))
+            restored = load_project(project_path).datasets[0]
+        self.assertEqual(restored.raw_bytes, raw)
+        self.assertEqual(restored.sha256, dataset.sha256)
+        np.testing.assert_array_equal(restored.time_min, dataset.time_min)
+        np.testing.assert_array_equal(restored.intensity_uv, dataset.intensity_uv)
+
+    def test_cfb_rejects_invalid_headers(self):
+        valid = synthetic_gcd_bytes()
+        invalid_files = {
+            "truncated header": valid[:511],
+            "signature": b"not-cfb!" + valid[8:],
+            "version": with_u16(valid, 26, 5),
+            "sector shift": with_u16(valid, 30, 15),
+            "version/sector mismatch": with_u16(valid, 30, 12),
+            "mini sector shift": with_u16(valid, 32, 7),
+            "missing FAT": with_u32(valid, 44, 0),
+        }
+        for description, raw in invalid_files.items():
+            with self.subTest(description=description):
+                with self.assertRaises(GcdParseError):
+                    parse_gcd_bytes(raw)
+
+    def test_cfb_rejects_cyclic_fat_and_mini_fat_chains(self):
+        valid = synthetic_gcd_bytes()
+        # FAT sector 0, entry 1: the directory sector points to itself.
+        cyclic_fat = with_u32(valid, 512 + 1 * 4, 1)
+        # mini-FAT sector 2, entry 0: the Status stream points to itself.
+        cyclic_mini_fat = with_u32(valid, (2 + 1) * 512, 0)
+        for description, raw in (
+            ("FAT", cyclic_fat),
+            ("mini FAT", cyclic_mini_fat),
+        ):
+            with self.subTest(description=description):
+                with self.assertRaisesRegex(GcdParseError, "cyclic"):
+                    parse_gcd_bytes(raw)
+
+    def test_cfb_rejects_stream_size_larger_than_its_chain(self):
+        valid = synthetic_gcd_bytes()
+        directory_offset = (1 + 1) * 512
+        status_size_offset = directory_offset + 128 + 120
+        malformed = with_u64(valid, status_size_offset, 65)
+        with self.assertRaisesRegex(GcdParseError, "shorter than declared"):
+            parse_gcd_bytes(malformed)
+
+    def test_cfb_rejects_inflated_difat_count_without_scanning(self):
+        malformed = with_u32(synthetic_gcd_bytes(), 72, 0xFFFFFFFE)
+        started = time.monotonic()
+        with self.assertRaisesRegex(GcdParseError, "DIFAT sector count"):
+            parse_gcd_bytes(malformed)
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_cfb_rejects_cyclic_difat_chain_without_hanging(self):
+        malformed = with_difat_cycle(synthetic_gcd_bytes())
+        started = time.monotonic()
+        with self.assertRaisesRegex(GcdParseError, "Cyclic OLE DIFAT"):
+            parse_gcd_bytes(malformed)
+        self.assertLess(time.monotonic() - started, 0.5)
+
+    def test_gcd_inspector_sanitizes_dump_filenames(self):
+        self.assertEqual(_safe_dump_name("Status"), "Status")
+        self.assertEqual(_safe_dump_name(".."), "unnamed")
+        self.assertEqual(_safe_dump_name("../outside"), "_outside")
+        self.assertEqual(_safe_dump_name("CON.txt"), "_CON.txt")
+
+    def test_gcd_stream_size_mismatch_fails_clearly(self):
+        status = bytearray(12)
+        struct.pack_into("<I", status, 0, 100)
+        struct.pack_into("<I", status, 8, 3)
+        with self.assertRaisesRegex(GcdParseError, "intensity size mismatch"):
+            parse_gcd_streams({"Status": bytes(status), "Intensity Data": struct.pack("<2d", 1, 2)})
+
+    def test_supplied_gcd_files_match_their_ascii_exports(self):
+        rawdata = ROOT.parent / "rawdata"
+        gcd_files = sorted(rawdata.rglob("*.gcd")) if rawdata.is_dir() else []
+        if not gcd_files:
+            self.skipTest("rawdata GCD fixtures are not present")
+        for gcd_path in gcd_files:
+            txt_path = gcd_path.with_suffix(".TXT")
+            self.assertTrue(txt_path.is_file(), str(txt_path))
+            gcd = load_chromatogram_file(str(gcd_path))
+            ascii_export = load_ascii_file(str(txt_path))
+            self.assertEqual(gcd.time_min.size, ascii_export.time_min.size)
+            np.testing.assert_allclose(gcd.time_min, ascii_export.time_min, atol=0.0000051, rtol=0)
+            rounded = np.where(
+                gcd.intensity_uv >= 0,
+                np.floor(gcd.intensity_uv + 0.5),
+                np.ceil(gcd.intensity_uv - 0.5),
+            )
+            np.testing.assert_array_equal(rounded, ascii_export.intensity_uv)
+            self.assertEqual(len(gcd.source_peak_table), len(ascii_export.source_peak_table))
+            for gcd_peak, txt_peak in zip(gcd.source_peak_table, ascii_export.source_peak_table):
+                for field in (
+                    "Peak#",
+                    "R.Time",
+                    "I.Time",
+                    "F.Time",
+                    "Area",
+                    "Height",
+                    "A/H",
+                    "Conc.",
+                    "Mark",
+                ):
+                    self.assertEqual(gcd_peak[field], txt_peak[field])
+        original = load_chromatogram_file(str(gcd_files[0]))
+        with tempfile.TemporaryDirectory() as directory:
+            project_path = os.path.join(directory, "gcd-roundtrip.hplcproj")
+            save_project(project_path, Project(datasets=[original]))
+            restored = load_project(project_path).datasets[0]
+            self.assertEqual(restored.raw_bytes, original.raw_bytes)
+            self.assertEqual(restored.sha256, original.sha256)
+            np.testing.assert_array_equal(restored.time_min, original.time_min)
+            np.testing.assert_array_equal(restored.intensity_uv, original.intensity_uv)
 
 
 class AnalysisTests(unittest.TestCase):

@@ -1,8 +1,8 @@
 # HPLC Analyzer 1.2.4
 
-島津 GCsolution / LCsolution / PACsolution から出力したASCIIクロマトグラムを、元データを保持したまま管理・重ね描き・積分・定量・作図し、研究室内の測定履歴を共有データベースへ集約する研究用デスクトップソフトです。
+島津 GCsolution / LCsolution / PACsolution のASCIIクロマトグラム、およびPACsolutionの`.gcd`を、元データを保持したまま管理・重ね描き・積分・定量・作図し、研究室内の測定履歴を共有データベースへ集約する研究用デスクトップソフトです。
 
-提供された `210601.TXT`、`191720.TXT`、`225120.TXT` の実データで、読み込み、解析、プロジェクト保存、CSV/PDF/SVG/A4レポート出力を検証しています。
+提供されたASCII実データに加え、`rawdata`内の6組の`.gcd` / `.TXT`で、GCD直接読込の全強度点、時間軸、ベンダーピーク表の主要値がASCII出力と一致することを検証しています。
 
 v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セット（Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2 5.15.2.1、Qt 5.15.2、Matplotlib 3.7.5、PyInstaller 5.13.2）を固定しました。各native依存を別プロセスで順番にimportし、どれか1つでも異常終了した場合はPyInstallerへ進みません。Windows 7では画面表示だけをピーク保持型のmin/max envelopeで間引く軽量描画を標準にし、解析・CSV・PNG・SVG・PDF・A4レポートは常に元データを使います。Windows 11 64-bit版は高品質描画と専用の新しい依存セットを維持し、両版の`.hplcproj`とプリセット形式は共通です。
 
@@ -112,7 +112,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 
 ### データ管理と表示
 
-- CP932/Shift-JIS系の島津ASCIIを複数読み込み
+- CP932/Shift-JIS系の島津ASCII、およびPACsolution GCDを複数読み込み
 - Raw Intensity（µV）を保持し、AU/VからAU/mAUへ換算
 - 表示ラベル、短縮ラベル、サンプル名、ID、グループ、反復、タグを保存
 - 元ファイルのフルパス、元ディレクトリ、SHA-256を記録
@@ -197,7 +197,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 - グラジエントプログラムと溶媒組成の名前付きプリセット
 - 設定画面でASCII読み込み開始フォルダと既定のデータ保存先を個別指定
 - 新規保存時に `YYYYMMDD_Title_Column_Condition_Author` の5項目を確認し、統一形式のファイル名を自動提案
-- `.hplcproj`に元ASCII、解析結果、表示条件、各種プリセットを一体保存
+- `.hplcproj`に元GCDまたはASCII、解析結果、表示条件、各種プリセットを一体保存
 - 日本語/英語UI切替
 
 ### 研究室共通データベース
@@ -227,7 +227,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 
 ## 単位換算と吸光係数定量
 
-ASCIIのIntensityはµVとして扱います。
+ASCIIおよびGCDのIntensityはµVとして扱います。
 
 ```text
 Absorbance (mAU) = Raw Intensity (µV) × AU/V × 10^-3
@@ -245,7 +245,7 @@ Amount (nmol) = Area_mAU_sec × Q_mL_min × 1000 / (60 × epsilon × l_cm)
 ## 基本操作
 
 1. `設定 → 環境設定`で、読み込み開始フォルダ、データ保存先、自動検出条件を指定します。研究室DBを使う場合は、全PCで研究室共有フォルダ上の同じ`.sqlite3`ファイルを指定します。
-2. `ファイル → ASCIIを読み込む`で1つ以上のTXTを選びます。
+2. `ファイル → クロマトグラムを読み込む`で1つ以上のGCDまたはTXTを選びます。
 3. 左表で表示、ラベル、波長、グループ、縦軸、AU/V、時間シフト、縦オフセットを調整します。
 4. `詳細・定量条件`でサンプル、測定条件、試料情報を設定します。
 5. `グラジエント`でA–D液の実組成と時系列プログラムを入力します。
@@ -262,7 +262,7 @@ Amount (nmol) = Area_mAU_sec × Q_mL_min × 1000 / (60 × epsilon × l_cm)
 
 `.hplcproj`はZIPコンテナで、以下を一体保存します。
 
-- 変更していない元ASCIIのコピー
+- 変更していない元GCDまたはASCIIのコピー
 - 元ファイルの絶対パス、元ディレクトリ、ファイルハッシュ
 - ラベル、サンプル情報、測定・定量条件
 - グラジエントプログラムと溶媒組成
@@ -272,7 +272,7 @@ Amount (nmol) = Area_mAU_sec × Q_mL_min × 1000 / (60 × epsilon × l_cm)
 - クロマトグラム色、時間シフト、任意軸ラベル、自由テキストボックス
 - v1で安定化したプロジェクトIDと命名用メタデータ
 
-元ASCIIが移動・削除されてもプロジェクトを開けます。元の絶対パスは追跡情報として残ります。v0.4.0以前を含む旧プロジェクトも読み込め、最初にv1形式で保存した時点で安定したプロジェクトIDが付与されます。
+元GCDまたはASCIIが移動・削除されてもプロジェクトを開けます。元の絶対パスは追跡情報として残ります。v0.4.0以前を含む旧プロジェクトも読み込め、最初にv1形式で保存した時点で安定したプロジェクトIDが付与されます。
 
 v1系列では`.hplcproj`の基本フィールドとプロジェクトIDを維持します。今後のv1.xはv1.0.0で保存したファイルを読み込める方針です。v1.1.4で追加した秒単位の面積と、旧v1.x向けの分単位互換値はv1.2.4でも保持します。一般的な互換性と同様に、古いアプリが将来追加された機能を完全に再現できることまでは保証しません。
 
@@ -296,7 +296,7 @@ SQLiteは単一ファイル内でトランザクション更新し、別PCの書
 
 セットアップEXEをダブルクリックし、日本語または英語を選んで画面に従います。アプリ本体、README、ライセンス、3つのサンプルデータがインストールされ、スタートメニューへ登録されます。デスクトップショートカットはセットアップ画面で選択できます。Windows 7版には通常版、診断用デバッグ版、Windows 7対応のMicrosoft Visual C++ 2015-2019 x86ランタイムが含まれ、必要な場合だけランタイムを先に導入します。
 
-同じ系列の新しいセットアップEXEを実行すると、同じ製品として更新インストールされます。更新前にHPLC Analyzerを終了してください。プリセット、読み込み／保存先、研究室DBパス等のユーザー設定、`.hplcproj`、ASCII、研究室DBはインストールフォルダー外にあるため、更新やアンインストールでは削除されません。アンインストールはWindowsの「プログラムと機能」から実行します。
+同じ系列の新しいセットアップEXEを実行すると、同じ製品として更新インストールされます。更新前にHPLC Analyzerを終了してください。プリセット、読み込み／保存先、研究室DBパス等のユーザー設定、`.hplcproj`、元GCD・ASCII、研究室DBはインストールフォルダー外にあるため、更新やアンインストールでは削除されません。アンインストールはWindowsの「プログラムと機能」から実行します。
 
 v1.1.5以前の単体EXEはインストーラーの管理対象ではないため、自動削除されません。混同を避ける場合は、v1.2.4の起動確認後に旧EXEを手動で整理してください。
 
@@ -372,8 +372,9 @@ Windows 7版とWindows 11版は同じアプリケーションバージョンを�
 
 ## 現在の制限
 
-- 今回の3ファイルと同じ `[Chromatogram (Ch1)]` / `R.Time` / `Intensity`構造が対象です。別形式は実例を追加してパーサーを拡張する必要があります。
-- 1つのASCII内に複数チャンネルが同居する形式は未対応です。Ch1/Ch2が別ASCIIなら縦軸1/2に分けて表示できます。
+- ASCIIは今回の3ファイルと同じ `[Chromatogram (Ch1)]` / `R.Time` / `Intensity`構造が対象です。GCDはPACsolution 2.2系のOLE Compound File構造を持ち、`Status`、`Intensity Data`、`Peak Table`ストリームを含む実例で検証しています。別世代・別構造のGCDは推測で読み込まず、明示的なエラーにします。
+- GCD直接読込では、sample name、sample ID、method name、acquisition datetime等のmetadataを現時点では復元しないため、該当欄は空になります。Peak Tableの`k'`、理論段数、テーリング、分離度等の未解析項目も、実測ゼロと区別するため空欄にします。元GCD bytesはproject内に変更せず保持します。
+- 1ファイル内に複数チャンネルが同居する形式は未対応です。Ch1/Ch2が別ファイルなら縦軸1/2に分けて表示できます。
 - ベースラインは指定区間内の直線または水平線です。曲線ベースライン、自動ベースライン追跡、ピーク波形のデコンボリューションは未実装です。
 - 自動ピーク検出は正のピークを対象とする候補生成です。データごとの目視確認が必要です。
 - 検量線、反復試料の統計、Excel形式への直接出力は未実装です。研究室DB一覧はCSVへ出力できます。
@@ -387,13 +388,28 @@ Windows 7版とWindows 11版は同じアプリケーションバージョンを�
 python -m unittest discover -s tests -v
 ```
 
-コア42件・GUI46件の計88件では、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、画面用min/max間引きのピーク保持、解析値（面積・保持時間・FWHM・%Area）の不変性、軽量モードでも高品質出力が元データを使うこと、二軸・%B・積分範囲・zoom/pan、通常版／Debug版のスモークテスト順序を回帰対象にしています。既存のプロジェクト互換、プリセット移行、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
+### GCD解析結果を再検証する
+
+GCDの読込は同名のTXTやCDFを参照せず、`.gcd`内のOLEストリームだけから時間軸、µV強度、ベンダーピーク表の主要値を復元します。今回の解析を手元の提供データから再現するには、アプリ本体ディレクトリで次を実行します。
+
+```text
+python scripts\verify_gcd_against_ascii.py ..\rawdata
+```
+
+各GCD/TXTペアについて、点数、ピーク数、時間差、TXT出力時の強度量子化差、丸め後の強度差を表示し、不一致があれば終了コード1で停止します。GCD内では小数を含む64-bit強度をそのまま保持し、整数表記のTXTに合わせるための丸めは読込時には行いません。OLE内のストリーム名・サイズ・先頭バイトを調べる場合は次を使用できます。
+
+```text
+python scripts\inspect_gcd.py path\to\sample.gcd
+```
+
+コア56件・GUI47件の計103件では、Win7 legacy wheelの固定・SHA-256・完全依存閉包、別プロセスimport診断、synthetic CFBによるFAT/DIFAT/mini-FATと破損GCDの防御、GCD/ASCII混在import、画面用min/max間引きのピーク保持、解析値（面積・保持時間・FWHM・%Area）の不変性、軽量モードでも高品質出力が元データを使うこと、二軸・%B・積分範囲・zoom/pan、通常版／Debug版のスモークテスト順序を回帰対象にしています。既存のプロジェクト互換、プリセット移行、秒単位面積、研究室DB、cyan版アイコン、A4レポート等も引き続き検証します。
 
 ## ファイル構成
 
 ```text
 app.py                    GUI起動
-hplc_app/parser.py        島津ASCIIパーサー
+hplc_app/parser.py        対応形式の判定とDataset生成
+hplc_app/gcd_parser.py    PACsolution GCD/OLEパーサー
 hplc_app/analysis.py      換算・積分・自動ピーク検出・定量
 hplc_app/project_io.py    プロジェクト保存
 hplc_app/preset_store.py  バージョン間で共有するプリセットJSON
@@ -413,6 +429,8 @@ scripts/verify_windows7_wheelhouse.py  Python 3.8 win32依存閉包検証
 prepare_windows7_offline_wheels.bat  Win11上のwheel再取得・固定検証
 scripts/verify_windows11_x64.py Windows 11 x64ビルドの事前・事後検証
 scripts/verify_installer.py     インストーラー設定・生成Setup EXE検証
+scripts/inspect_gcd.py          GCD/OLEストリーム調査
+scripts/verify_gcd_against_ascii.py  GCDとASCIIの数値照合
 scripts/build_installer.bat     Inno Setupの検出と対象別コンパイル
 scripts/package_windows7_offline_bundle.py  Win7搬入用ZIP生成
 installer/windows11_x64.iss     Windows 11 x64用セットアップ定義

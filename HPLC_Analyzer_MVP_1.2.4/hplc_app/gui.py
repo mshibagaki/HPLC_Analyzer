@@ -60,7 +60,7 @@ from .naming import (
     build_project_filename,
     suggest_project_name_parts,
 )
-from .parser import load_ascii_file
+from .parser import load_chromatogram_file
 from .preset_store import load_preset_store, save_preset_store
 from .project_io import (
     load_project,
@@ -3149,7 +3149,7 @@ class MainWindow(QtWidgets.QMainWindow):
         errors: List[str] = []
         for path in paths:
             try:
-                dataset = load_ascii_file(path)
+                dataset = load_chromatogram_file(path)
                 dataset.color = COLORS[len(self.project.datasets) % len(COLORS)]
                 self.project.datasets.append(dataset)
                 imported += 1
@@ -3744,7 +3744,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def about(self):
         if self.project.ui_language == "ja":
             text = (
-                "島津GCsolution / LCsolution / PACsolutionのASCIIクロマトグラムを、"
+                "島津GCsolution / LCsolution / PACsolutionのASCIIクロマトグラムとPACsolution GCDを、"
                 "元データを保持したまま管理・重ね描き・積分・自動ピーク検出・定量・作図し、"
                 "研究室共通データベースへ集約する解析ソフトです。\n\n"
                 "Raw Intensity: µV\n"
@@ -3754,7 +3754,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             text = (
                 "Analysis software for managing, overlaying, integrating, detecting, quantifying and plotting "
-                "Shimadzu GCsolution / LCsolution / PACsolution ASCII chromatograms while preserving raw data "
+                "Shimadzu GCsolution / LCsolution / PACsolution ASCII chromatograms and PACsolution GCD files while preserving raw data "
                 "and indexing projects in a shared lab database.\n\n"
                 "Raw Intensity: µV\n"
                 "mAU = µV × AU/V × 10⁻³\n\n"

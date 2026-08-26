@@ -8,6 +8,7 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
+from .gcd_parser import CFB_SIGNATURE, GcdParseError, parse_gcd_bytes
 from .models import Dataset, MeasurementMetadata
 
 
@@ -174,7 +175,13 @@ def parse_ascii_bytes(raw: bytes) -> ParsedAscii:
 
 
 def dataset_from_bytes(raw: bytes, source_path: str = "", label: str = "") -> Dataset:
-    parsed = parse_ascii_bytes(raw)
+    if raw.startswith(CFB_SIGNATURE):
+        try:
+            parsed = parse_gcd_bytes(raw)
+        except GcdParseError as exc:
+            raise ParseError(str(exc)) from exc
+    else:
+        parsed = parse_ascii_bytes(raw)
     original_filename = os.path.basename(source_path) if source_path else "chromatogram.TXT"
     original_directory = os.path.dirname(os.path.abspath(source_path)) if source_path else ""
     sample_name = parsed.metadata.get("Sample Information.Sample Name", "")
@@ -209,3 +216,8 @@ def dataset_from_bytes(raw: bytes, source_path: str = "", label: str = "") -> Da
 def load_ascii_file(path: str) -> Dataset:
     raw = Path(path).read_bytes()
     return dataset_from_bytes(raw, source_path=path)
+
+
+def load_chromatogram_file(path: str) -> Dataset:
+    """Load a supported Shimadzu ASCII or PACsolution GCD chromatogram."""
+    return load_ascii_file(path)

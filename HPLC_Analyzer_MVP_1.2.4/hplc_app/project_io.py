@@ -17,6 +17,7 @@ from .models import (
     MeasurementMetadata,
     PeakRegion,
     Project,
+    Run,
     Solvent,
     TextAnnotation,
     sanitize_condition_presets,
@@ -35,9 +36,15 @@ def _safe_filename(name: str) -> str:
 
 
 def _metadata_from_dict(data: Dict[str, Any]) -> MeasurementMetadata:
+    if not isinstance(data, dict):
+        raise ProjectError("Dataset measurement must be an object")
     copied = dict(data)
     solvents_data = copied.pop("solvents", {}) or {}
     gradient_data = copied.pop("gradient", []) or []
+    if not isinstance(solvents_data, dict):
+        raise ProjectError("Dataset measurement solvents must be an object")
+    if not isinstance(gradient_data, list):
+        raise ProjectError("Dataset measurement gradient must be an array")
     allowed = set(MeasurementMetadata.__dataclass_fields__)
     metadata = MeasurementMetadata(**{key: value for key, value in copied.items() if key in allowed})
     metadata.solvents = {
@@ -45,6 +52,28 @@ def _metadata_from_dict(data: Dict[str, Any]) -> MeasurementMetadata:
     }
     metadata.gradient = [GradientPoint(**point) for point in gradient_data]
     return metadata
+
+
+def _run_from_dict(data: Dict[str, Any]) -> Run:
+    if not isinstance(data, dict):
+        raise ProjectError("Each project Run must be an object")
+    copied = dict(data)
+    solvents_data = copied.pop("solvents", {}) or {}
+    gradient_data = copied.pop("gradient", []) or []
+    if not isinstance(solvents_data, dict):
+        raise ProjectError("Run solvents must be an object")
+    if not isinstance(gradient_data, list):
+        raise ProjectError("Run gradient must be an array")
+    allowed = set(Run.__dataclass_fields__)
+    values = {key: value for key, value in copied.items() if key in allowed}
+    run = Run(**values)
+    if not run.id:
+        raise ProjectError("Run ID is missing")
+    run.solvents = {
+        line: Solvent(**(solvents_data.get(line, {}) or {})) for line in "ABCD"
+    }
+    run.gradient = [GradientPoint(**point) for point in gradient_data]
+    return run
 
 
 def _method_from_dict(data: Dict[str, Any], schema_version: int = PROJECT_SCHEMA_VERSION) -> AnalysisMethod:
@@ -98,6 +127,10 @@ def save_project(path: str, project: Project) -> None:
     if not destination.lower().endswith(".hplcproj"):
         destination += ".hplcproj"
     project.modified_at = datetime.now().isoformat(timespec="seconds")
+    try:
+        project.rebuild_run_index(create_missing=True)
+    except ValueError as exc:
+        raise ProjectError("Run references are invalid: %s" % exc) from exc
     manifest = {
         "format": "hplc-analyzer-project",
         "format_major": PROJECT_FORMAT_MAJOR,
@@ -114,6 +147,7 @@ def save_project(path: str, project: Project) -> None:
         "modified_at": project.modified_at,
         "ui_language": project.ui_language,
         "method": asdict(project.method),
+        "runs": [asdict(run) for run in project.runs],
         "condition_presets": sanitize_condition_presets(project.condition_presets),
         "gradient_presets": project.gradient_presets,
         "annotations": [asdict(annotation) for annotation in project.annotations],
@@ -134,6 +168,9 @@ def save_project(path: str, project: Project) -> None:
         dataset.embedded_source_name = embedded
         item = dataset.to_manifest()
         item["embedded_source_name"] = embedded
+        run = project.run_for(dataset)
+        item["measurement"] = asdict(project.compatibility_measurement_for(dataset))
+        item["gradient_preset_name"] = run.gradient_preset_name
         manifest["datasets"].append(item)
 
     temp_path = destination + ".tmp"
@@ -175,35 +212,47 @@ def load_project(path: str) -> Project:
             except ProjectMigrationError as exc:
                 raise ProjectError("Could not migrate project: %s" % exc) from exc
             schema_version = int(manifest.get("schema_version", schema_version))
-            project = Project(
-                project_id=manifest.get("project_id", "") or Project().project_id,
-                title=manifest.get("title", "Untitled project"),
-                analysis_date=manifest.get("analysis_date", ""),
-                column_name=manifest.get("column_name", ""),
-                condition_name=manifest.get("condition_name", ""),
-                author=manifest.get("author", ""),
-                created_at=manifest.get("created_at", ""),
-                modified_at=manifest.get("modified_at", ""),
-                ui_language=manifest.get("ui_language", "ja"),
-                method=_method_from_dict(manifest.get("method", {}), schema_version),
-                condition_presets=sanitize_condition_presets(
-                    manifest.get("condition_presets", {}) or {}
-                ),
-                gradient_presets=manifest.get("gradient_presets", {}) or {},
-                annotations=[
-                    TextAnnotation(
-                        **{
-                            key: value
-                            for key, value in annotation.items()
-                            if key in TextAnnotation.__dataclass_fields__
-                        }
-                    )
-                    for annotation in (manifest.get("annotations", []) or [])
-                    if isinstance(annotation, dict)
-                ],
-                project_path=source,
-            )
-            for item in manifest.get("datasets", []):
+            runs_data = manifest.get("runs", [])
+            if not isinstance(runs_data, list):
+                raise ProjectError("Project runs must be an array")
+            try:
+                project = Project(
+                    project_id=manifest.get("project_id", "") or Project().project_id,
+                    title=manifest.get("title", "Untitled project"),
+                    analysis_date=manifest.get("analysis_date", ""),
+                    column_name=manifest.get("column_name", ""),
+                    condition_name=manifest.get("condition_name", ""),
+                    author=manifest.get("author", ""),
+                    created_at=manifest.get("created_at", ""),
+                    modified_at=manifest.get("modified_at", ""),
+                    ui_language=manifest.get("ui_language", "ja"),
+                    method=_method_from_dict(manifest.get("method", {}), schema_version),
+                    runs=[_run_from_dict(run) for run in runs_data],
+                    condition_presets=sanitize_condition_presets(
+                        manifest.get("condition_presets", {}) or {}
+                    ),
+                    gradient_presets=manifest.get("gradient_presets", {}) or {},
+                    annotations=[
+                        TextAnnotation(
+                            **{
+                                key: value
+                                for key, value in annotation.items()
+                                if key in TextAnnotation.__dataclass_fields__
+                            }
+                        )
+                        for annotation in (manifest.get("annotations", []) or [])
+                        if isinstance(annotation, dict)
+                    ],
+                    project_path=source,
+                )
+            except ValueError as exc:
+                raise ProjectError("Project Run collection is invalid: %s" % exc) from exc
+            datasets_data = manifest.get("datasets", [])
+            if not isinstance(datasets_data, list):
+                raise ProjectError("Project datasets must be an array")
+            for item in datasets_data:
+                if not isinstance(item, dict):
+                    raise ProjectError("Each project dataset must be an object")
                 embedded = item.get("embedded_source_name", "")
                 if not embedded:
                     raise ProjectError("Embedded source path is missing")
@@ -211,6 +260,7 @@ def load_project(path: str) -> Project:
                 dataset = dataset_from_bytes(raw, source_path=item.get("original_path", ""), label=item.get("label", ""))
                 scalar_fields = (
                     "id",
+                    "run_id",
                     "label",
                     "short_label",
                     "original_filename",
@@ -237,7 +287,11 @@ def load_project(path: str) -> Project:
                     for peak in item.get("peaks", [])
                     if isinstance(peak, dict)
                 ]
-                project.datasets.append(dataset)
+                try:
+                    run = project.run_for(dataset)
+                except ValueError as exc:
+                    raise ProjectError("Dataset Run reference is invalid: %s" % exc) from exc
+                project.add_dataset(dataset, run=run)
     except (KeyError, OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
         raise ProjectError("Could not open project: %s" % exc) from exc
     project.dirty = False

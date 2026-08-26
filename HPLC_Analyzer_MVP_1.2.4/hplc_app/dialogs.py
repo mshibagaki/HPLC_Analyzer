@@ -573,10 +573,16 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.edit_details_button = QtWidgets.QPushButton(
             "選択行の詳細設定…" if language == "ja" else "Edit selected row details…"
         )
+        self.edit_gradient_button = QtWidgets.QPushButton(
+            "選択行のグラジエント…"
+            if language == "ja"
+            else "Edit selected row gradient…"
+        )
         selection_row.addWidget(self.check_all_button)
         selection_row.addWidget(self.check_group_button)
         selection_row.addWidget(self.clear_checks_button)
         selection_row.addWidget(self.edit_details_button)
+        selection_row.addWidget(self.edit_gradient_button)
         selection_row.addStretch(1)
         root.addLayout(selection_row)
 
@@ -654,6 +660,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.clear_checks_button.clicked.connect(lambda: self._set_all_checks(False))
         self.check_group_button.clicked.connect(self._check_same_group)
         self.edit_details_button.clicked.connect(self._edit_selected_details)
+        self.edit_gradient_button.clicked.connect(self._edit_selected_gradient)
         self.table.itemChanged.connect(self._table_item_changed)
         self.table.cellDoubleClicked.connect(self._cell_double_clicked)
         self.table.copy_callback = self._copy_selected_cells
@@ -710,7 +717,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             self.table.item(row, column).setText(value)
 
     def _cell_double_clicked(self, row: int, column: int):
-        if column not in self.EDITABLE_COLUMNS:
+        if column == self.GRADIENT_COLUMN:
+            self._edit_selected_gradient(row)
+        elif column not in self.EDITABLE_COLUMNS:
             self._edit_selected_details(row)
 
     def _table_item_changed(self, item):
@@ -954,6 +963,60 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             self._refresh_row_from_dataset(row, working)
             self.table.selectRow(row)
 
+    @staticmethod
+    def _apply_gradient_payload(dataset: Dataset, name: str, payload):
+        dataset.measurement.gradient = [
+            GradientPoint(**point)
+            for point in deepcopy(payload.get("gradient", []))
+        ]
+        solvents = payload.get("solvents", {}) or {}
+        dataset.measurement.solvents = {
+            line: Solvent(**deepcopy(solvents.get(line, {}) or {}))
+            for line in "ABCD"
+        }
+        dataset.gradient_preset_name = name
+
+    def _edit_selected_gradient(self, row=None):
+        if isinstance(row, bool) or row is None:
+            row = self.table.currentRow()
+        if not (0 <= int(row) < len(self.project.datasets)):
+            return
+        row = int(row)
+        original = self.project.datasets[row]
+        working = deepcopy(self.detail_overrides.get(original.id, original))
+        try:
+            self._apply_row_to_dataset(row, working)
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
+            return
+        assigned_name = self.gradient_assignments.get(original.run_id)
+        if assigned_name:
+            self._apply_gradient_payload(
+                working,
+                assigned_name,
+                self.gradient_presets[assigned_name],
+            )
+        dialog = GradientDialog(
+            working,
+            self.language,
+            self,
+            presets=self.gradient_presets,
+            preset_metadata=self.preset_metadata,
+        )
+        if not dialog_exec(dialog):
+            return
+        self.gradient_presets = dialog.presets
+        self.preset_metadata = dialog.preset_metadata
+        self.detail_overrides[original.id] = working
+        self.gradient_assignments.pop(original.run_id, None)
+        gradient_name = working.effective_gradient_preset_name()
+        for related_row, dataset in enumerate(self.project.datasets):
+            if dataset.run_id == original.run_id:
+                self.table.item(related_row, self.GRADIENT_COLUMN).setText(
+                    gradient_name
+                )
+        self.table.setCurrentCell(row, self.GRADIENT_COLUMN)
+
     def _refresh_presets(self, selected_name: str = ""):
         self.preset_combo.clear()
         self.preset_combo.addItems(
@@ -1053,8 +1116,10 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         checked_rows = self._checked_rows()
         for row in checked_rows:
             dataset = self.project.datasets[row]
-            self.gradient_assignments[dataset.id] = name
-            self.table.item(row, self.GRADIENT_COLUMN).setText(name)
+            self.gradient_assignments[dataset.run_id] = name
+            for related_row, related in enumerate(self.project.datasets):
+                if related.run_id == dataset.run_id:
+                    self.table.item(related_row, self.GRADIENT_COLUMN).setText(name)
         if checked_rows:
             record_preset_used(self.preset_metadata, "gradients", name)
 
@@ -1079,6 +1144,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                     dataset, deepcopy(override.measurement)
                 )
                 dataset.short_label = override.short_label
+                dataset.gradient_preset_name = override.gradient_preset_name
             old_label = dataset.label
             dataset.label = self._cell_text(row, 1) or dataset.original_filename
             if not dataset.short_label or dataset.short_label == old_label:
@@ -1089,17 +1155,13 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 setattr(dataset.measurement, field, value)
             dataset.measurement.column_name = self._cell_text(row, self.FIELD_COLUMNS["column_name"])
             dataset.measurement.analyte_name = self._cell_text(row, self.FIELD_COLUMNS["analyte_name"])
-            gradient_name = self.gradient_assignments.get(dataset.id)
+            gradient_name = self.gradient_assignments.get(dataset.run_id)
             if gradient_name:
-                payload = self.gradient_presets[gradient_name]
-                dataset.measurement.gradient = [
-                    GradientPoint(**point) for point in deepcopy(payload.get("gradient", []))
-                ]
-                solvents = payload.get("solvents", {}) or {}
-                dataset.measurement.solvents = {
-                    line: Solvent(**deepcopy(solvents.get(line, {}) or {})) for line in "ABCD"
-                }
-                dataset.gradient_preset_name = gradient_name
+                self._apply_gradient_payload(
+                    dataset,
+                    gradient_name,
+                    self.gradient_presets[gradient_name],
+                )
         self.project.condition_presets = self.presets
         self.project.gradient_presets = self.gradient_presets
         self.accept()

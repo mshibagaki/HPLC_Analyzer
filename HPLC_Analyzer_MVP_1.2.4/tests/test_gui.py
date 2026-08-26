@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ from hplc_app.dialogs import (
     GradientDialog,
     LabDatabaseDialog,
     MetadataDialog,
+    PresetPreviewDialog,
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
@@ -1246,6 +1248,126 @@ class GuiTests(unittest.TestCase):
         gradient_dialog.reject()
         window.project.dirty = False
         window.close()
+
+    def test_condition_preset_preview_compares_pending_values_without_mutation(self):
+        window = self.make_window()
+        selected = window.project.datasets[0]
+        window.project.condition_presets = {
+            "C4 280": {
+                "wavelength_nm": 280.0,
+                "flow_rate_ml_min": 0.8,
+                "column_name": "",
+            }
+        }
+        dialog = BatchMetadataDialog(window.project, selected.id, "ja")
+        dialog.preset_combo.setCurrentText("C4 280")
+        dialog.table.item(0, dialog.FIELD_COLUMNS["wavelength_nm"]).setText("214")
+        metadata_before = deepcopy(dialog.preset_metadata)
+        measurement_before = deepcopy(selected.measurement)
+
+        def inspect_preview(preview):
+            self.assertIsInstance(preview, PresetPreviewDialog)
+            self.assertIn("C4 280", preview.windowTitle())
+            values = {
+                preview.table.item(row, 0).text(): tuple(
+                    preview.table.item(row, column).text() for column in range(1, 4)
+                )
+                for row in range(preview.table.rowCount())
+            }
+            self.assertEqual(values["波長 (nm)"], ("214", "280", "280"))
+            self.assertEqual(values["カラム"][1], "（維持）")
+            self.assertEqual(values["カラム"][0], values["カラム"][2])
+            return 0
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=inspect_preview):
+            dialog._preview_condition_preset()
+        self.assertEqual(dialog.preset_metadata, metadata_before)
+        self.assertEqual(selected.measurement, measurement_before)
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_gradient_preset_preview_shows_program_and_solvents_without_use(self):
+        window = self.make_window()
+        selected = window.project.datasets[0]
+        window.project.gradient_presets = {
+            "ACN fast": {
+                "gradient": [
+                    {
+                        "time_min": 0.0,
+                        "a_pct": 80.0,
+                        "b_pct": 20.0,
+                        "c_pct": 0.0,
+                        "d_pct": 0.0,
+                        "flow_ml_min": 0.8,
+                    }
+                ],
+                "solvents": {
+                    "B": {"name": "ACN", "composition": "0.1% TFA"}
+                },
+            }
+        }
+        dialog = BatchMetadataDialog(window.project, selected.id, "en")
+        dialog.gradient_preset_combo.setCurrentText("ACN fast")
+        metadata_before = deepcopy(dialog.preset_metadata)
+        gradient_before = deepcopy(selected.measurement.gradient)
+
+        def inspect_preview(preview):
+            self.assertIsInstance(preview, PresetPreviewDialog)
+            self.assertEqual(preview.table.horizontalHeaderItem(3).text(), "Result")
+            values = {
+                preview.table.item(row, 0).text(): tuple(
+                    preview.table.item(row, column).text() for column in range(1, 4)
+                )
+                for row in range(preview.table.rowCount())
+            }
+            self.assertEqual(values["Solvent B"][1:], ("ACN / 0.1% TFA", "ACN / 0.1% TFA"))
+            self.assertIn("B=20", values["Time point 1"][1])
+            self.assertIn("Flow=0.8", values["Time point 1"][2])
+            return 0
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=inspect_preview):
+            dialog._preview_gradient_preset()
+        self.assertEqual(dialog.preset_metadata, metadata_before)
+        self.assertEqual(selected.measurement.gradient, gradient_before)
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_gradient_editor_can_preview_invalid_current_program_without_loading(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        presets = {
+            "Preview only": {
+                "gradient": [
+                    {
+                        "time_min": 10.0,
+                        "a_pct": 50.0,
+                        "b_pct": 50.0,
+                        "c_pct": 0.0,
+                        "d_pct": 0.0,
+                        "flow_ml_min": 1.0,
+                    }
+                ],
+                "solvents": {},
+            }
+        }
+        dialog = GradientDialog(dataset, "en", presets=presets)
+        dialog.preset_combo.setCurrentText("Preview only")
+        dialog.table.item(0, 0).setText("not-a-number")
+        metadata_before = deepcopy(dialog.preset_metadata)
+        dataset_before = deepcopy(dataset)
+
+        def inspect_preview(preview):
+            self.assertIsInstance(preview, PresetPreviewDialog)
+            self.assertIn("not-a-number", preview.table.item(4, 1).text())
+            self.assertIn("10 min", preview.table.item(4, 2).text())
+            return 0
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=inspect_preview):
+            dialog._preview_preset()
+        self.assertEqual(dialog.preset_metadata, metadata_before)
+        self.assertEqual(dataset.measurement, dataset_before.measurement)
+        dialog.reject()
 
     def test_batch_table_applies_named_conditions_to_checked_rows(self):
         window = self.make_window()

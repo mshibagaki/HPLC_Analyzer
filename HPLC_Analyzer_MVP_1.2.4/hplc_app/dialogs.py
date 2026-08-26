@@ -44,6 +44,58 @@ def format_optional(value: Optional[float]) -> str:
     return "" if value is None else "%g" % value
 
 
+def _preset_display(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return "%g" % value
+    return str(value)
+
+
+class PresetPreviewDialog(QtWidgets.QDialog):
+    """Read-only current/preset/result comparison shown before applying."""
+
+    def __init__(self, title: str, rows, language: str = "ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.setWindowTitle(title)
+        self.resize(780, 520)
+        root = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel(
+            "この画面では内容を確認するだけで、値は変更されません。"
+            if language == "ja"
+            else "This preview does not change any values."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        self.table = QtWidgets.QTableWidget(len(rows), 4)
+        self.table.setHorizontalHeaderLabels(
+            (
+                "項目" if language == "ja" else "Field",
+                "現在値" if language == "ja" else "Current",
+                "プリセット" if language == "ja" else "Preset",
+                "適用後" if language == "ja" else "Result",
+            )
+        )
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        for row, (field, current, preset, result) in enumerate(rows):
+            values = (field, current, preset, result)
+            changed = current != result
+            for column, value in enumerate(values):
+                item = QtWidgets.QTableWidgetItem(value)
+                if changed and column == 3:
+                    item.setBackground(QtGui.QBrush(QtGui.QColor("#fff2b2")))
+                self.table.setItem(row, column, item)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.resizeColumnsToContents()
+        root.addWidget(self.table, 1)
+        buttons = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+
 class DirectoryImportDialog(QtWidgets.QDialog):
     """Choose and preview one directory batch before importing it."""
 
@@ -444,6 +496,114 @@ PRESET_FIELDS = (
     "molecular_weight_g_mol",
 )
 
+CONDITION_PRESET_LABELS = {
+    "wavelength_nm": ("波長 (nm)", "Wavelength (nm)"),
+    "aux_range_au_per_v": ("AU/V", "AU/V"),
+    "flow_rate_ml_min": ("流量 (mL/min)", "Flow (mL/min)"),
+    "cell_path_length_cm": ("セル長 (cm)", "Cell length (cm)"),
+    "column_name": ("カラム", "Column"),
+    "column_temperature_c": ("カラム温度 (°C)", "Column temp. (°C)"),
+    "injection_volume_ul": ("注入量 (µL)", "Injection (µL)"),
+    "analyte_name": ("分析対象物", "Analyte"),
+    "molar_absorptivity_214": ("ε214", "ε214"),
+    "molar_absorptivity_280": ("ε280", "ε280"),
+    "molecular_weight_g_mol": ("分子量 (g/mol)", "Molecular weight (g/mol)"),
+}
+
+
+def condition_preset_preview_rows(current, preset, language="ja"):
+    rows = []
+    for field in PRESET_FIELDS:
+        current_text = _preset_display(current.get(field))
+        preset_value = preset.get(field)
+        applies = preset_value is not None and not (
+            isinstance(preset_value, str) and not preset_value.strip()
+        )
+        if applies:
+            preset_text = _preset_display(preset_value)
+            result_text = preset_text
+        else:
+            preset_text = "（維持）" if language == "ja" else "(keep)"
+            result_text = current_text
+        labels = CONDITION_PRESET_LABELS[field]
+        rows.append(
+            (labels[0] if language == "ja" else labels[1], current_text, preset_text, result_text)
+        )
+    return rows
+
+
+def _gradient_point_text(point) -> str:
+    if point is None:
+        return ""
+    source = asdict(point) if isinstance(point, GradientPoint) else point
+    if not isinstance(source, dict):
+        return _preset_display(source)
+    return "A={0}; B={1}; C={2}; D={3}; Flow={4}".format(
+        _preset_display(source.get("a_pct")),
+        _preset_display(source.get("b_pct")),
+        _preset_display(source.get("c_pct")),
+        _preset_display(source.get("d_pct")),
+        _preset_display(source.get("flow_ml_min")),
+    )
+
+
+def _gradient_point_time(point) -> str:
+    if isinstance(point, GradientPoint):
+        source = asdict(point)
+    else:
+        source = point if isinstance(point, dict) else {}
+    return _preset_display(source.get("time_min"))
+
+
+def _solvent_text(solvent) -> str:
+    if isinstance(solvent, Solvent):
+        source = asdict(solvent)
+    else:
+        source = solvent if isinstance(solvent, dict) else {}
+    name = str(source.get("name", "") or "")
+    composition = str(source.get("composition", "") or "")
+    return " / ".join(value for value in (name, composition) if value)
+
+
+def gradient_preset_preview_rows(current, preset, language="ja"):
+    current = current if isinstance(current, dict) else {}
+    preset = preset if isinstance(preset, dict) else {}
+    rows = []
+    current_solvents = current.get("solvents", {}) or {}
+    preset_solvents = preset.get("solvents", {}) or {}
+    for line in "ABCD":
+        current_text = _solvent_text(current_solvents.get(line, {}))
+        preset_text = _solvent_text(preset_solvents.get(line, {}))
+        rows.append(("Solvent " + line, current_text, preset_text, preset_text))
+    current_points = current.get("gradient", []) or []
+    preset_points = preset.get("gradient", []) or []
+    for index in range(max(len(current_points), len(preset_points))):
+        current_point = current_points[index] if index < len(current_points) else None
+        preset_point = preset_points[index] if index < len(preset_points) else None
+        current_time = _gradient_point_time(current_point)
+        preset_time = _gradient_point_time(preset_point)
+        field = (
+            "時間点 {0}".format(index + 1)
+            if language == "ja"
+            else "Time point {0}".format(index + 1)
+        )
+        current_text = (
+            "{0} min: {1}".format(
+                current_time, _gradient_point_text(current_point)
+            )
+            if current_point is not None
+            else ""
+        )
+        preset_text = (
+            "{0} min: {1}".format(
+                preset_time, _gradient_point_text(preset_point)
+            )
+            if preset_point is not None
+            else ""
+        )
+        rows.append((field, current_text, preset_text, preset_text))
+    return rows
+
 
 class BatchCellError(ValueError):
     """One invalid editable cell in the batch conditions table."""
@@ -537,11 +697,15 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         preset_row.addWidget(QtWidgets.QLabel("条件プリセット" if language == "ja" else "Condition preset"))
         self.preset_combo = QtWidgets.QComboBox()
         preset_row.addWidget(self.preset_combo, 1)
+        self.preview_preset_button = QtWidgets.QPushButton(
+            "内容・差分…" if language == "ja" else "Preview / diff…"
+        )
         self.save_preset_button = QtWidgets.QPushButton(
             "選択中データから名前を付けて保存" if language == "ja" else "Save selected dataset as preset"
         )
         self.delete_preset_button = QtWidgets.QPushButton("プリセット削除" if language == "ja" else "Delete preset")
         self.apply_preset_button = QtWidgets.QPushButton("チェック行へ適用" if language == "ja" else "Apply to checked rows")
+        preset_row.addWidget(self.preview_preset_button)
         preset_row.addWidget(self.save_preset_button)
         preset_row.addWidget(self.delete_preset_button)
         preset_row.addWidget(self.apply_preset_button)
@@ -562,7 +726,11 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.apply_gradient_button = QtWidgets.QPushButton(
             "チェック行へ適用" if language == "ja" else "Apply to checked rows"
         )
+        self.preview_gradient_preset_button = QtWidgets.QPushButton(
+            "内容・差分…" if language == "ja" else "Preview / diff…"
+        )
         gradient_preset_row.addWidget(self.gradient_preset_combo, 1)
+        gradient_preset_row.addWidget(self.preview_gradient_preset_button)
         gradient_preset_row.addWidget(self.apply_gradient_button)
         root.addLayout(gradient_preset_row)
 
@@ -654,7 +822,11 @@ class BatchMetadataDialog(QtWidgets.QDialog):
 
         self.save_preset_button.clicked.connect(self._save_preset)
         self.delete_preset_button.clicked.connect(self._delete_preset)
+        self.preview_preset_button.clicked.connect(self._preview_condition_preset)
         self.apply_preset_button.clicked.connect(self._apply_preset)
+        self.preview_gradient_preset_button.clicked.connect(
+            self._preview_gradient_preset
+        )
         self.apply_gradient_button.clicked.connect(self._apply_gradient_preset)
         self.check_all_button.clicked.connect(lambda: self._set_all_checks(True))
         self.clear_checks_button.clicked.connect(lambda: self._set_all_checks(False))
@@ -1028,6 +1200,71 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             index = self.preset_combo.findText(selected_name)
             if index >= 0:
                 self.preset_combo.setCurrentIndex(index)
+
+    def _preview_condition_preset(self):
+        name = self.preset_combo.currentText()
+        preset = self.presets.get(name)
+        row = self.table.currentRow()
+        if preset is None or not (0 <= row < len(self.project.datasets)):
+            return
+        current = {
+            field: self._cell_text(row, column)
+            for field, column in self.FIELD_COLUMNS.items()
+        }
+        title = (
+            "条件プリセットの内容・差分: {0}".format(name)
+            if self.language == "ja"
+            else "Condition preset preview / diff: {0}".format(name)
+        )
+        dialog_exec(
+            PresetPreviewDialog(
+                title,
+                condition_preset_preview_rows(current, preset, self.language),
+                self.language,
+                self,
+            )
+        )
+
+    def _preview_gradient_preset(self):
+        name = self.gradient_preset_combo.currentText()
+        preset = self.gradient_presets.get(name)
+        row = self.table.currentRow()
+        if preset is None or not (0 <= row < len(self.project.datasets)):
+            return
+        original = self.project.datasets[row]
+        working = deepcopy(self.detail_overrides.get(original.id, original))
+        try:
+            self._apply_row_to_dataset(row, working)
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
+            return
+        assigned_name = self.gradient_assignments.get(original.run_id)
+        if assigned_name:
+            self._apply_gradient_payload(
+                working,
+                assigned_name,
+                self.gradient_presets[assigned_name],
+            )
+        current = {
+            "gradient": [asdict(point) for point in working.measurement.gradient],
+            "solvents": {
+                line: asdict(solvent)
+                for line, solvent in working.measurement.solvents.items()
+            },
+        }
+        title = (
+            "グラジエントプリセットの内容・差分: {0}".format(name)
+            if self.language == "ja"
+            else "Gradient preset preview / diff: {0}".format(name)
+        )
+        dialog_exec(
+            PresetPreviewDialog(
+                title,
+                gradient_preset_preview_rows(current, preset, self.language),
+                self.language,
+                self,
+            )
+        )
 
     def _save_preset(self):
         dataset = self._selected_dataset()
@@ -1825,9 +2062,13 @@ class GradientDialog(QtWidgets.QDialog):
         self.save_preset_button = QtWidgets.QPushButton(
             "現在の条件を名前を付けて保存" if language == "ja" else "Save current program"
         )
+        self.preview_preset_button = QtWidgets.QPushButton(
+            "内容・差分…" if language == "ja" else "Preview / diff…"
+        )
         self.apply_preset_button = QtWidgets.QPushButton("読み込む" if language == "ja" else "Load")
         self.delete_preset_button = QtWidgets.QPushButton("削除" if language == "ja" else "Delete")
         preset_row.addWidget(self.preset_combo, 1)
+        preset_row.addWidget(self.preview_preset_button)
         preset_row.addWidget(self.save_preset_button)
         preset_row.addWidget(self.apply_preset_button)
         preset_row.addWidget(self.delete_preset_button)
@@ -1870,6 +2111,7 @@ class GradientDialog(QtWidgets.QDialog):
         root.addLayout(row_buttons)
 
         self.save_preset_button.clicked.connect(self._save_preset)
+        self.preview_preset_button.clicked.connect(self._preview_preset)
         self.apply_preset_button.clicked.connect(self._apply_preset)
         self.delete_preset_button.clicked.connect(self._delete_preset)
         self._refresh_presets(self.applied_preset_name)
@@ -1926,6 +2168,51 @@ class GradientDialog(QtWidgets.QDialog):
             index = self.preset_combo.findText(selected_name)
             if index >= 0:
                 self.preset_combo.setCurrentIndex(index)
+
+    def _preview_preset(self):
+        name = self.preset_combo.currentText()
+        preset = self.presets.get(name)
+        if preset is None:
+            return
+        current_points = []
+        for row in range(self.table.rowCount()):
+            values = []
+            for column in range(6):
+                item = self.table.item(row, column)
+                values.append(item.text().strip() if item is not None else "")
+            current_points.append(
+                {
+                    "time_min": values[0],
+                    "a_pct": values[1],
+                    "b_pct": values[2],
+                    "c_pct": values[3],
+                    "d_pct": values[4],
+                    "flow_ml_min": values[5],
+                }
+            )
+        current = {
+            "gradient": current_points,
+            "solvents": {
+                line: {
+                    "name": name_edit.text().strip(),
+                    "composition": composition_edit.text().strip(),
+                }
+                for line, (name_edit, composition_edit) in self.solvent_fields.items()
+            },
+        }
+        title = (
+            "グラジエントプリセットの内容・差分: {0}".format(name)
+            if self.language == "ja"
+            else "Gradient preset preview / diff: {0}".format(name)
+        )
+        dialog_exec(
+            PresetPreviewDialog(
+                title,
+                gradient_preset_preview_rows(current, preset, self.language),
+                self.language,
+                self,
+            )
+        )
 
     def _read_program(self):
         points = []

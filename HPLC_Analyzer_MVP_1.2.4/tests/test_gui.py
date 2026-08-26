@@ -43,6 +43,7 @@ from hplc_app.preset_store import (
 from hplc_app.qt_compat import (
     ITEM_IS_EDITABLE,
     QT_API,
+    STANDARD_SAVE_SHORTCUT,
     QtCore,
     QtGui,
     QtPrintSupport,
@@ -1778,6 +1779,70 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(manager.tables["gradients"].rowCount(), 1)
             self.assertNotIn("peaks", manager.tables)
             manager.close()
+        window.project.dirty = False
+        window.close()
+
+    def test_save_action_uses_standard_shortcut_and_existing_project_path(self):
+        window = self.make_window()
+        self.assertEqual(
+            window.save_action.shortcut(),
+            QtGui.QKeySequence(STANDARD_SAVE_SHORTCUT),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = str(Path(directory) / "shortcut-save.hplcproj")
+            window.project.project_path = destination
+            window.project.dirty = True
+            window.save_action.trigger()
+            self.assertTrue(Path(destination).exists())
+            self.assertEqual(window.project.project_path, destination)
+            self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_save_action_opens_save_as_and_cancel_preserves_project_state(self):
+        window = self.make_window()
+        window.project.project_path = ""
+        window.project.dirty = True
+        original_state = (
+            window.project.project_path,
+            window.project.title,
+            window.project.author,
+            window.project.dirty,
+        )
+        with patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
+            QtWidgets.QFileDialog,
+            "getSaveFileName",
+            return_value=("", ""),
+        ) as chooser:
+            window.save_action.trigger()
+        chooser.assert_called_once()
+        self.assertEqual(
+            (
+                window.project.project_path,
+                window.project.title,
+                window.project.author,
+                window.project.dirty,
+            ),
+            original_state,
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_save_action_reports_write_failure_without_clearing_dirty_state(self):
+        window = self.make_window()
+        window.project.project_path = "C:/unwritable/shortcut-save.hplcproj"
+        window.project.dirty = True
+        with patch(
+            "hplc_app.gui.save_project",
+            side_effect=OSError("simulated write failure"),
+        ), patch.object(QtWidgets.QMessageBox, "critical") as critical:
+            window.save_action.trigger()
+        critical.assert_called_once()
+        self.assertIn("simulated write failure", critical.call_args.args[2])
+        self.assertEqual(
+            window.project.project_path,
+            "C:/unwritable/shortcut-save.hplcproj",
+        )
+        self.assertTrue(window.project.dirty)
         window.project.dirty = False
         window.close()
 

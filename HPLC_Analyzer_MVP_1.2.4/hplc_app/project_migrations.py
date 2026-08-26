@@ -12,6 +12,7 @@ from copy import deepcopy
 from typing import Any, Callable, Dict
 
 from . import PROJECT_FORMAT_MAJOR, PROJECT_SCHEMA_VERSION
+from .timestamps import acquisition_timestamp
 
 
 Manifest = Dict[str, Any]
@@ -212,7 +213,14 @@ def migrate_102_to_103(manifest: Manifest) -> Manifest:
         run_id = _migration_run_id(dataset, index, used_ids)
         run = {
             "id": run_id,
-            "timestamp": deepcopy(measurement.get("acquisition_datetime", "")),
+            "timestamp": acquisition_timestamp(
+                {
+                    "Sample Information.Acquisition Date": deepcopy(
+                        measurement.get("acquisition_datetime", "")
+                    )
+                },
+                str(dataset.get("original_filename", "") or ""),
+            ),
             "gradient_preset_name": deepcopy(
                 dataset.get("gradient_preset_name", "")
             ),

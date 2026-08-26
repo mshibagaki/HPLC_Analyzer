@@ -29,6 +29,7 @@ from .analysis import (
 from .dialogs import (
     AxisLabelsDialog,
     BatchMetadataDialog,
+    DirectoryImportDialog,
     GradientDialog,
     LabDatabaseDialog,
     MetadataDialog,
@@ -104,6 +105,7 @@ from .qt_compat import (
     STANDARD_SAVE_SHORTCUT,
     UNCHECKED,
     USER_ROLE,
+    WINDOW_MODAL,
     QtCore,
     QtGui,
     QtPrintSupport,
@@ -1303,6 +1305,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.save_action.setShortcut(STANDARD_SAVE_SHORTCUT)
         self.save_as_action = self._action(self.save_project_as)
         self.import_action = self._action(self.import_ascii)
+        self.import_directory_action = self._action(self.import_directory)
         self.export_figure_action = self._action(self.export_figure)
         self.export_peaks_action = self._action(self.export_peaks)
         self.export_trace_action = self._action(self.export_trace)
@@ -1315,6 +1318,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.file_menu.addAction(action)
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.import_action)
+        self.file_menu.addAction(self.import_directory_action)
         self.file_menu.addSeparator()
         for action in (
             self.export_figure_action,
@@ -1378,6 +1382,7 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.save_action, "save"),
             (self.save_as_action, "save_as"),
             (self.import_action, "import"),
+            (self.import_directory_action, "import_directory"),
             (self.export_figure_action, "export_figure"),
             (self.export_peaks_action, "export_peaks"),
             (self.export_trace_action, "export_trace"),
@@ -3342,7 +3347,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_overview_window()
         self.canvas.draw_idle()
 
-    def _import_chromatogram_paths(self, paths) -> int:
+    def _import_chromatogram_paths(
+        self, paths, group_label="", show_progress=False
+    ) -> int:
         paths = [str(path) for path in paths]
         if not paths:
             return 0
@@ -3350,20 +3357,69 @@ class MainWindow(QtWidgets.QMainWindow):
             LAST_IMPORT_DIRECTORY, str(Path(paths[0]).parent), sync=True
         )
         imported = 0
+        processed = 0
+        canceled = False
         errors: List[str] = []
-        for path in paths:
+        progress = None
+        if show_progress:
+            progress = QtWidgets.QProgressDialog(
+                self.translator("directory_import_progress"),
+                self.translator("cancel"),
+                0,
+                len(paths),
+                self,
+            )
+            progress.setWindowModality(WINDOW_MODAL)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+        for index, path in enumerate(paths):
+            if progress is not None:
+                QtWidgets.QApplication.processEvents()
+                if progress.wasCanceled():
+                    canceled = True
+                    break
             try:
                 dataset = load_chromatogram_file(path)
+                normalized_group = str(group_label).strip()
+                if normalized_group:
+                    dataset.measurement.group = normalized_group
                 dataset.color = COLORS[len(self.project.datasets) % len(COLORS)]
                 self.project.add_dataset(dataset)
                 imported += 1
             except Exception as exc:
                 errors.append("%s: %s" % (Path(path).name, exc))
+            processed = index + 1
+            if progress is not None:
+                progress.setValue(processed)
+                QtWidgets.QApplication.processEvents()
+        if progress is not None:
+            if not canceled:
+                progress.setValue(len(paths))
+            progress.close()
         if imported:
             self._reset_undo_history()
             self.project.dirty = True
             self._refresh_all(len(self.project.datasets) - 1)
-            self.statusBar().showMessage(self.translator("imported", count=imported), 5000)
+            message_key = "directory_import_canceled" if canceled else "imported"
+            self.statusBar().showMessage(
+                self.translator(
+                    message_key,
+                    count=imported,
+                    total=len(paths),
+                    processed=processed,
+                ),
+                5000,
+            )
+        elif canceled:
+            self.statusBar().showMessage(
+                self.translator(
+                    "directory_import_canceled",
+                    count=0,
+                    total=len(paths),
+                    processed=processed,
+                ),
+                5000,
+            )
         if errors:
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), "\n".join(errors))
         return imported
@@ -3380,6 +3436,28 @@ class MainWindow(QtWidgets.QMainWindow):
             self.translator("ascii_filter"),
         )
         self._import_chromatogram_paths(paths)
+
+    def import_directory(self):
+        last_directory = self._settings.get(LAST_IMPORT_DIRECTORY)
+        start_directory = self._import_directory or last_directory
+        if start_directory and not Path(start_directory).is_dir():
+            start_directory = ""
+        dialog = DirectoryImportDialog(
+            start_directory,
+            self._application_language,
+            self,
+        )
+        if not dialog_exec(dialog):
+            return 0
+        directory = dialog.directory_path
+        self._settings.set(LAST_IMPORT_DIRECTORY, str(directory), sync=True)
+        imported = self._import_chromatogram_paths(
+            dialog.files,
+            group_label=dialog.group_label,
+            show_progress=True,
+        )
+        self._settings.set(LAST_IMPORT_DIRECTORY, str(directory), sync=True)
+        return imported
 
     @staticmethod
     def _classify_dropped_urls(urls):

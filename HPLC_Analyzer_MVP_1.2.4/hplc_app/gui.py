@@ -60,7 +60,14 @@ from .naming import (
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
-from .preset_store import load_preset_store, merge_preset_sources, save_preset_store
+from .preset_store import (
+    load_preset_store_with_metadata,
+    merge_preset_sources,
+    normalize_preset_metadata,
+    record_preset_deleted,
+    record_preset_saved,
+    save_preset_store,
+)
 from .project_io import (
     load_project,
     save_project,
@@ -301,7 +308,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._settings.get(LEGACY_CONDITION_PRESETS)
         )
         settings_gradients = self._settings.get(LEGACY_GRADIENT_PRESETS)
-        stored_conditions, stored_gradients = load_preset_store()
+        (
+            stored_conditions,
+            stored_gradients,
+            stored_metadata,
+        ) = load_preset_store_with_metadata()
         merged_conditions, merged_gradients = merge_preset_sources(
             settings_conditions,
             settings_gradients,
@@ -312,6 +323,11 @@ class MainWindow(QtWidgets.QMainWindow):
             merged_conditions
         )
         self._global_gradient_presets = merged_gradients
+        self._global_preset_metadata = normalize_preset_metadata(
+            self._global_condition_presets,
+            self._global_gradient_presets,
+            stored_metadata,
+        )
         if self._global_condition_presets or self._global_gradient_presets:
             # v1.1.4 and earlier used QSettings only. Mirror those values into
             # a version-independent JSON file on first v1.1.5 launch, and
@@ -372,6 +388,7 @@ class MainWindow(QtWidgets.QMainWindow):
             save_preset_store(
                 self._global_condition_presets,
                 self._global_gradient_presets,
+                metadata=self._global_preset_metadata,
             )
         except (OSError, TypeError, ValueError):
             # QSettings remains the fallback if the roaming-profile directory
@@ -384,12 +401,35 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._global_condition_presets = deepcopy(self.project.condition_presets)
         self._global_gradient_presets = deepcopy(self.project.gradient_presets)
+        self._reconcile_global_preset_metadata()
         self._settings.set(
             LEGACY_CONDITION_PRESETS, self._global_condition_presets
         )
         self._settings.set(LEGACY_GRADIENT_PRESETS, self._global_gradient_presets)
         self._settings.sync()
         self._save_global_preset_file()
+
+    def _reconcile_global_preset_metadata(self):
+        for kind, presets in (
+            ("conditions", self._global_condition_presets),
+            ("gradients", self._global_gradient_presets),
+        ):
+            records = self._global_preset_metadata.setdefault(kind, {})
+            for name in presets:
+                if name not in records:
+                    record_preset_saved(
+                        self._global_preset_metadata, kind, "", name
+                    )
+            for name in list(records):
+                if name not in presets:
+                    record_preset_deleted(
+                        self._global_preset_metadata, kind, name
+                    )
+        self._global_preset_metadata = normalize_preset_metadata(
+            self._global_condition_presets,
+            self._global_gradient_presets,
+            self._global_preset_metadata,
+        )
 
     def _merge_global_presets_into_project(self):
         project_conditions = sanitize_condition_presets(self.project.condition_presets)
@@ -401,10 +441,16 @@ class MainWindow(QtWidgets.QMainWindow):
         for name, payload in project_conditions.items():
             if name not in self._global_condition_presets:
                 self._global_condition_presets[name] = deepcopy(payload)
+                record_preset_saved(
+                    self._global_preset_metadata, "conditions", "", name
+                )
                 imported = True
         for name, payload in project_gradients.items():
             if name not in self._global_gradient_presets:
                 self._global_gradient_presets[name] = deepcopy(payload)
+                record_preset_saved(
+                    self._global_preset_metadata, "gradients", "", name
+                )
                 imported = True
         merged_conditions = project_conditions
         merged_conditions.update(deepcopy(self._global_condition_presets))
@@ -3383,8 +3429,10 @@ class MainWindow(QtWidgets.QMainWindow):
             selected.id if selected is not None else "",
             self.project.ui_language,
             self,
+            preset_metadata=self._global_preset_metadata,
         )
         if dialog_exec(dialog):
+            self._global_preset_metadata = dialog.preset_metadata
             for dataset in self.project.datasets:
                 try:
                     recalculate_dataset_peaks(dataset)
@@ -3411,9 +3459,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.project.ui_language,
             self,
             presets=self.project.gradient_presets,
+            preset_metadata=self._global_preset_metadata,
         )
         if dialog_exec(dialog):
             self.project.gradient_presets = dialog.presets
+            self._global_preset_metadata = dialog.preset_metadata
             self._persist_global_presets()
             try:
                 recalculate_dataset_peaks(dataset)

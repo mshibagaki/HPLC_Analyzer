@@ -299,6 +299,8 @@ schema 102以前のプロジェクトは、ラベル、時刻、元ファイル�
 
 Application settingsのキー、既定値、型変換、不正値fallback、保存処理は`hplc_app/settings_store.py`へ集約しています。設定が欠損・破損している場合や一時的に保存できない場合も、安全な既定値で起動し、Projectやプリセットを削除しません。
 
+画面言語はApplication settingの`ui/language`が正規値です。一度Englishへ変更すると次回起動、新規Project、別Projectを開いた後もEnglishを維持します。既存`.hplcproj`の`ui_language`は旧版との互換性のためそのまま保存しますが、Projectを開くだけでApplication言語を切り替えません。画面言語の変更だけではProjectをdirtyにしません。
+
 ## 研究室共通データベースの設定
 
 1. 管理者が研究室共有フォルダに`HPLC_Lab_Database.sqlite3`を置く場所を決めます。ファイルはまだ存在しなくても構いません。

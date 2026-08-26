@@ -49,6 +49,7 @@ from hplc_app.qt_compat import (
     QtWidgets,
 )
 from hplc_app.report import render_analysis_report_pages
+from hplc_app.settings_store import ApplicationSettings
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from tests.gcd_fixtures import synthetic_gcd_bytes
 
@@ -207,6 +208,85 @@ class GuiTests(unittest.TestCase):
         )
         window.project.dirty = False
         window.close()
+
+    def test_application_language_persists_without_dirtying_or_rewriting_project(self):
+        class MemorySettings:
+            def __init__(self):
+                self.values = {}
+
+            def value(self, key, default=None):
+                return self.values.get(key, default)
+
+            def setValue(self, key, value):
+                self.values[key] = value
+
+            def sync(self):
+                return None
+
+            def status(self):
+                return 0
+
+        backend = MemorySettings()
+        settings_factory = lambda: ApplicationSettings(backend)
+        with patch("hplc_app.gui.ApplicationSettings", side_effect=settings_factory):
+            first = MainWindow()
+            self.assertEqual(first._application_language, "ja")
+            legacy_language = first.project.ui_language
+            first.project.dirty = False
+            first.set_language("en")
+            self.assertEqual(first._application_language, "en")
+            self.assertEqual(first.translator.language, "en")
+            self.assertFalse(first.project.dirty)
+            self.assertEqual(first.project.ui_language, legacy_language)
+            first.close()
+
+            second = MainWindow()
+            self.assertEqual(second._application_language, "en")
+            self.assertEqual(second.translator.language, "en")
+            self.assertTrue(second.english_action.isChecked())
+            second.project.dirty = False
+            second.close()
+
+    def test_opening_legacy_project_does_not_change_application_language(self):
+        class MemorySettings:
+            def __init__(self):
+                self.values = {"ui/language": "en"}
+
+            def value(self, key, default=None):
+                return self.values.get(key, default)
+
+            def setValue(self, key, value):
+                self.values[key] = value
+
+            def sync(self):
+                return None
+
+            def status(self):
+                return 0
+
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+            legacy_project = Project(ui_language="ja", datasets=[dataset])
+            path = str(Path(directory) / "legacy-language.hplcproj")
+            from hplc_app.project_io import save_project
+
+            save_project(path, legacy_project)
+            backend = MemorySettings()
+            settings_factory = lambda: ApplicationSettings(backend)
+            with patch(
+                "hplc_app.gui.ApplicationSettings", side_effect=settings_factory
+            ), patch.object(
+                QtWidgets.QFileDialog,
+                "getOpenFileName",
+                return_value=(path, ""),
+            ):
+                window = MainWindow()
+                window.open_project()
+                self.assertEqual(window.project.ui_language, "ja")
+                self.assertEqual(window._application_language, "en")
+                self.assertEqual(window.translator.language, "en")
+                self.assertFalse(window.project.dirty)
+                window.close()
 
     def test_lightweight_png_svg_pdf_export_temporarily_uses_full_data(self):
         window = self.make_lightweight_window()

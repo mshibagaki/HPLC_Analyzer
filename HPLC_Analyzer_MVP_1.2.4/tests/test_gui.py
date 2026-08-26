@@ -2517,6 +2517,52 @@ class GuiTests(unittest.TestCase):
         second.project.dirty = False
         second.close()
 
+    def test_new_project_can_open_in_independent_window_with_shared_presets(self):
+        parent = self.make_window()
+        parent.project.condition_presets = {
+            "Shared C4": {"wavelength_nm": 280.0, "column_name": "C4"}
+        }
+        parent._persist_global_presets()
+        parent.project.dirty = True
+        parent_undo_count = len(parent._undo_stack)
+        parent_dataset_ids = [dataset.id for dataset in parent.project.datasets]
+
+        with patch.object(parent, "_confirm_unsaved") as confirm_unsaved:
+            child = parent.new_project_in_new_window()
+        confirm_unsaved.assert_not_called()
+        self.assertIsNot(child, parent)
+        self.assertTrue(child.isVisible())
+        self.assertIn(child, MainWindow._open_windows)
+        self.assertEqual(len(child.project.datasets), 0)
+        self.assertFalse(child.project.dirty)
+        self.assertIn("Shared C4", child.project.condition_presets)
+        self.assertEqual(
+            [dataset.id for dataset in parent.project.datasets],
+            parent_dataset_ids,
+        )
+        self.assertTrue(parent.project.dirty)
+        self.assertEqual(len(parent._undo_stack), parent_undo_count)
+
+        child.project.title = "Child only"
+        self.assertNotEqual(child.project.title, parent.project.title)
+        child.set_language("en")
+        self.assertEqual(
+            child.new_window_action.text(), "New project in separate window"
+        )
+        self.assertEqual(parent.new_window_action.text(), "新規プロジェクトを別ウィンドウで開く")
+
+        child.project.dirty = True
+        with patch.object(child, "_confirm_unsaved", return_value=False):
+            child.close()
+        self.assertIn(child, MainWindow._open_windows)
+        child.project.dirty = False
+        child.close()
+        self.app.processEvents()
+        self.assertNotIn(child, MainWindow._open_windows)
+        self.assertIn(parent, self.app.topLevelWidgets())
+        parent.project.dirty = False
+        parent.close()
+
     def test_v114_qsettings_presets_migrate_to_stable_preset_file(self):
         conditions = {
             "280 nm C4": {"wavelength_nm": 280.0, "column_name": "C4"}

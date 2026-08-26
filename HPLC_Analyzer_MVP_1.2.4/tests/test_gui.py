@@ -1627,6 +1627,94 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_batch_gradient_editor_stages_shared_run_until_parent_accept_and_round_trips(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        shared_run = window.project.run_for(first)
+        second.bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        original_b = first.measurement.gradient[0].b_pct
+
+        def edit_gradient(gradient_dialog):
+            gradient_dialog.table.item(0, 2).setText("25")
+            gradient_dialog.solvent_fields["B"][0].setText("Acetonitrile")
+            gradient_dialog.applied_preset_name = "Batch custom"
+            gradient_dialog._accept()
+            return gradient_dialog.result()
+
+        canceled = BatchMetadataDialog(window.project, first.id, "en")
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_gradient):
+            canceled._edit_selected_gradient(1)
+        self.assertEqual(canceled.table.item(0, 15).text(), "Batch custom")
+        self.assertEqual(canceled.table.item(1, 15).text(), "Batch custom")
+        self.assertEqual(first.measurement.gradient[0].b_pct, original_b)
+        canceled.reject()
+        self.assertEqual(first.measurement.gradient[0].b_pct, original_b)
+
+        dialog = BatchMetadataDialog(window.project, first.id, "en")
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_gradient):
+            dialog._cell_double_clicked(0, dialog.GRADIENT_COLUMN)
+        dialog._accept()
+        self.assertEqual(
+            [dataset.measurement.gradient[0].b_pct for dataset in (first, second)],
+            [25.0, 25.0],
+        )
+        self.assertEqual(
+            [dataset.measurement.solvents["B"].name for dataset in (first, second)],
+            ["Acetonitrile", "Acetonitrile"],
+        )
+        self.assertEqual(
+            [dataset.gradient_preset_name for dataset in (first, second)],
+            ["Batch custom", "Batch custom"],
+        )
+
+        from hplc_app.project_io import load_project, save_project
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "batch-gradient.hplcproj"
+            save_project(str(path), window.project)
+            reloaded = load_project(str(path))
+        self.assertEqual(
+            [dataset.measurement.gradient[0].b_pct for dataset in reloaded.datasets],
+            [25.0, 25.0],
+        )
+        self.assertEqual(
+            reloaded.datasets[0].measurement.solvents["B"].name,
+            "Acetonitrile",
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_gradient_editor_accept_is_one_undo_step(self):
+        window = self.make_window()
+        original_b = window.project.datasets[0].measurement.gradient[0].b_pct
+
+        def edit_gradient(gradient_dialog):
+            gradient_dialog.table.item(0, 2).setText("30")
+            gradient_dialog._accept()
+            return gradient_dialog.result()
+
+        def accept_batch(batch_dialog):
+            with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_gradient):
+                batch_dialog._edit_selected_gradient(0)
+            batch_dialog._accept()
+            return batch_dialog.result()
+
+        with patch("hplc_app.gui.dialog_exec", side_effect=accept_batch):
+            window.edit_batch_metadata()
+        self.assertEqual(window.project.datasets[0].measurement.gradient[0].b_pct, 30.0)
+        self.assertEqual(len(window._undo_stack), 1)
+        window.undo()
+        self.assertEqual(
+            window.project.datasets[0].measurement.gradient[0].b_pct,
+            original_b,
+        )
+        window.redo()
+        self.assertEqual(window.project.datasets[0].measurement.gradient[0].b_pct, 30.0)
+        window.project.dirty = False
+        window.close()
+
     def test_gradient_preset_can_be_applied_in_batch_and_axis_label_persists(self):
         window = self.make_window()
         window.project.gradient_presets["ACN method"] = {

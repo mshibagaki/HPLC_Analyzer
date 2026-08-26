@@ -1409,6 +1409,129 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_batch_table_extended_selection_copies_only_complete_rectangles_as_tsv(self):
+        window = self.make_window()
+        dialog = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+        self.assertEqual(
+            dialog.table.selectionMode(),
+            QtWidgets.QAbstractItemView.ExtendedSelection,
+        )
+        self.assertEqual(
+            dialog.table.selectionBehavior(),
+            QtWidgets.QAbstractItemView.SelectItems,
+        )
+        dialog.table.clearSelection()
+        dialog.table.setCurrentCell(0, 4)
+        for row in (0, 1):
+            for column in (4, 5):
+                dialog.table.item(row, column).setSelected(True)
+
+        copy_event = QtGui.QKeyEvent(
+            QtCore.QEvent.KeyPress,
+            QtCore.Qt.Key_C,
+            QtCore.Qt.ControlModifier,
+        )
+        dialog.table.keyPressEvent(copy_event)
+        self.assertEqual(
+            QtWidgets.QApplication.clipboard().text(),
+            "280\t\n214\t",
+        )
+
+        dialog.table.clearSelection()
+        dialog.table.item(0, 4).setSelected(True)
+        dialog.table.item(1, 5).setSelected(True)
+        QtWidgets.QApplication.clipboard().setText("keep clipboard")
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._copy_selected_cells()
+        warning.assert_called_once()
+        self.assertIn("rectangular", warning.call_args.args[2])
+        self.assertEqual(QtWidgets.QApplication.clipboard().text(), "keep clipboard")
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_table_tsv_paste_is_atomic_and_keeps_dataset_fields_independent(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        dialog = BatchMetadataDialog(window.project, first.id, "en")
+        dialog.table.setCurrentCell(0, 4)
+        original = [
+            [dialog.table.item(row, column).text() for column in (4, 5)]
+            for row in (0, 1)
+        ]
+        QtWidgets.QApplication.clipboard().setText("230\t2\nnot-a-number\t1")
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._paste_clipboard()
+        warning.assert_called_once()
+        self.assertEqual(
+            [
+                [dialog.table.item(row, column).text() for column in (4, 5)]
+                for row in (0, 1)
+            ],
+            original,
+        )
+
+        dialog.table.setCurrentCell(0, 4)
+        QtWidgets.QApplication.clipboard().setText("230\t2\n214\t1")
+        paste_event = QtGui.QKeyEvent(
+            QtCore.QEvent.KeyPress,
+            QtCore.Qt.Key_V,
+            QtCore.Qt.ControlModifier,
+        )
+        dialog.table.keyPressEvent(paste_event)
+        self.assertEqual(
+            [
+                [dialog.table.item(row, column).text() for column in (4, 5)]
+                for row in (0, 1)
+            ],
+            [["230", "2"], ["214", "1"]],
+        )
+        self.assertEqual(len(dialog.table.selectedIndexes()), 4)
+        dialog._accept()
+        self.assertEqual(first.measurement.wavelength_nm, 230.0)
+        self.assertEqual(first.measurement.aux_range_au_per_v, 2.0)
+        self.assertEqual(second.measurement.wavelength_nm, 214.0)
+        self.assertEqual(second.measurement.aux_range_au_per_v, 1.0)
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_table_tsv_paste_rejects_noneditable_range_and_run_conflicts(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        shared_run = window.project.run_for(first)
+        second.bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        dialog = BatchMetadataDialog(window.project, first.id, "en")
+
+        original_check = dialog.table.item(0, 0).checkState()
+        dialog.table.setCurrentCell(0, 0)
+        QtWidgets.QApplication.clipboard().setText("1")
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._paste_clipboard()
+        warning.assert_called_once()
+        self.assertEqual(dialog.table.item(0, 0).checkState(), original_check)
+
+        dialog.table.setCurrentCell(1, 14)
+        QtWidgets.QApplication.clipboard().setText("1\t2\t3")
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._paste_clipboard()
+        warning.assert_called_once()
+        self.assertIn("beyond", warning.call_args.args[2])
+
+        original_flow = dialog.table.item(0, 6).text()
+        dialog.table.setCurrentCell(0, 6)
+        QtWidgets.QApplication.clipboard().setText("1\n2")
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._paste_clipboard()
+        warning.assert_called_once()
+        self.assertIn("Conflicting", warning.call_args.args[2])
+        self.assertEqual(dialog.table.item(0, 6).text(), original_flow)
+        self.assertEqual(dialog.table.item(1, 6).text(), original_flow)
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
     def test_batch_table_cancel_is_non_mutating_and_accept_is_one_undo_step(self):
         window = self.make_window()
         first = window.project.datasets[0]
@@ -1420,12 +1543,14 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(first.measurement.wavelength_nm, original_wavelength)
         self.assertEqual(window._undo_stack, [])
 
-        def accept_direct_edit(dialog):
-            dialog.table.item(0, 4).setText("260")
+        def accept_paste(dialog):
+            dialog.table.setCurrentCell(0, 4)
+            QtWidgets.QApplication.clipboard().setText("260")
+            dialog._paste_clipboard()
             dialog._accept()
             return dialog.result()
 
-        with patch("hplc_app.gui.dialog_exec", side_effect=accept_direct_edit):
+        with patch("hplc_app.gui.dialog_exec", side_effect=accept_paste):
             window.edit_batch_metadata()
 
         self.assertEqual(first.measurement.wavelength_nm, 260.0)
@@ -1443,6 +1568,7 @@ class GuiTests(unittest.TestCase):
         dialog = BatchMetadataDialog(
             window.project, window.project.datasets[0].id, "ja"
         )
+        dialog.table.clearSelection()
         dialog.table.selectRow(1)
         self.assertEqual(len(dialog.table.selectionModel().selectedRows()), 1)
         self.assertEqual(

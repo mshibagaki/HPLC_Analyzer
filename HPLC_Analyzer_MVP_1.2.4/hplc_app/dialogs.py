@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .analysis import validate_gradient
+from .import_batch import discover_chromatogram_files
 from .database import (
     database_section_titles,
     database_sections,
@@ -33,6 +34,111 @@ def optional_float(text: str) -> Optional[float]:
 
 def format_optional(value: Optional[float]) -> str:
     return "" if value is None else "%g" % value
+
+
+class DirectoryImportDialog(QtWidgets.QDialog):
+    """Choose and preview one directory batch before importing it."""
+
+    def __init__(self, start_directory="", language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.files = []
+        self.setWindowTitle(
+            "ディレクトリ一括読み込み"
+            if language == "ja"
+            else "Import directory"
+        )
+        self.resize(700, 520)
+        root = QtWidgets.QVBoxLayout(self)
+        directory_row = QtWidgets.QHBoxLayout()
+        self.directory_edit = QtWidgets.QLineEdit(start_directory)
+        self.browse_button = QtWidgets.QPushButton(
+            "参照…" if language == "ja" else "Browse…"
+        )
+        directory_row.addWidget(self.directory_edit, 1)
+        directory_row.addWidget(self.browse_button)
+        root.addLayout(directory_row)
+        self.recursive_checkbox = QtWidgets.QCheckBox(
+            "サブフォルダーも検索"
+            if language == "ja"
+            else "Include subfolders"
+        )
+        root.addWidget(self.recursive_checkbox)
+        form = QtWidgets.QFormLayout()
+        self.group_edit = QtWidgets.QLineEdit()
+        form.addRow(
+            "ディレクトリラベル" if language == "ja" else "Directory label",
+            self.group_edit,
+        )
+        root.addLayout(form)
+        self.summary_label = QtWidgets.QLabel()
+        root.addWidget(self.summary_label)
+        self.preview_list = QtWidgets.QListWidget()
+        root.addWidget(self.preview_list, 1)
+        self.buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        self.import_button = self.buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        self.import_button.setText("読み込み" if language == "ja" else "Import")
+        self.import_button.setEnabled(False)
+        root.addWidget(self.buttons)
+        self.browse_button.clicked.connect(self._browse)
+        self.directory_edit.editingFinished.connect(self.refresh_preview)
+        self.recursive_checkbox.toggled.connect(self.refresh_preview)
+        self.buttons.accepted.connect(self._accept)
+        self.buttons.rejected.connect(self.reject)
+        self.refresh_preview()
+
+    def _browse(self):
+        selected = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "ディレクトリを選択" if self.language == "ja" else "Select directory",
+            self.directory_edit.text().strip(),
+        )
+        if selected:
+            self.directory_edit.setText(selected)
+            self.group_edit.setText(Path(selected).name)
+            self.refresh_preview()
+
+    def refresh_preview(self):
+        directory = self.directory_edit.text().strip()
+        self.preview_list.clear()
+        try:
+            self.files = discover_chromatogram_files(
+                directory, self.recursive_checkbox.isChecked()
+            )
+        except ValueError:
+            self.files = []
+        root = Path(directory) if directory else None
+        for path in self.files:
+            self.preview_list.addItem(path.relative_to(root).as_posix())
+        if directory and not self.group_edit.text().strip():
+            self.group_edit.setText(Path(directory).name)
+        count = len(self.files)
+        self.summary_label.setText(
+            "%d件のTXT/GCDが見つかりました。" % count
+            if self.language == "ja"
+            else "%d TXT/GCD file(s) found." % count
+        )
+        self.import_button.setEnabled(bool(self.files))
+
+    def _accept(self):
+        if not self.files:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "読み込み" if self.language == "ja" else "Import",
+                "対象のTXT/GCDがありません。"
+                if self.language == "ja"
+                else "No TXT/GCD files were found.",
+            )
+            return
+        self.accept()
+
+    @property
+    def group_label(self):
+        return self.group_edit.text().strip() or Path(
+            self.directory_edit.text().strip()
+        ).name
 
 
 class TextAnnotationDialog(QtWidgets.QDialog):

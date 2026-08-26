@@ -53,6 +53,7 @@ from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
 from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
 from hplc_app.preset_store import (
+    filter_preset_names,
     load_preset_store,
     load_preset_store_with_metadata,
     merge_preset_sources,
@@ -924,6 +925,52 @@ class ProjectTests(unittest.TestCase):
                 ),
                 ["Legacy A", "Renamed B"],
             )
+
+    def test_preset_names_support_created_used_updated_name_sort_and_filter(self):
+        names = ["Legacy z", "beta", "Alpha"]
+        metadata = {
+            "conditions": {
+                "Alpha": {
+                    "created_at": "2026-08-25T09:00:00+09:00",
+                    "updated_at": "2026-08-27T09:00:00+09:00",
+                    "last_used_at": "",
+                },
+                "beta": {
+                    "created_at": "2026-08-26T09:00:00+09:00",
+                    "updated_at": "2026-08-26T10:00:00+09:00",
+                    "last_used_at": "2026-08-27T10:00:00+09:00",
+                },
+                "Legacy z": {
+                    "created_at": "",
+                    "updated_at": "",
+                    "last_used_at": "",
+                },
+            }
+        }
+        self.assertEqual(
+            stable_preset_names(names, metadata, "conditions", "created"),
+            ["beta", "Alpha", "Legacy z"],
+        )
+        self.assertEqual(
+            stable_preset_names(names, metadata, "conditions", "used"),
+            ["beta", "Alpha", "Legacy z"],
+        )
+        self.assertEqual(
+            stable_preset_names(names, metadata, "conditions", "updated"),
+            ["Alpha", "beta", "Legacy z"],
+        )
+        self.assertEqual(
+            stable_preset_names(names, metadata, "conditions", "name"),
+            ["Alpha", "beta", "Legacy z"],
+        )
+        self.assertEqual(
+            filter_preset_names(["Alpha", "beta", "Legacy z"], "A"),
+            ["Alpha", "beta", "Legacy z"],
+        )
+        self.assertEqual(
+            filter_preset_names(["Alpha", "beta", "Legacy z"], "LEGACY"),
+            ["Legacy z"],
+        )
 
     def test_application_version_is_single_valid_source_for_runtime_and_builds(self):
         version_file = ROOT / "hplc_app" / "version.py"

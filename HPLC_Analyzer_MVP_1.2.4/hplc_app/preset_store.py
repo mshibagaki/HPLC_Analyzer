@@ -110,20 +110,38 @@ def record_preset_deleted(metadata, kind: str, name: str) -> None:
     metadata.setdefault(kind, {}).pop(name, None)
 
 
-def stable_preset_names(names, metadata, kind: str):
-    """Newest known creations first; legacy/unknown dates use name order."""
+def stable_preset_names(names, metadata, kind: str, sort_by: str = "created"):
+    """Sort deterministically while keeping unknown legacy dates honest."""
     records = metadata.get(kind, {}) if isinstance(metadata, dict) else {}
+    if sort_by == "name":
+        return sorted(names, key=lambda name: (name.casefold(), name))
+    timestamp_field = {
+        "created": "created_at",
+        "updated": "updated_at",
+        "used": "last_used_at",
+    }.get(sort_by, "created_at")
     known = []
     unknown = []
     for name in names:
-        created_at = str((records.get(name) or {}).get("created_at", "") or "")
-        if created_at:
-            known.append((created_at, name))
+        timestamp = str(
+            (records.get(name) or {}).get(timestamp_field, "") or ""
+        )
+        if timestamp:
+            known.append((timestamp, name))
         else:
             unknown.append(name)
-    known.sort(key=lambda item: (item[0], item[1].casefold()), reverse=True)
-    unknown.sort(key=lambda name: name.casefold())
-    return [name for _created, name in known] + unknown
+    known.sort(key=lambda item: (item[1].casefold(), item[1]))
+    known.sort(key=lambda item: item[0], reverse=True)
+    unknown.sort(key=lambda name: (name.casefold(), name))
+    return [name for _timestamp, name in known] + unknown
+
+
+def filter_preset_names(names, query: str):
+    """Return a case-insensitive name substring filter without reordering."""
+    needle = str(query or "").strip().casefold()
+    if not needle:
+        return list(names)
+    return [name for name in names if needle in name.casefold()]
 
 
 def merge_preset_sources(

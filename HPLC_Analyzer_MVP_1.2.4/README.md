@@ -408,14 +408,14 @@ Windows 7 Debug版は、通常版が起動しない場合に原因を確認す�
 Release候補のsource整合性は、GitHub Releaseに記載するversionとproject schemaを明示して確認します。Application version、installer定義、固定依存、Windows 7 offline manifestとwheel閉包のいずれかが一致しなければ失敗します。
 
 ```bat
-python scripts\release_consistency.py source --release-version v1.2.4 --project-schema 102
+python scripts\release_consistency.py source --release-version v1.2.4 --project-schema 104
 ```
 
 Windows 11 installer、Windows 7 installer、Windows 7 Offline Build Kitの署名と最終ファイル名が確定した後、3ファイルだけを置いたRelease用directoryでchecksumを生成します。署名やrenameの前に最終checksumを作ってはいけません。既存の`SHA256SUMS.txt`は誤操作防止のため`--force`なしでは上書きされません。
 
 ```bat
 python scripts\release_checksums.py write --release-dir dist\release
-python scripts\release_consistency.py assets --release-version v1.2.4 --project-schema 102 --release-dir dist\release
+python scripts\release_consistency.py assets --release-version v1.2.4 --project-schema 104 --release-dir dist\release
 ```
 
 `assets`検査は、3つの正規artifact名、両installerのversion resource、Offline Build Kit内のApplication versionとproject schema、`SHA256SUMS.txt`の完全一致を確認します。GitHubへuploadした後もclean directoryへ再downloadし、`python scripts\release_checksums.py verify --release-dir <directory>`で再検証します。

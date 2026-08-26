@@ -78,10 +78,8 @@ def create_fixture(root, source_root=None):
         project.condition_presets, project.gradient_presets, preset_path
     )
     export_path = export_dir / "user-export-canary.csv"
-    export_path.write_text(
-        "marker,value\nupgrade-preservation,do-not-delete\n",
-        encoding="utf-8",
-        newline="\n",
+    export_path.write_bytes(
+        b"marker,value\nupgrade-preservation,do-not-delete\n"
     )
     paths = {
         "presets": str(preset_path),

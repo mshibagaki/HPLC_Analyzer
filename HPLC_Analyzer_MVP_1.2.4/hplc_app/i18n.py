@@ -7,6 +7,7 @@ TEXT: Dict[str, Dict[str, str]] = {
     "ja": {
         "file": "ファイル",
         "new": "新規プロジェクト",
+        "new_window": "新規プロジェクトを別ウィンドウで開く",
         "open": "プロジェクトを開く…",
         "save": "保存",
         "save_as": "名前を付けて保存…",
@@ -143,6 +144,7 @@ TEXT: Dict[str, Dict[str, str]] = {
     "en": {
         "file": "File",
         "new": "New project",
+        "new_window": "New project in separate window",
         "open": "Open project…",
         "save": "Save",
         "save_as": "Save as…",

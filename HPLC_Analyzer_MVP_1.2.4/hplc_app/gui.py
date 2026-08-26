@@ -374,6 +374,8 @@ class DatasetTableWidget(QtWidgets.QTableWidget):
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    _open_windows = set()
+
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
@@ -1300,6 +1302,9 @@ class MainWindow(QtWidgets.QMainWindow):
         bar = self.menuBar()
         self.file_menu = bar.addMenu("")
         self.new_action = self._action(self.new_project)
+        self.new_window_action = self._action(self.new_project_in_new_window)
+        self.new_action.setShortcut("Ctrl+N")
+        self.new_window_action.setShortcut("Ctrl+Shift+N")
         self.open_action = self._action(self.open_project)
         self.save_action = self._action(self.save_project)
         self.save_action.setShortcut(STANDARD_SAVE_SHORTCUT)
@@ -1314,7 +1319,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_report_action = self._action(self.export_report)
         self.print_report_action = self._action(self.print_report)
         self.exit_action = self._action(self.close)
-        for action in (self.new_action, self.open_action, self.save_action, self.save_as_action):
+        for action in (
+            self.new_action,
+            self.new_window_action,
+            self.open_action,
+            self.save_action,
+            self.save_as_action,
+        ):
             self.file_menu.addAction(action)
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.import_action)
@@ -1378,6 +1389,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.file_menu.setTitle(t("file"))
         action_texts = (
             (self.new_action, "new"),
+            (self.new_window_action, "new_window"),
             (self.open_action, "open"),
             (self.save_action, "save"),
             (self.save_as_action, "save_as"),
@@ -3754,6 +3766,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_all()
         self._retranslate()
 
+    def new_project_in_new_window(self):
+        window = MainWindow()
+        self._open_windows.add(window)
+        icon = self.windowIcon()
+        if not icon.isNull():
+            window.setWindowIcon(icon)
+        window.show()
+        return window
+
     def open_project(self):
         if not self._confirm_unsaved():
             return
@@ -4117,6 +4138,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         if self._confirm_unsaved():
+            self._open_windows.discard(self)
             event.accept()
         else:
             event.ignore()

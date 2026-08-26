@@ -37,8 +37,8 @@ if errorlevel 1 goto :failed
 
 echo.
 echo Windows 11 installer and Windows 7 offline build kit are ready:
-echo   dist\installers\HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe
-echo   dist\offline\HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip
+echo   dist\installers\%WINDOWS11_INSTALLER_NAME%
+echo   dist\offline\%WINDOWS7_OFFLINE_ARCHIVE_NAME%
 echo Build the Windows 7 EXEs and installer on the Windows 7 SP1 x86 machine itself.
 pause
 exit /b 0

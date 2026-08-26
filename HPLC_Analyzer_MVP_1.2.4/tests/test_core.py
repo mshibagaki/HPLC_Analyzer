@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from contextlib import closing
 import csv
+import ast
 import math
 import json
 import os
@@ -122,10 +123,16 @@ from scripts.package_windows7_offline_bundle import (
     archive_root_name,
     default_archive_path,
 )
+from scripts.artifact_names import artifact_filename, installer_basename
 from scripts.read_version import (
     VersionError,
     read_version,
     windows_numeric_version,
+)
+from scripts.write_windows_version_info import (
+    expected_version_strings,
+    render_version_info,
+    write_version_info,
 )
 
 
@@ -987,6 +994,9 @@ class ProjectTests(unittest.TestCase):
         self.assertIn(
             "--define=AppVersionNumeric=%APP_VERSION_NUMERIC%", installer_helper
         )
+        self.assertIn(
+            "--define=ArtifactBaseName=%ARTIFACT_BASE_NAME%", installer_helper
+        )
 
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
         project = Project(title="version propagation", datasets=[dataset])
@@ -1003,6 +1013,65 @@ class ProjectTests(unittest.TestCase):
                     "SELECT saved_with_version FROM projects"
                 ).fetchone()[0]
             self.assertEqual(saved_version, APP_VERSION)
+
+    def test_release_artifact_names_and_windows_metadata_are_canonical(self):
+        stable = "1.3.0"
+        prerelease = "1.3.0-rc.2+build.5"
+        expected = {
+            "windows11-installer": "HPLC_Analyzer_Setup_1.3.0_Windows11_x64.exe",
+            "windows7-installer": "HPLC_Analyzer_Setup_1.3.0_Windows7_x86.exe",
+            "windows7-offline": "HPLC_Analyzer_1.3.0_Windows7_Offline_Build.zip",
+        }
+        for target, filename in expected.items():
+            self.assertEqual(artifact_filename(target, stable), filename)
+        self.assertEqual(
+            artifact_filename("windows11-installer", prerelease),
+            "HPLC_Analyzer_Setup_1.3.0-rc.2+build.5_Windows11_x64.exe",
+        )
+        self.assertEqual(
+            installer_basename("windows7-installer", stable),
+            "HPLC_Analyzer_Setup_1.3.0_Windows7_x86",
+        )
+        with self.assertRaises(ValueError):
+            installer_basename("windows7-offline", stable)
+
+        release_resource = render_version_info(
+            prerelease, "windows11-x64"
+        )
+        debug_resource = render_version_info(
+            prerelease, "windows7-x86", debug=True
+        )
+        ast.parse(release_resource)
+        ast.parse(debug_resource)
+        self.assertIn("filevers=(1, 3, 0, 0)", release_resource)
+        self.assertIn("'ProductVersion', '1.3.0-rc.2+build.5'", release_resource)
+        self.assertIn("flags=0", release_resource)
+        self.assertIn("flags=1", debug_resource)
+        self.assertIn("HPLC Analyzer diagnostic console", debug_resource)
+        self.assertEqual(
+            expected_version_strings("windows7-x86", debug=True, version=stable)[
+                "OriginalFilename"
+            ],
+            "HPLC_Analyzer_Debug.exe",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "version-info.txt"
+            self.assertEqual(
+                write_version_info(path, stable, "windows11-x64"), path
+            )
+            self.assertEqual(path.read_text(encoding="utf-8"), render_version_info(stable, "windows11-x64"))
+
+        loader = (ROOT / "scripts" / "load_version.bat").read_text(
+            encoding="utf-8"
+        )
+        spec = (ROOT / "HPLC_Analyzer.spec").read_text(encoding="utf-8")
+        self.assertIn("artifact_names.py", loader)
+        self.assertIn('version=version_file', spec)
+        self.assertIn('version=debug_version_file', spec)
+        self.assertIn("HPLC_VERSION_FILE", spec)
+        self.assertIn("HPLC_DEBUG_VERSION_FILE", spec)
+        for filename in expected.values():
+            self.assertNotIn(filename.replace("1.3.0", "%APP_VERSION%"), loader)
 
     def test_project_round_trip_embeds_raw_ascii_and_origin(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -1691,7 +1760,8 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("--exe dist\\windows7-x86\\HPLC_Analyzer_Debug.exe", batch)
         self.assertGreaterEqual(batch.count("--startup-smoke-test"), 2)
         self.assertIn("build_installer.bat windows7-x86", batch)
-        self.assertIn("HPLC_Analyzer_Setup_%APP_VERSION%_Windows7_x86.exe", batch)
+        self.assertIn("%WINDOWS7_INSTALLER_NAME%", batch)
+        self.assertIn("write_windows_version_info.py --target windows7-x86", batch)
         self.assertIn('name="HPLC_Analyzer_Debug"', spec)
         self.assertIn("console=True", spec)
         self.assertIn("debug=True", spec)
@@ -1911,7 +1981,8 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("--exe dist\\windows11-x64\\HPLC_Analyzer.exe", batch)
         self.assertIn("build_installer.bat windows11-x64", batch)
         self.assertIn("HPLC_ANALYZER_TEST_SETTINGS_DIR", batch)
-        self.assertIn("HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe", batch)
+        self.assertIn("%WINDOWS11_INSTALLER_NAME%", batch)
+        self.assertIn("write_windows_version_info.py --target windows11-x64", batch)
         self.assertIn("Python 3.11 x64", requirements)
         self.assertIn("EXPECTED_PYTHON = (3, 11)", verifier)
         self.assertIn("PE_MACHINE_AMD64 = 0x8664", verifier)
@@ -1959,8 +2030,8 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("build_windows11.bat --no-pause", combined)
         self.assertIn("package_windows7_offline_bundle.bat --no-pause", combined)
         self.assertNotIn("build_windows7.bat --no-pause", combined)
-        self.assertIn("HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe", combined)
-        self.assertIn("HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip", combined)
+        self.assertIn("%WINDOWS11_INSTALLER_NAME%", combined)
+        self.assertIn("%WINDOWS7_OFFLINE_ARCHIVE_NAME%", combined)
         self.assertNotIn('VERSION = "', packager)
         self.assertIn("read_version", packager)
         self.assertIn("verify_bundle(root)", packager)

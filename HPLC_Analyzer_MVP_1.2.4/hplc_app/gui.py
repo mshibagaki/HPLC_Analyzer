@@ -267,6 +267,72 @@ class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
         style.drawControl(control, styled, painter, styled.widget)
 
 
+class DatasetTableWidget(QtWidgets.QTableWidget):
+    """Request Project-backed row moves instead of moving table items directly."""
+
+    rowMoveRequested = QtCore.Signal(int, int)
+
+    def __init__(self, rows=0, columns=0, parent=None):
+        super().__init__(rows, columns, parent)
+        internal_move = (
+            QtWidgets.QAbstractItemView.DragDropMode.InternalMove
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.InternalMove
+        )
+        move_action = (
+            QtCore.Qt.DropAction.MoveAction if QT_API == 6 else QtCore.Qt.MoveAction
+        )
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(internal_move)
+        self.setDragDropOverwriteMode(False)
+        self.setDefaultDropAction(move_action)
+
+    @staticmethod
+    def _event_position(event):
+        if QT_API == 6:
+            position = event.position()
+            return position.toPoint() if hasattr(position, "toPoint") else position
+        return event.pos()
+
+    def _forward_file_drop(self, method_name, event) -> bool:
+        mime_data = event.mimeData()
+        if mime_data is None or not mime_data.hasUrls():
+            return False
+        handler = getattr(self.window(), method_name, None)
+        if callable(handler):
+            handler(event)
+        else:
+            event.ignore()
+        return True
+
+    def dragEnterEvent(self, event):
+        if self._forward_file_drop("dragEnterEvent", event):
+            return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        if self._forward_file_drop("dropEvent", event):
+            return
+        source_row = self.currentRow()
+        if not (0 <= source_row < self.rowCount()):
+            event.ignore()
+            return
+        position = self._event_position(event)
+        index = self.indexAt(position)
+        if index.isValid():
+            insertion_row = index.row()
+            if position.y() >= self.visualRect(index).center().y():
+                insertion_row += 1
+        else:
+            insertion_row = self.rowCount()
+        target_row = insertion_row - 1 if insertion_row > source_row else insertion_row
+        if 0 <= target_row < self.rowCount() and target_row != source_row:
+            self.rowMoveRequested.emit(source_row, target_row)
+        event.acceptProposedAction()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -684,13 +750,14 @@ class MainWindow(QtWidgets.QMainWindow):
         font.setBold(True)
         self.dataset_title.setFont(font)
         left_layout.addWidget(self.dataset_title)
-        self.dataset_table = QtWidgets.QTableWidget(0, 10)
+        self.dataset_table = DatasetTableWidget(0, 10)
         self.dataset_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.dataset_table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self.dataset_table.setWordWrap(False)
         self.dataset_table.verticalHeader().setVisible(False)
         self.dataset_table.itemChanged.connect(self._dataset_item_changed)
         self.dataset_table.itemSelectionChanged.connect(self._dataset_selection_changed)
+        self.dataset_table.rowMoveRequested.connect(self.move_dataset_to)
         self.dataset_table.setItemDelegateForColumn(9, LeftElideDelegate(self.dataset_table))
         self.dataset_table.viewport().installEventFilter(self)
         left_layout.addWidget(self.dataset_table, 1)
@@ -1121,10 +1188,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def move_selected_dataset(self, direction: int):
         row = self.dataset_table.currentRow()
         target = row + (-1 if direction < 0 else 1)
-        if not (0 <= row < len(self.project.datasets)) or not (
-            0 <= target < len(self.project.datasets)
+        self.move_dataset_to(row, target)
+
+    def move_dataset_to(self, row: int, target: int) -> bool:
+        if (
+            not (0 <= row < len(self.project.datasets))
+            or not (0 <= target < len(self.project.datasets))
+            or row == target
         ):
-            return
+            return False
         before = self._capture_analysis_state()
         dataset = self.project.datasets.pop(row)
         self.project.datasets.insert(target, dataset)
@@ -1138,6 +1210,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_dataset_table(target)
         self._plot()
         self._update_title()
+        return True
 
     def _update_dataset_order_buttons(self):
         row = self.dataset_table.currentRow()

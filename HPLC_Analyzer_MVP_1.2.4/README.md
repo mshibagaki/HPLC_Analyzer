@@ -395,6 +395,8 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 
 Windows 7版とWindows 11版は同じアプリケーションバージョンを使用します。依存パッケージやビルド環境は異なりますが、OSごとに別のアプリケーションバージョン番号は付けません。`.hplcproj`互換性を壊す可能性がある変更は、バージョン番号だけで判断せず、移行・後方読込処理と両OS間の互換性確認を伴う必要があります。
 
+Pull Requestと`main`更新では[Level 2 CI](../.github/CI_POLICY.md)がsource契約とWindows offscreen testを検証します。CI成功は、Windows 11の正式installer実機確認やWindows 7 SP1 32-bit/Core 2での完全offline build・実機確認の代替にはなりません。
+
 Application versionの機械可読な正規値は`hplc_app/version.py`の`APP_VERSION`だけです。リリース時は最初にこの1行を更新し、`python scripts/read_version.py`と`python scripts/read_version.py --format windows`が成功することを確認してください。build batchはこの値を読み取り、GUI、project/preset/DB、installer metadata、成果物名、Windows 7 offline archiveへ自動的に伝播します。取得不能またはSemVerとして不正な場合、buildは停止します。その後、READMEの「現在の安定版」や成果物例、`README_Windows7_Offline.txt`等のリリース文書を確認します。ただし、リリース履歴、互換性説明、例示中にある過去のversion番号は履歴情報なので、一括置換しません。
 
 正式なRelease成果物名は、正規バージョンから自動生成する次の3種類です。pre-releaseやbuild metadataを含む場合も、SemVer文字列を省略せず名前へ残します。

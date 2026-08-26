@@ -16,6 +16,20 @@ from .models import sanitize_condition_presets
 PRESET_STORE_FORMAT = 1
 
 
+def merge_preset_sources(
+    legacy_conditions: Dict[str, Dict[str, Any]],
+    legacy_gradients: Dict[str, Dict[str, Any]],
+    stored_conditions: Dict[str, Dict[str, Any]],
+    stored_gradients: Dict[str, Dict[str, Any]],
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """Merge QSettings fallback values under authoritative JSON presets."""
+    conditions = sanitize_condition_presets(legacy_conditions)
+    conditions.update(sanitize_condition_presets(stored_conditions))
+    gradients = deepcopy(legacy_gradients or {})
+    gradients.update(deepcopy(stored_gradients or {}))
+    return conditions, gradients
+
+
 def preset_store_path(config_directory: Optional[Path] = None) -> Path:
     """Return the stable preset path shared by every HPLC Analyzer v1.x build."""
     if config_directory is not None:

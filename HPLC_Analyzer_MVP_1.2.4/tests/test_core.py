@@ -48,7 +48,11 @@ from hplc_app.models import (
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
 from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
-from hplc_app.preset_store import load_preset_store, save_preset_store
+from hplc_app.preset_store import (
+    load_preset_store,
+    merge_preset_sources,
+    save_preset_store,
+)
 from hplc_app.project_io import ProjectError, load_project, save_project
 from hplc_app.project_migrations import (
     ProjectMigrationError,
@@ -67,6 +71,22 @@ from hplc_app.rendering import (
     screen_series,
 )
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
+from hplc_app.settings_store import (
+    ApplicationSettings,
+    DATABASE_PATH,
+    FIGURE_FORMAT,
+    IMPORT_DIRECTORY,
+    LAST_IMPORT_DIRECTORY,
+    LAST_PROJECT_DIRECTORY,
+    LAST_SAVE_DIRECTORY,
+    LEGACY_CONDITION_PRESETS,
+    LEGACY_GRADIENT_PRESETS,
+    NAMING_AUTHOR,
+    RENDERING_QUALITY,
+    SAVE_DIRECTORY,
+    SETTING_SPECS,
+    UI_LANGUAGE,
+)
 from scripts.windows7_import_preflight import EVENT_LOG_COMMAND, PROBES
 from scripts.inspect_gcd import _safe_dump_name
 from scripts.verify_windows7_x86 import PE_MACHINE_I386, read_pe_machine
@@ -1389,6 +1409,7 @@ class ProjectTests(unittest.TestCase):
         dataset = dataset_from_bytes(raw, source_path=r"C:\\Data1\\Ch2\\2026_05_07\\210601.TXT")
         self.assertEqual(dataset.y_axis, 2)
 
+
     def test_chromatogram_csv_has_two_columns_and_batch_export(self):
         first = load_ascii_file(str(SAMPLES / "210601.TXT"))
         second = load_ascii_file(str(SAMPLES / "225120.TXT"))
@@ -1832,6 +1853,168 @@ class ProjectTests(unittest.TestCase):
             image = matplotlib_image.imread(pages[0])
             self.assertGreater(image.shape[0], image.shape[1])
             self.assertAlmostEqual(image.shape[0] / image.shape[1], 297.0 / 210.0, delta=0.02)
+
+
+class _FakeSettingsBackend:
+    def __init__(
+        self,
+        values=None,
+        status=0,
+        fail_value=False,
+        fail_set=False,
+        fail_sync=False,
+    ):
+        self.values = dict(values or {})
+        self.status_value = status
+        self.fail_value = fail_value
+        self.fail_set = fail_set
+        self.fail_sync = fail_sync
+
+    def value(self, key, default=None):
+        if self.fail_value:
+            raise OSError("read failed")
+        return self.values.get(key, default)
+
+    def setValue(self, key, value):
+        if self.fail_set:
+            raise OSError("write failed")
+        self.values[key] = value
+
+    def sync(self):
+        if self.fail_sync:
+            raise OSError("sync failed")
+
+    def status(self):
+        return self.status_value
+
+
+class ApplicationSettingsTests(unittest.TestCase):
+    def test_preset_json_is_authoritative_over_legacy_qsettings_fallback(self):
+        conditions, gradients = merge_preset_sources(
+            {
+                "shared": {"column_name": "legacy C4"},
+                "legacy only": {"column_name": "C8"},
+            },
+            {
+                "shared": {"gradient": [{"time_min": 1.0}]},
+                "legacy only": {"gradient": []},
+            },
+            {
+                "shared": {"column_name": "stored C18"},
+                "stored only": {"column_name": "C30"},
+            },
+            {
+                "shared": {"gradient": [{"time_min": 2.0}]},
+                "stored only": {"gradient": []},
+            },
+        )
+        self.assertEqual(conditions["shared"]["column_name"], "stored C18")
+        self.assertIn("legacy only", conditions)
+        self.assertIn("stored only", conditions)
+        self.assertEqual(gradients["shared"]["gradient"][0]["time_min"], 2.0)
+        self.assertIn("legacy only", gradients)
+        self.assertIn("stored only", gradients)
+
+    def test_all_application_keys_round_trip_without_renaming_legacy_keys(self):
+        expected_keys = {
+            "ui/language",
+            "paths/import_directory",
+            "paths/save_directory",
+            "paths/last_import_directory",
+            "paths/last_save_directory",
+            "paths/last_project_directory",
+            "database/path",
+            "rendering/quality",
+            "export/figure_format",
+            "naming/author",
+            "presets/conditions",
+            "presets/gradients",
+        }
+        self.assertEqual(set(SETTING_SPECS), expected_keys)
+        backend = _FakeSettingsBackend()
+        store = ApplicationSettings(backend)
+        values = {
+            UI_LANGUAGE: "en",
+            IMPORT_DIRECTORY: "C:/HPLC/import",
+            SAVE_DIRECTORY: "C:/HPLC/save",
+            LAST_IMPORT_DIRECTORY: "C:/HPLC/last-import",
+            LAST_SAVE_DIRECTORY: "C:/HPLC/last-save",
+            LAST_PROJECT_DIRECTORY: "C:/HPLC/projects",
+            DATABASE_PATH: "C:/HPLC/lab.sqlite3",
+            RENDERING_QUALITY: "lightweight",
+            FIGURE_FORMAT: "SVG",
+            NAMING_AUTHOR: "M Shiba",
+            LEGACY_CONDITION_PRESETS: {"C4": {"wavelength_nm": 280.0}},
+            LEGACY_GRADIENT_PRESETS: {"10-90 B": {"gradient": []}},
+        }
+        self.assertTrue(store.set_many(values))
+        self.assertEqual(store.get(UI_LANGUAGE), "en")
+        self.assertEqual(store.get(IMPORT_DIRECTORY), "C:/HPLC/import")
+        self.assertEqual(store.get(SAVE_DIRECTORY), "C:/HPLC/save")
+        self.assertEqual(store.get(LAST_IMPORT_DIRECTORY), "C:/HPLC/last-import")
+        self.assertEqual(store.get(LAST_SAVE_DIRECTORY), "C:/HPLC/last-save")
+        self.assertEqual(store.get(LAST_PROJECT_DIRECTORY), "C:/HPLC/projects")
+        self.assertEqual(store.get(DATABASE_PATH), "C:/HPLC/lab.sqlite3")
+        self.assertEqual(store.get(RENDERING_QUALITY), "lightweight")
+        self.assertEqual(store.get(FIGURE_FORMAT), "svg")
+        self.assertEqual(store.get(NAMING_AUTHOR), "M Shiba")
+        self.assertEqual(
+            store.get(LEGACY_CONDITION_PRESETS),
+            {"C4": {"wavelength_nm": 280.0}},
+        )
+        self.assertEqual(
+            store.get(LEGACY_GRADIENT_PRESETS),
+            {"10-90 B": {"gradient": []}},
+        )
+        self.assertIsInstance(backend.values[LEGACY_CONDITION_PRESETS], str)
+
+    def test_missing_corrupt_and_failed_settings_use_safe_fallbacks(self):
+        backend = _FakeSettingsBackend(
+            {
+                UI_LANGUAGE: "de",
+                IMPORT_DIRECTORY: 123,
+                RENDERING_QUALITY: "unsupported",
+                FIGURE_FORMAT: "bmp",
+                LEGACY_CONDITION_PRESETS: "not-json",
+                LEGACY_GRADIENT_PRESETS: "[]",
+            }
+        )
+        store = ApplicationSettings(backend)
+        self.assertEqual(store.get(UI_LANGUAGE), "ja")
+        self.assertEqual(store.get(IMPORT_DIRECTORY), "")
+        self.assertEqual(store.get(RENDERING_QUALITY), default_render_quality())
+        self.assertEqual(store.get(FIGURE_FORMAT), "png")
+        self.assertEqual(store.get(LEGACY_CONDITION_PRESETS), {})
+        self.assertEqual(store.get(LEGACY_GRADIENT_PRESETS), {})
+        self.assertEqual(
+            ApplicationSettings(_FakeSettingsBackend(fail_value=True)).get(
+                NAMING_AUTHOR
+            ),
+            "",
+        )
+        with self.assertRaisesRegex(KeyError, "Unknown application setting"):
+            store.get("unknown/key")
+
+    def test_write_and_sync_failures_are_non_fatal_and_reported(self):
+        self.assertFalse(
+            ApplicationSettings(_FakeSettingsBackend(fail_set=True)).set(
+                NAMING_AUTHOR, "M Shiba"
+            )
+        )
+        self.assertFalse(
+            ApplicationSettings(_FakeSettingsBackend(fail_sync=True)).set(
+                NAMING_AUTHOR, "M Shiba", sync=True
+            )
+        )
+        self.assertFalse(ApplicationSettings(_FakeSettingsBackend(status=1)).sync())
+
+    def test_gui_has_no_direct_qsettings_key_access(self):
+        gui_source = (ROOT / "hplc_app" / "gui.py").read_text(encoding="utf-8")
+        self.assertNotIn("QSettings(", gui_source)
+        self.assertNotIn("._settings.value(", gui_source)
+        self.assertNotIn("._settings.setValue(", gui_source)
+        for key in SETTING_SPECS:
+            self.assertNotIn('"%s"' % key, gui_source)
 
 
 if __name__ == "__main__":

@@ -137,14 +137,28 @@ def validate_version_and_artifacts(root):
         errors.append("literal APP_VERSION definitions: {0}".format(literal_files))
 
     expected_batch_fragments = {
-        "build_windows11.bat": "HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe",
-        "build_windows7_offline.bat": "HPLC_Analyzer_Setup_%APP_VERSION%_Windows7_x86.exe",
-        "build_all_windows.bat": "HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip",
-        "package_windows7_offline_bundle.bat": "HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip",
+        "build_windows11.bat": (
+            "HPLC_Analyzer_Setup_%APP_VERSION%_Windows11_x64.exe",
+            "%WINDOWS11_INSTALLER_NAME%",
+        ),
+        "build_windows7_offline.bat": (
+            "HPLC_Analyzer_Setup_%APP_VERSION%_Windows7_x86.exe",
+            "%WINDOWS7_INSTALLER_NAME%",
+        ),
+        "build_all_windows.bat": (
+            "HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip",
+            "%WINDOWS7_OFFLINE_ARCHIVE_NAME%",
+        ),
+        "package_windows7_offline_bundle.bat": (
+            "HPLC_Analyzer_%APP_VERSION%_Windows7_Offline_Build.zip",
+            "%WINDOWS7_OFFLINE_ARCHIVE_NAME%",
+        ),
     }
-    for filename, fragment in expected_batch_fragments.items():
+    for filename, accepted_fragments in expected_batch_fragments.items():
         text = (root / filename).read_text(encoding="utf-8")
-        if "load_version.bat" not in text or fragment not in text:
+        if "load_version.bat" not in text or not any(
+            fragment in text for fragment in accepted_fragments
+        ):
             errors.append("{0} does not use the canonical artifact version".format(filename))
     helper = (root / "scripts" / "build_installer.bat").read_text(encoding="utf-8")
     for fragment in (

@@ -3260,10 +3260,11 @@ class MainWindow(QtWidgets.QMainWindow):
         row = self.dataset_table.currentRow()
         if not (0 <= row < len(self.project.datasets)):
             return
+        dataset = self.project.datasets[row]
         answer = QtWidgets.QMessageBox.question(
             self,
             self.translator("warning"),
-            ("選択データをプロジェクトから削除しますか？" if self.project.ui_language == "ja" else "Remove the selected data from this project?"),
+            self.translator("confirm_remove_dataset", label=dataset.label),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:

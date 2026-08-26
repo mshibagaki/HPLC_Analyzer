@@ -1146,6 +1146,72 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_remove_dataset_confirmation_no_preserves_project_state(self):
+        window = self.make_window()
+        window.dataset_table.selectRow(0)
+        dataset_ids = [dataset.id for dataset in window.project.datasets]
+        window._undo_stack = ["keep undo"]
+        window._redo_stack = ["keep redo"]
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.No,
+        ) as question:
+            window.remove_dataset()
+
+        question.assert_called_once()
+        self.assertIn("Ch1", question.call_args.args[2])
+        self.assertIn("元に戻せません", question.call_args.args[2])
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], dataset_ids
+        )
+        self.assertFalse(window.project.dirty)
+        self.assertEqual(window.dataset_table.currentRow(), 0)
+        self.assertEqual(window._undo_stack, ["keep undo"])
+        self.assertEqual(window._redo_stack, ["keep redo"])
+        window.close()
+
+    def test_remove_dataset_confirmation_yes_deletes_only_selected_dataset(self):
+        window = self.make_window()
+        window.dataset_table.selectRow(1)
+        window._undo_stack = ["discard undo"]
+        window._redo_stack = ["discard redo"]
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ) as question:
+            window.remove_dataset()
+
+        question.assert_called_once()
+        self.assertIn("Ch2", question.call_args.args[2])
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets], ["Ch1"]
+        )
+        self.assertTrue(window.project.dirty)
+        self.assertEqual(window._undo_stack, [])
+        self.assertEqual(window._redo_stack, [])
+        window.project.dirty = False
+        window.close()
+
+    def test_remove_dataset_without_selection_does_nothing(self):
+        window = self.make_window()
+        window.dataset_table.clearSelection()
+        window.dataset_table.setCurrentCell(-1, -1)
+        dataset_ids = [dataset.id for dataset in window.project.datasets]
+
+        with patch.object(QtWidgets.QMessageBox, "question") as question:
+            window.remove_dataset()
+
+        question.assert_not_called()
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], dataset_ids
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
     def test_plot_and_analysis_sections_are_separated_by_resizable_splitter(self):
         window = self.make_window()
         window.show()

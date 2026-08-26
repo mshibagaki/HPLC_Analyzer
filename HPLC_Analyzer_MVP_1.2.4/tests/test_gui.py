@@ -59,6 +59,29 @@ ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "sample_data"
 
 
+class RowDropEvent:
+    def __init__(self, position):
+        self._position = QtCore.QPoint(position)
+        self._mime_data = QtCore.QMimeData()
+        self.accepted = False
+        self.ignored = False
+
+    def mimeData(self):
+        return self._mime_data
+
+    def pos(self):
+        return self._position
+
+    def position(self):
+        return QtCore.QPointF(self._position)
+
+    def acceptProposedAction(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.ignored = True
+
+
 class GuiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -1592,6 +1615,125 @@ class GuiTests(unittest.TestCase):
         question.assert_not_called()
         self.assertEqual(
             [dataset.id for dataset in window.project.datasets], dataset_ids
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_chromatogram_drag_reorders_project_plot_and_supports_undo_redo(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(0)
+        target_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(1, 0)
+        )
+        drop_position = QtCore.QPoint(
+            target_rect.center().x(), target_rect.bottom() - 1
+        )
+        event = RowDropEvent(drop_position)
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets],
+            list(reversed(original_ids)),
+        )
+        self.assertEqual(window.dataset_table.currentRow(), 1)
+        labels = [text.get_text() for text in window.axes.get_legend().get_texts()]
+        self.assertEqual(
+            labels[:2],
+            [dataset.legend_label() for dataset in window.project.datasets],
+        )
+        self.assertTrue(window.project.dirty)
+
+        window.undo()
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
+        )
+        window.redo()
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets],
+            list(reversed(original_ids)),
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_chromatogram_drag_same_position_is_no_op(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(0)
+        source_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(0, 0)
+        )
+        event = RowDropEvent(source_rect.center())
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
+        )
+        self.assertFalse(window.project.dirty)
+        self.assertEqual(window._undo_stack, [])
+        self.assertEqual(window._redo_stack, [])
+        window.close()
+
+    def test_chromatogram_drag_can_move_a_row_upward(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(1)
+        target_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(0, 0)
+        )
+        drop_position = QtCore.QPoint(target_rect.center().x(), target_rect.top() + 1)
+
+        window.dataset_table.dropEvent(RowDropEvent(drop_position))
+
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets],
+            list(reversed(original_ids)),
+        )
+        self.assertEqual(window.dataset_table.currentRow(), 0)
+        window.project.dirty = False
+        window.close()
+
+    def test_dataset_table_forwards_external_file_drops_to_main_window(self):
+        window = self.make_window()
+        mime_data = QtCore.QMimeData()
+        mime_data.setUrls(
+            [QtCore.QUrl.fromLocalFile(str(SAMPLES / "210601.TXT"))]
+        )
+        event = Mock()
+        event.mimeData.return_value = mime_data
+
+        with patch.object(window, "dropEvent") as main_drop:
+            window.dataset_table.dropEvent(event)
+
+        main_drop.assert_called_once_with(event)
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_chromatogram_drag_without_source_row_is_ignored(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        original_ids = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.clearSelection()
+        window.dataset_table.setCurrentCell(-1, -1)
+        event = RowDropEvent(QtCore.QPoint(1, 1))
+
+        window.dataset_table.dropEvent(event)
+
+        self.assertTrue(event.ignored)
+        self.assertFalse(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original_ids
         )
         self.assertFalse(window.project.dirty)
         window.close()

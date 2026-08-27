@@ -915,6 +915,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox = QtWidgets.QCheckBox()
         self.show_retention_checkbox = QtWidgets.QCheckBox()
         self.show_gradient_checkbox = QtWidgets.QCheckBox()
+        self.gradient_legend_name_checkbox = QtWidgets.QCheckBox()
         self.legend_label = QtWidgets.QLabel()
         self.legend_combo = QtWidgets.QComboBox()
         for label, value in (
@@ -938,7 +939,8 @@ class MainWindow(QtWidgets.QMainWindow):
         display_controls.addWidget(self.show_integration_checkbox, 2, 0, 1, 2)
         display_controls.addWidget(self.show_retention_checkbox, 3, 0, 1, 2)
         display_controls.addWidget(self.show_gradient_checkbox, 4, 0, 1, 2)
-        display_controls.addWidget(self.axis_labels_button, 5, 0, 1, 2)
+        display_controls.addWidget(self.gradient_legend_name_checkbox, 5, 0, 1, 2)
+        display_controls.addWidget(self.axis_labels_button, 6, 0, 1, 2)
         display_controls.addWidget(self.annotation_button, 6, 0, 1, 2)
         display_controls.setRowStretch(7, 1)
 
@@ -1053,6 +1055,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox.toggled.connect(self._method_controls_changed)
         self.show_retention_checkbox.toggled.connect(self._method_controls_changed)
         self.show_gradient_checkbox.toggled.connect(self._method_controls_changed)
+        self.gradient_legend_name_checkbox.toggled.connect(self._method_controls_changed)
         self.legend_combo.currentIndexChanged.connect(self._method_controls_changed)
         self.zoom_axis_combo.currentIndexChanged.connect(self._zoom_axis_changed)
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
@@ -1490,6 +1493,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox.setText(t("show_integration"))
         self.show_retention_checkbox.setText(t("show_retention_labels"))
         self.show_gradient_checkbox.setText(t("show_gradient_b"))
+        self.gradient_legend_name_checkbox.setText(t("gradient_legend_include_name"))
         self.reset_view_button.setText(t("reset_view"))
         self.reset_x_view_button.setText(t("reset_x_view"))
         self.reset_y_view_button.setText(t("reset_y_view"))
@@ -1951,6 +1955,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_gradient_checkbox.blockSignals(True)
         self.show_gradient_checkbox.setChecked(self.project.method.show_gradient_b)
         self.show_gradient_checkbox.blockSignals(False)
+        self.gradient_legend_name_checkbox.blockSignals(True)
+        self.gradient_legend_name_checkbox.setChecked(
+            self.project.method.gradient_legend_include_dataset_name
+        )
+        self.gradient_legend_name_checkbox.blockSignals(False)
         self.legend_combo.blockSignals(True)
         self.legend_combo.setCurrentIndex(max(0, self.legend_combo.findData(self.project.method.legend_location)))
         self.legend_combo.blockSignals(False)
@@ -1971,6 +1980,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method.show_integration_areas = self.show_integration_checkbox.isChecked()
         self.project.method.show_retention_labels = self.show_retention_checkbox.isChecked()
         self.project.method.show_gradient_b = self.show_gradient_checkbox.isChecked()
+        self.project.method.gradient_legend_include_dataset_name = (
+            self.gradient_legend_name_checkbox.isChecked()
+        )
         self.project.method.legend_location = self.legend_combo.currentData()
         self.project.dirty = True
         self._plot()
@@ -2415,7 +2427,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self.axes_gradient is not None and selected is not None:
             ordered_gradient = sorted(selected.measurement.gradient, key=lambda point: point.time_min)
-            gradient_label = "%%B (%s)" % selected.legend_label()
+            gradient_label = "%B"
+            if self.project.method.gradient_legend_include_dataset_name:
+                gradient_label = "%B ({})".format(selected.legend_label())
             gradient_x = np.asarray(
                 [point.time_min for point in ordered_gradient], dtype=float
             )

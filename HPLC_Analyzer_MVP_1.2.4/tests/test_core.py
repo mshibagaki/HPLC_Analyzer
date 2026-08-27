@@ -1337,6 +1337,7 @@ class ProjectTests(unittest.TestCase):
         dataset.x_shift_min = 0.25
         dataset.gradient_preset_name = "RP-C4"
         project.method.show_gradient_b = True
+        project.method.gradient_legend_include_dataset_name = True
         project.method.legend_location = "upper left"
         project.method.gradient_axis_label = "ACN (%)"
         project.method.show_retention_labels = True
@@ -1358,6 +1359,7 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.condition_presets["280 nm"]["wavelength_nm"], 280.0)
             self.assertIn("RP-C4", loaded.gradient_presets)
             self.assertTrue(loaded.method.show_gradient_b)
+            self.assertTrue(loaded.method.gradient_legend_include_dataset_name)
             self.assertEqual(loaded.method.legend_location, "upper left")
             self.assertEqual(loaded.method.gradient_axis_label, "ACN (%)")
             self.assertTrue(loaded.method.show_retention_labels)

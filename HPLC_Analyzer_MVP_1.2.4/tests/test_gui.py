@@ -2556,6 +2556,22 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_gradient_legend_can_hide_or_show_chromatogram_name(self):
+        window = self.make_window()
+        self.assertFalse(window.project.method.gradient_legend_include_dataset_name)
+        labels = window.axes_gradient.get_legend_handles_labels()[1]
+        self.assertEqual(labels, ["%B"])
+
+        window.gradient_legend_name_checkbox.setChecked(True)
+        self.app.processEvents()
+        labels = window.axes_gradient.get_legend_handles_labels()[1]
+        self.assertEqual(
+            labels, ["%B ({})".format(window.project.datasets[0].legend_label())]
+        )
+        self.assertTrue(window.project.method.gradient_legend_include_dataset_name)
+        window.project.dirty = False
+        window.close()
+
     def test_peak_fit_result_is_saved_plotted_and_undoable(self):
         window = self.make_window()
         window.peak_table.selectRow(0)

@@ -46,6 +46,26 @@ def emg_profile(x, center: float, sigma: float, tau: float):
     return profile / maximum if maximum > 0 else np.zeros_like(x)
 
 
+def evaluate_fit_profile(x, result: PeakFitResult):
+    """Evaluate the fitted baseline-corrected signal in raw µV."""
+
+    parameters = result.parameters
+    if result.model == "gaussian":
+        shape = gaussian_profile(
+            x, parameters["center_min"], parameters["sigma_min"]
+        )
+    elif result.model == "emg":
+        shape = emg_profile(
+            x,
+            parameters["center_min"],
+            parameters["sigma_min"],
+            parameters["tau_min"],
+        )
+    else:
+        raise ValueError("Unknown fitted model: %s" % result.model)
+    return parameters["amplitude_uv"] * shape
+
+
 def _score_profile(y, profile, parameter_count: int) -> Tuple[float, float, float, float]:
     denominator = float(np.dot(profile, profile))
     amplitude = max(0.0, float(np.dot(y, profile) / denominator)) if denominator else 0.0

@@ -249,6 +249,12 @@ class PeakRegion:
     split_group_id: str = ""
     integration_source: str = "manual"
     notes: str = ""
+    fit_model: str = ""
+    fit_parameters: Dict[str, float] = field(default_factory=dict)
+    fit_retention_time_min: Optional[float] = None
+    fit_rmse_uv: Optional[float] = None
+    fit_r_squared: Optional[float] = None
+    fit_aic: Optional[float] = None
 
 
 @dataclass

@@ -1614,6 +1614,16 @@ class ProjectTests(unittest.TestCase):
             )
         ]
         recalculate_dataset_peaks(dataset)
+        dataset.peaks[0].fit_model = "gaussian"
+        dataset.peaks[0].fit_parameters = {
+            "amplitude_uv": 1200.0,
+            "center_min": 1.5,
+            "sigma_min": 0.2,
+        }
+        dataset.peaks[0].fit_retention_time_min = 1.5
+        dataset.peaks[0].fit_rmse_uv = 3.0
+        dataset.peaks[0].fit_r_squared = 0.998
+        dataset.peaks[0].fit_aic = 42.0
         project = Project(datasets=[dataset])
         project.method.view_mode = "overview_detail"
         project.method.x_tick_mode = "manual"
@@ -1651,6 +1661,11 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.method.auto_peak_snr_threshold, 8.0)
             self.assertEqual(loaded.datasets[0].peaks[0].integration_source, "auto")
             self.assertEqual(loaded.datasets[0].peaks[0].notes, "identified as LL-37")
+            self.assertEqual(loaded.datasets[0].peaks[0].fit_model, "gaussian")
+            self.assertEqual(
+                loaded.datasets[0].peaks[0].fit_parameters["sigma_min"], 0.2
+            )
+            self.assertEqual(loaded.datasets[0].peaks[0].fit_r_squared, 0.998)
             self.assertEqual(len(loaded.annotations), 1)
             self.assertEqual(loaded.annotations[0].text, "LL-37")
             self.assertEqual(loaded.annotations[0].dataset_id, dataset.id)

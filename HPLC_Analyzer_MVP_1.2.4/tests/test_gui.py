@@ -38,6 +38,7 @@ from hplc_app.gui import (
 )
 from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation
 from hplc_app.parser import load_ascii_file
+from hplc_app.peak_fitting import PeakFitResult
 from hplc_app.preset_store import (
     load_preset_store,
     load_preset_store_with_metadata,
@@ -2552,6 +2553,41 @@ class GuiTests(unittest.TestCase):
         self.assertAlmostEqual(major[1] - major[0], 2.0, places=8)
         self.assertAlmostEqual(minor[1] - minor[0], 0.5, places=8)
         dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_peak_fit_result_is_saved_plotted_and_undoable(self):
+        window = self.make_window()
+        window.peak_table.selectRow(0)
+        result = PeakFitResult(
+            model="gaussian",
+            parameters={
+                "amplitude_uv": 1000.0,
+                "center_min": 7.0,
+                "sigma_min": 0.5,
+            },
+            retention_time_min=7.0,
+            rmse_uv=2.5,
+            r_squared=0.999,
+            aic=12.0,
+            point_count=50,
+        )
+        with patch.object(
+            QtWidgets.QInputDialog,
+            "getItem",
+            return_value=("Automatic", True),
+        ), patch("hplc_app.gui.fit_peak", return_value=result):
+            window._application_language = "en"
+            window.fit_selected_peak()
+        peak = window.project.datasets[0].peaks[0]
+        self.assertEqual(peak.fit_model, "gaussian")
+        self.assertEqual(peak.fit_parameters["sigma_min"], 0.5)
+        self.assertAlmostEqual(peak.fit_r_squared, 0.999)
+        self.assertIsNotNone(
+            window._peak_overlay_artists[peak.id]["fit_line"]
+        )
+        window.undo()
+        self.assertEqual(window.project.datasets[0].peaks[0].fit_model, "")
         window.project.dirty = False
         window.close()
 

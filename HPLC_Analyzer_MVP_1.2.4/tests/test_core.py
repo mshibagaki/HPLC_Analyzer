@@ -105,7 +105,12 @@ from hplc_app.renderer_parity import (
     unavailable_parity_report,
 )
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
-from hplc_app.update_check import check_for_updates, parse_stable_version
+from hplc_app.update_check import (
+    check_for_updates,
+    compare_semver,
+    parse_semver,
+    parse_stable_version,
+)
 from hplc_app.updater_download import (
     normalize_signer_thumbprints,
     official_release_asset_url,
@@ -656,6 +661,28 @@ class AnalysisTests(unittest.TestCase):
             check_for_updates("1.2.4", fetch=lambda _url, _timeout: payload)["status"],
             "no_release",
         )
+
+    def test_update_check_compares_development_and_rc_versions_to_stable(self):
+        stable_124 = json.dumps(
+            [{
+                "tag_name": "v1.2.4",
+                "html_url": "https://github.com/mshibagaki/HPLC_Analyzer/releases/tag/v1.2.4",
+                "draft": False,
+                "prerelease": False,
+            }]
+        ).encode("utf-8")
+        stable_130 = stable_124.replace(b"1.2.4", b"1.3.0")
+        self.assertEqual(
+            check_for_updates("1.3.0-dev.1", fetch=lambda *_args: stable_124)["status"],
+            "current",
+        )
+        self.assertEqual(
+            check_for_updates("1.3.0-rc.2", fetch=lambda *_args: stable_130)["status"],
+            "update_available",
+        )
+        self.assertLess(compare_semver("1.3.0-dev.1", "1.3.0-rc.1"), 0)
+        self.assertLess(compare_semver("1.3.0-rc.2", "1.3.0"), 0)
+        self.assertEqual(parse_semver("1.3.0+build.5")[0], (1, 3, 0))
 
     def test_updater_stages_hash_and_signature_verified_installer_without_launch(self):
         installer = b"signed-installer-fixture"

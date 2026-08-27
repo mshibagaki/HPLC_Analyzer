@@ -26,6 +26,56 @@ def parse_stable_version(value: str) -> Optional[Tuple[int, int, int]]:
     return tuple(int(match.group(index)) for index in (1, 2, 3))
 
 
+def parse_semver(value: str):
+    """Parse Stable or prerelease SemVer for current-application comparison."""
+
+    match = _SEMVER.fullmatch(str(value).strip())
+    if match is None:
+        return None
+    core = tuple(int(match.group(index)) for index in (1, 2, 3))
+    raw_prerelease = match.group(4)
+    if raw_prerelease is None:
+        return core, None
+    identifiers = raw_prerelease.split(".")
+    if any(
+        not identifier
+        or (identifier.isdigit() and len(identifier) > 1 and identifier.startswith("0"))
+        for identifier in identifiers
+    ):
+        return None
+    return core, tuple(identifiers)
+
+
+def compare_semver(left: str, right: str) -> int:
+    """Return negative/zero/positive using SemVer precedence rules."""
+
+    parsed_left = parse_semver(left)
+    parsed_right = parse_semver(right)
+    if parsed_left is None or parsed_right is None:
+        raise ValueError("Invalid SemVer comparison")
+    left_core, left_pre = parsed_left
+    right_core, right_pre = parsed_right
+    if left_core != right_core:
+        return -1 if left_core < right_core else 1
+    if left_pre is None or right_pre is None:
+        if left_pre is right_pre:
+            return 0
+        return 1 if left_pre is None else -1
+    for left_item, right_item in zip(left_pre, right_pre):
+        if left_item == right_item:
+            continue
+        left_numeric = left_item.isdigit()
+        right_numeric = right_item.isdigit()
+        if left_numeric and right_numeric:
+            return -1 if int(left_item) < int(right_item) else 1
+        if left_numeric != right_numeric:
+            return -1 if left_numeric else 1
+        return -1 if left_item < right_item else 1
+    if len(left_pre) == len(right_pre):
+        return 0
+    return -1 if len(left_pre) < len(right_pre) else 1
+
+
 def _fetch_release_json(url: str, timeout: float) -> bytes:
     request = Request(
         url,
@@ -50,9 +100,9 @@ def check_for_updates(
 ) -> Dict[str, object]:
     """Return update metadata; network and data errors are non-fatal results."""
 
-    current = parse_stable_version(current_version)
+    current = parse_semver(current_version)
     if current is None:
-        return _error("Current application version is not stable SemVer")
+        return _error("Current application version is not valid SemVer")
     if not _REPOSITORY.fullmatch(repository):
         return _error("Invalid GitHub repository name")
     url = "https://api.github.com/repos/%s/releases?per_page=20" % repository
@@ -86,7 +136,11 @@ def check_for_updates(
             }
         latest, release = max(valid, key=lambda item: item[0])
         return {
-            "status": "update_available" if latest > current else "current",
+            "status": (
+                "update_available"
+                if compare_semver(".".join(str(part) for part in latest), current_version) > 0
+                else "current"
+            ),
             "current_version": str(current_version),
             "latest_version": ".".join(str(part) for part in latest),
             "release_url": release["html_url"],

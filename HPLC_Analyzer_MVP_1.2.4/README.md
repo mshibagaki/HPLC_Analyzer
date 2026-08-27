@@ -430,7 +430,7 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 - **MINOR**：後方互換性を維持した新機能の追加で増やします。Run ID、アップデーター、互換性を保ったデータ項目追加など、複数の基盤機能をまとめる場合も対象です。例：`v1.2.4`から`v1.3.0`。
 - **MAJOR**：既存のプロジェクト形式、保存データ、操作方法、または外部連携との互換性を壊す大規模変更で増やします。例：`v1.x`から`v2.0.0`。
 
-現在の安定版は`v1.2.4`です。次の基盤更新は、後方互換性を維持しながら`v1.3.0`として開発する予定です。実際のバージョン番号は、対象リリースの内容が確定した時点で明示的なリリース作業として更新し、通常の機能修正や整理のついでには変更しません。
+最新の公開Stable版は`v1.2.4`、現在のmain開発版は`1.3.0-dev.1`です。開発版はtagや公開Releaseを意味しません。機能凍結後は`1.3.0-rc.N`、全Release gateを通す最終Stable候補では`1.3.0`へ進め、検証済みのStable候補commitへだけ`v1.3.0`tagを付けます。
 
 公開GitHub ReleasesのmetadataだけをHTTPSで確認する更新通知を用意しています。`ヘルプ → 更新を確認…`から手動確認でき、環境設定で起動後のStable版自動確認を無効化できます。確認はGUI thread外で行い、自動確認時の最新版・offline・proxy・rate limit・壊れた応答は通常操作へ通知しません。Stable確認ではdraft/prereleaseを除外し、SemVerと公式repository配下のRelease URLを検証します。現段階ではApplication UIからinstallerのdownloadや起動は行いません。
 

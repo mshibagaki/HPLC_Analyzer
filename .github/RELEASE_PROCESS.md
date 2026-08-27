@@ -4,6 +4,7 @@ This document defines the release-candidate (RC) to Stable lifecycle. Japanese i
 
 ## 1. Release identities
 
+- Development versions use SemVer pre-release names such as `1.3.0-dev.1`. They are not tagged or published as Releases. Increment the development identifier when a distributed development build must be distinguished from an earlier one.
 - RC versions use SemVer pre-release names such as `1.3.0-rc.1`; tags use `v1.3.0-rc.1`.
 - Stable versions use `MAJOR.MINOR.PATCH`; tags use names such as `v1.3.0`.
 - An RC GitHub Release must have **Set as a pre-release** enabled. A Stable GitHub Release must have it disabled and must not be marked as a draft when published.
@@ -17,19 +18,21 @@ This document defines the release-candidate (RC) to Stable lifecycle. Japanese i
 3. Create a GitHub prerelease from the RC tag and attach the candidate assets and checksums.
 4. Perform Windows 11 and Windows 7 verification using assets built from `VERIFIED_COMMIT`.
 5. If any source, dependency lock, build/installer input, migration, or release asset content must change, do not promote that RC. Merge the fix, increment the RC number, and restart all gates from the new commit.
-6. If every gate passes without a commit change, create the Stable annotated tag on the same commit as the final RC tag. Do not rebuild different binaries merely to rename RC as Stable; assemble the final assets from the verified outputs and produce final checksums.
+6. After an RC is accepted, change only the canonical application version and directly related current-version documentation to the Stable version, for example `1.3.0`. This creates a new Stable-candidate commit because an `rc` commit cannot also contain the Stable `APP_VERSION`.
+7. Run the complete automated, build, installer, upgrade/data-preservation, cross-OS, signing, checksum, and physical-machine gates again on artifacts built from that exact Stable-candidate commit. RC evidence informs this run but does not substitute for it.
+8. If every Stable gate passes without another commit change, create the Stable annotated tag on that exact verified Stable-candidate commit. Never tag the earlier `rc` commit as Stable.
 
 Example tag commands (replace values; do not run from an unclean worktree):
 
 ```text
 git tag -a v1.3.0-rc.1 VERIFIED_COMMIT -m "HPLC Analyzer v1.3.0-rc.1"
-git tag -a v1.3.0 VERIFIED_COMMIT -m "HPLC Analyzer v1.3.0"
+git tag -a v1.3.0 VERIFIED_STABLE_COMMIT -m "HPLC Analyzer v1.3.0"
 git rev-parse "v1.3.0-rc.1^{commit}"
 git rev-parse "v1.3.0^{commit}"
-git rev-parse VERIFIED_COMMIT
+git rev-parse VERIFIED_STABLE_COMMIT
 ```
 
-All three `rev-parse` results must be identical before Stable publication. Tag creation, tag push, and GitHub Release publication require explicit human approval.
+The Stable tag and `VERIFIED_STABLE_COMMIT` results must be identical before publication. The RC tag is expected to resolve to an earlier commit with an RC `APP_VERSION`. Tag creation, tag push, and GitHub Release publication require explicit human approval.
 
 ## 3. Stable gates
 

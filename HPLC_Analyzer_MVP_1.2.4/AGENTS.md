@@ -173,9 +173,14 @@ Do not claim a test, build, or compatibility check was performed unless it actua
 ## Git workflow
 
 - Never commit directly to `main`.
-- Use one working branch for each feature or bug fix, named `codex/...` by default.
-- Commit and push all changes to that working branch.
-- Open a Draft Pull Request targeting `main`.
-- Do not merge the Pull Request unless explicitly instructed by the user.
-- Do not mix unrelated changes in one Pull Request.
+- Treat one GitHub Issue as one delivery unit: one working branch, one Pull Request, and one merge by default.
+- Before starting an Issue, fetch the remote state and confirm that the Issue, branch, commit, or equivalent implementation is not already open or merged.
+- Start each independent Issue from the latest `origin/main`, using a `codex/...` branch by default. Never start the next independent Issue from an unmerged feature branch.
+- Keep the branch limited to that Issue. Commit and push the verified change, then open a Pull Request targeting `main`.
+- Use a Draft Pull Request only while required implementation or verification is still in progress. Mark it ready, or create a non-draft Pull Request, once the Issue's checks pass.
+- After checks pass and no unresolved review finding, conflict, compatibility risk, or branch-protection requirement remains, merge the Pull Request before starting the next independent Issue. The repository owner has given Codex standing authorization to perform this routine merge.
+- After merging, fetch and fast-forward local `main`, confirm the Issue branch is contained in `origin/main`, and use that updated `main` as the next Issue's base.
+- Stack branches or Pull Requests only when there is a real code/data/schema dependency that prevents independent delivery. Record the dependency in both PRs, set the dependent PR's base deliberately, and merge in dependency order.
+- Do not accumulate unrelated completed branches for a later integration PR. Do not mix unrelated changes in one Pull Request.
+- Stop before merging when tests fail, the PR is not mergeable, review findings remain, or the change has an unresolved scientific, migration, security, or user-data risk. Report the blocker instead of beginning another Issue on top.
 - Changes related to Windows 7 compatibility must preserve the pinned legacy dependencies and offline-build requirements described above.

@@ -261,6 +261,42 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_split_y_axis_mode_routes_traces_and_shares_x_navigation(self):
+        window = self.make_window()
+        window.project.method.view_mode = "split_y_axes"
+        window._plot(preserve_view=False)
+        first, second = window.project.datasets
+        self.assertTrue(window._split_y_axes)
+        self.assertIs(window._dataset_lines[first.id].axes, window.axes)
+        self.assertIs(window._dataset_lines[second.id].axes, window.axes_right)
+        self.assertTrue(
+            window.axes.get_shared_x_axes().joined(window.axes, window.axes_right)
+        )
+        window.axes_right.set_xlim(4.0, 12.0)
+        self.assertEqual(window.axes.get_xlim(), (4.0, 12.0))
+
+        window.canvas.draw()
+        bbox = window.axes_right.bbox
+        event = SimpleNamespace(
+            button="up",
+            x=float((bbox.x0 + bbox.x1) / 2.0),
+            y=float((bbox.y0 + bbox.y1) / 2.0),
+            xdata=8.0,
+            ydata=0.0,
+            inaxes=window.axes_right,
+        )
+        self.assertEqual(window._scroll_target(event), "plot_y2")
+        y1_before = window.axes.get_ylim()
+        y2_before = window.axes_right.get_ylim()
+        window._on_scroll(event)
+        self.assertEqual(window.axes.get_ylim(), y1_before)
+        self.assertLess(
+            window.axes_right.get_ylim()[1] - window.axes_right.get_ylim()[0],
+            y2_before[1] - y2_before[0],
+        )
+        window.project.dirty = False
+        window.close()
+
     def test_render_quality_preference_is_app_only_and_user_switchable(self):
         window = self.make_lightweight_window()
         project_dirty = window.project.dirty

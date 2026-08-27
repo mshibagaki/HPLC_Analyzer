@@ -31,6 +31,7 @@ from .dialogs import (
     BatchMetadataDialog,
     DirectoryImportDialog,
     GradientDialog,
+    LegendComposerDialog,
     LabDatabaseDialog,
     MetadataDialog,
     PeakRangeDialog,
@@ -926,6 +927,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             self.legend_combo.addItem(label, value)
         self.axis_labels_button = QtWidgets.QPushButton()
+        self.legend_settings_button = QtWidgets.QPushButton()
         self.annotation_action = self._action(checkable=True)
         self.annotation_action.toggled.connect(self._toggle_annotation_mode)
         self.annotation_button = QtWidgets.QToolButton()
@@ -934,12 +936,13 @@ class MainWindow(QtWidgets.QMainWindow):
         display_controls.addWidget(self.unit_combo, 0, 1)
         display_controls.addWidget(self.legend_label, 1, 0)
         display_controls.addWidget(self.legend_combo, 1, 1)
-        display_controls.addWidget(self.show_integration_checkbox, 2, 0, 1, 2)
-        display_controls.addWidget(self.show_retention_checkbox, 3, 0, 1, 2)
-        display_controls.addWidget(self.show_gradient_checkbox, 4, 0, 1, 2)
-        display_controls.addWidget(self.axis_labels_button, 5, 0, 1, 2)
-        display_controls.addWidget(self.annotation_button, 6, 0, 1, 2)
-        display_controls.setRowStretch(7, 1)
+        display_controls.addWidget(self.legend_settings_button, 2, 0, 1, 2)
+        display_controls.addWidget(self.show_integration_checkbox, 3, 0, 1, 2)
+        display_controls.addWidget(self.show_retention_checkbox, 4, 0, 1, 2)
+        display_controls.addWidget(self.show_gradient_checkbox, 5, 0, 1, 2)
+        display_controls.addWidget(self.axis_labels_button, 6, 0, 1, 2)
+        display_controls.addWidget(self.annotation_button, 7, 0, 1, 2)
+        display_controls.setRowStretch(8, 1)
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
@@ -1061,6 +1064,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select_all_peaks_button.clicked.connect(self.peak_table.selectAll)
         self.move_trace_button.toggled.connect(self._toggle_move_mode)
         self.axis_labels_button.clicked.connect(self.edit_axis_labels)
+        self.legend_settings_button.clicked.connect(self.edit_legend_composer)
         self.reset_view_button.clicked.connect(self._reset_view)
         self.reset_x_view_button.clicked.connect(self._reset_x_view)
         self.reset_y_view_button.clicked.connect(self._reset_y_view)
@@ -1469,6 +1473,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for index, text in enumerate(baseline_texts):
             self.baseline_combo.setItemText(index, text)
         self.legend_label.setText(t("legend"))
+        self.legend_settings_button.setText(t("legend_settings"))
         legend_texts = (
             t("legend_auto"),
             t("legend_upper_right"),
@@ -2257,7 +2262,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except ValueError:
                 continue
             color = dataset.color or COLORS[index % len(COLORS)]
-            label = dataset.legend_label()
+            label = self.project.legend_label_for(dataset)
             target_axes = self.axes_right if dataset.y_axis == 2 and self.axes_right is not None else self.axes
             full_x = dataset.time_min + dataset.x_shift_min
             full_y = values + dataset.offset
@@ -2374,7 +2379,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self.axes_gradient is not None and selected is not None:
             ordered_gradient = sorted(selected.measurement.gradient, key=lambda point: point.time_min)
-            gradient_label = "%%B (%s)" % selected.legend_label()
+            gradient_label = "%%B (%s)" % self.project.legend_label_for(selected)
             gradient_x = np.asarray(
                 [point.time_min for point in ordered_gradient], dtype=float
             )
@@ -2457,7 +2462,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if dataset.visible and dataset.id in self._dataset_lines
             ]
             labels = [
-                dataset.legend_label()
+                self.project.legend_label_for(dataset)
                 for dataset in self.project.datasets
                 if dataset.visible and dataset.id in self._dataset_lines
             ]
@@ -3746,6 +3751,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._push_undo_snapshot(
             before,
             self._history_label("軸・ラベル設定", "Axes and label styles"),
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+
+    def edit_legend_composer(self):
+        before = self._capture_analysis_state()
+        dialog = LegendComposerDialog(
+            self.project.method, self._application_language, self
+        )
+        if not dialog_exec(dialog):
+            return
+        dialog.apply_to_method(self.project.method)
+        self._push_undo_snapshot(
+            before,
+            self._history_label("凡例設定", "Legend composer"),
         )
         self.project.dirty = True
         self._plot()

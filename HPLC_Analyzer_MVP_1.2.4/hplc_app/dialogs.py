@@ -17,6 +17,7 @@ from .models import (
     AnalysisMethod,
     Dataset,
     GradientPoint,
+    LEGEND_COMPONENTS,
     PeakRegion,
     Project,
     Solvent,
@@ -33,7 +34,7 @@ from .preset_store import (
     stable_preset_names,
 )
 from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
-from .qt_compat import CHECKED, ITEM_IS_EDITABLE, UNCHECKED, QtGui, QtWidgets, dialog_exec
+from .qt_compat import CHECKED, ITEM_IS_EDITABLE, UNCHECKED, USER_ROLE, QtGui, QtWidgets, dialog_exec
 
 
 def optional_float(text: str) -> Optional[float]:
@@ -2416,6 +2417,104 @@ class GradientDialog(QtWidgets.QDialog):
         self.dataset.measurement.solvents = solvents
         self.dataset.gradient_preset_name = self.applied_preset_name
         self.accept()
+
+
+class LegendComposerDialog(QtWidgets.QDialog):
+    """Choose ordered fields used to derive on-screen legend labels."""
+
+    FIELD_LABELS = {
+        "run_id": ("Run ID", "Run ID"),
+        "label": ("ラベル", "Label"),
+        "timestamp": ("タイムスタンプ", "Timestamp"),
+        "wavelength": ("波長", "Wavelength"),
+        "column": ("カラム", "Column"),
+        "sample_name": ("サンプル名", "Sample name"),
+        "analyte_name": ("分析対象物", "Analyte"),
+        "group": ("グループ", "Group"),
+    }
+
+    def __init__(self, method: AnalysisMethod, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        selected = (
+            list(method.legend_components)
+            if isinstance(method.legend_components, list)
+            else ["label", "wavelength"]
+        )
+        selected = [item for item in selected if item in LEGEND_COMPONENTS]
+        order = selected + [item for item in LEGEND_COMPONENTS if item not in selected]
+        self.setWindowTitle("凡例設定" if language == "ja" else "Legend composer")
+        self.resize(480, 500)
+        root = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel(
+            "表示する項目を選び、上から順に連結します。空の値は省略されます。"
+            if language == "ja"
+            else "Selected fields are joined from top to bottom. Empty values are skipped."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        self.list_widget = QtWidgets.QListWidget()
+        for field_name in order:
+            labels = self.FIELD_LABELS[field_name]
+            item = QtWidgets.QListWidgetItem(
+                labels[0] if language == "ja" else labels[1]
+            )
+            item.setData(USER_ROLE, field_name)
+            item.setCheckState(CHECKED if field_name in selected else UNCHECKED)
+            self.list_widget.addItem(item)
+        root.addWidget(self.list_widget, 1)
+        move_row = QtWidgets.QHBoxLayout()
+        self.up_button = QtWidgets.QPushButton("↑ 上へ" if language == "ja" else "↑ Up")
+        self.down_button = QtWidgets.QPushButton("↓ 下へ" if language == "ja" else "↓ Down")
+        move_row.addWidget(self.up_button)
+        move_row.addWidget(self.down_button)
+        move_row.addStretch(1)
+        root.addLayout(move_row)
+        form = QtWidgets.QFormLayout()
+        self.separator_edit = QtWidgets.QLineEdit(method.legend_separator)
+        self.separator_edit.setMaxLength(16)
+        form.addRow("区切り文字" if language == "ja" else "Separator", self.separator_edit)
+        root.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+        self.up_button.clicked.connect(lambda: self._move(-1))
+        self.down_button.clicked.connect(lambda: self._move(1))
+
+    def _move(self, offset):
+        row = self.list_widget.currentRow()
+        target = row + offset
+        if row < 0 or target < 0 or target >= self.list_widget.count():
+            return
+        item = self.list_widget.takeItem(row)
+        self.list_widget.insertItem(target, item)
+        self.list_widget.setCurrentRow(target)
+
+    def selected_components(self):
+        return [
+            self.list_widget.item(row).data(USER_ROLE)
+            for row in range(self.list_widget.count())
+            if self.list_widget.item(row).checkState() == CHECKED
+        ]
+
+    def _accept(self):
+        if not self.selected_components():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "凡例設定" if self.language == "ja" else "Legend composer",
+                "1項目以上を選択してください。"
+                if self.language == "ja"
+                else "Select at least one field.",
+            )
+            return
+        self.accept()
+
+    def apply_to_method(self, method):
+        method.legend_components = self.selected_components()
+        method.legend_separator = self.separator_edit.text()
 
 
 class AxisLabelsDialog(QtWidgets.QDialog):

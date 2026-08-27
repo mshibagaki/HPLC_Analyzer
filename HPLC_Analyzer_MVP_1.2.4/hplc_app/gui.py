@@ -2688,21 +2688,27 @@ class MainWindow(QtWidgets.QMainWindow):
             self.axes_right.set_ylabel(
                 self.project.method.y_axis_2_label.strip() or "%s — %s" % (y_label, axis_2_label)
             )
-        self.axes.grid(
-            self.project.method.show_major_grid,
-            which="major",
-            color="#d1d5db",
-            linewidth=0.6,
-            alpha=0.75,
-        )
-        if self.axes_overview is not None:
-            self.axes_overview.grid(
-                self.project.method.show_major_grid,
+        if self.project.method.show_major_grid:
+            self.axes.grid(
+                True,
                 which="major",
                 color="#d1d5db",
-                linewidth=0.5,
-                alpha=0.6,
+                linewidth=0.6,
+                alpha=0.75,
             )
+        else:
+            self.axes.grid(False, which="major")
+        if self.axes_overview is not None:
+            if self.project.method.show_major_grid:
+                self.axes_overview.grid(
+                    True,
+                    which="major",
+                    color="#d1d5db",
+                    linewidth=0.5,
+                    alpha=0.6,
+                )
+            else:
+                self.axes_overview.grid(False, which="major")
 
         times = [float(dataset.time_min[-1] + dataset.x_shift_min) for dataset in visible if dataset.time_min.size]
         times.extend(

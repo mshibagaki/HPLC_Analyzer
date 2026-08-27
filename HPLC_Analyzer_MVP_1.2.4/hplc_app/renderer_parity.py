@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import importlib
 import platform
-from typing import Dict
+from typing import Dict, Sequence
 
 import numpy as np
 
@@ -53,6 +53,33 @@ def unavailable_parity_report(reason: str) -> Dict[str, object]:
     }
 
 
+def three_axis_ranges_are_independent(
+    primary_range: Sequence[Sequence[float]],
+    secondary_range: Sequence[Sequence[float]],
+    gradient_range: Sequence[Sequence[float]],
+    tolerance: float = 0.01,
+) -> bool:
+    """Confirm three views share X while Y2 and B% keep independent ranges."""
+
+    x_ranges = (primary_range[0], secondary_range[0], gradient_range[0])
+    shared_x = all(
+        abs(current[index] - x_ranges[0][index]) <= tolerance
+        for current in x_ranges[1:]
+        for index in (0, 1)
+    )
+    secondary_y = secondary_range[1]
+    gradient_y = gradient_range[1]
+    independent_y = any(
+        abs(secondary_y[index] - gradient_y[index]) > tolerance
+        for index in (0, 1)
+    )
+    gradient_is_percent = (
+        abs(gradient_y[0]) <= tolerance
+        and abs(gradient_y[1] - 100.0) <= tolerance
+    )
+    return shared_x and independent_y and gradient_is_percent
+
+
 def probe_pyqtgraph_parity() -> Dict[str, object]:
     """Create representative screen objects and return machine-readable evidence."""
 
@@ -90,13 +117,7 @@ def probe_pyqtgraph_parity() -> Dict[str, object]:
         x_values, traces[1], pen=pg.mkPen("#dc2626", width=1)
     )
     secondary_view.addItem(secondary_curve)
-
-    def sync_secondary_view():
-        secondary_view.setGeometry(primary.vb.sceneBoundingRect())
-        secondary_view.linkedViewChanged(primary.vb, secondary_view.XAxis)
-
-    sync_secondary_view()
-    primary.vb.sigResized.connect(sync_secondary_view)
+    secondary_view.setYRange(-0.5, 2.5, padding=0.0)
     features["secondary_y_axis"] = _entry(
         "supported", "linked auxiliary ViewBox and right AxisItem created"
     )
@@ -111,15 +132,36 @@ def probe_pyqtgraph_parity() -> Dict[str, object]:
     gradient_curve = pg.PlotCurveItem(
         gradient_x, gradient_y, pen=pg.mkPen("#111827", width=1)
     )
-    detail.addItem(gradient_curve)
-    features["gradient_axis"] = _entry(
-        "adaptable",
-        "gradient curve works; a third independent overlaid scale needs custom AxisItem layout",
-    )
+    gradient_axis = pg.AxisItem("right")
+    gradient_axis.setLabel("B", units="%")
+    primary.layout.addItem(gradient_axis, 2, 3)
+    gradient_view = pg.ViewBox()
+    primary.scene().addItem(gradient_view)
+    gradient_axis.linkToView(gradient_view)
+    gradient_view.setXLink(primary)
+    gradient_view.addItem(gradient_curve)
+    gradient_view.setYRange(0.0, 100.0, padding=0.0)
+
+    def sync_auxiliary_views():
+        geometry = primary.vb.sceneBoundingRect()
+        for view in (secondary_view, gradient_view):
+            view.setGeometry(geometry)
+            view.linkedViewChanged(primary.vb, view.XAxis)
+
+    sync_auxiliary_views()
+    primary.vb.sigResized.connect(sync_auxiliary_views)
 
     primary.setXRange(4.0, 12.0, padding=0.0)
     primary.setYRange(-0.1, 1.5, padding=0.0)
     x_range, y_range = primary.viewRange()
+    application.processEvents()
+    three_axis_ok = three_axis_ranges_are_independent(
+        primary.viewRange(), secondary_view.viewRange(), gradient_view.viewRange()
+    )
+    features["gradient_axis"] = _entry(
+        "supported" if three_axis_ok else "blocked",
+        "custom right AxisItem and ViewBox share X while Y2 and B% retain independent ranges",
+    )
     ranges_ok = abs(x_range[0] - 4.0) < 0.01 and abs(x_range[1] - 12.0) < 0.01
     features["zoom_pan_range"] = _entry(
         "supported" if ranges_ok else "blocked",

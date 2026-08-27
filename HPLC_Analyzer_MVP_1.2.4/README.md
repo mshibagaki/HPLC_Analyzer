@@ -147,7 +147,7 @@ python scripts\probe_pyqtgraph_parity.py
 
 結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
 
-Win11の隔離probeでは、primary trace、Y2軸、split panel、zoom/pan、integration region、retention/fixed-size text、vertical marker、curve picking、snapshotを再現できました。gradient自体は描画可能ですが、Y2と同時に第三の独立scaleとして重ねるにはcustom AxisItem layoutが必要です。これは採用不能ではなく追加実装が必要な`adaptable`項目として扱います。
+Win11の隔離probeでは、primary trace、Y2軸、split panel、zoom/pan、integration region、retention/fixed-size text、vertical marker、curve picking、snapshotを再現できました。gradientはcustom AxisItemとViewBoxを追加し、Y2と同時にB%用の第三独立scaleとして共有X軸上へ重ねられることも確認済みです。
 
 ### 移動・ズーム
 

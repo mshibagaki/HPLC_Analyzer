@@ -94,7 +94,11 @@ from hplc_app.renderer_benchmark import (
     benchmark_suite,
     synthetic_chromatograms,
 )
-from hplc_app.renderer_parity import FEATURES, unavailable_parity_report
+from hplc_app.renderer_parity import (
+    FEATURES,
+    three_axis_ranges_are_independent,
+    unavailable_parity_report,
+)
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.settings_store import (
     ApplicationSettings,
@@ -555,6 +559,22 @@ class AnalysisTests(unittest.TestCase):
             all(
                 value["status"] == "not_tested"
                 for value in report["features"].values()
+            )
+        )
+
+    def test_renderer_parity_verifies_shared_x_and_independent_gradient_scale(self):
+        self.assertTrue(
+            three_axis_ranges_are_independent(
+                ((4.0, 12.0), (-0.1, 1.5)),
+                ((4.0, 12.0), (-0.5, 2.5)),
+                ((4.0, 12.0), (0.0, 100.0)),
+            )
+        )
+        self.assertFalse(
+            three_axis_ranges_are_independent(
+                ((4.0, 12.0), (-0.1, 1.5)),
+                ((4.0, 12.0), (-0.5, 2.5)),
+                ((5.0, 12.0), (0.0, 100.0)),
             )
         )
 

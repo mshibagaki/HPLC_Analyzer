@@ -3118,6 +3118,8 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(hasattr(window, "figure_format_combo"))
         self.assertFalse(hasattr(window, "export_figure_button"))
         self.assertIn(window.export_figure_action, window.file_menu.actions())
+        self.assertIn(window.copy_view_action, window.file_menu.actions())
+        self.assertIn(window.print_view_action, window.file_menu.actions())
         self.assertEqual(window._figure_export_format, "png")
         with tempfile.TemporaryDirectory() as directory:
             window._save_directory = directory
@@ -3146,6 +3148,35 @@ class GuiTests(unittest.TestCase):
                 report_chooser.call_args.args[2],
                 str(Path(directory) / "analysis_report.pdf"),
             )
+        window.project.dirty = False
+        window.close()
+
+    def test_current_view_can_be_copied_and_printed_as_screen_snapshot(self):
+        window = self.make_window()
+        window.copy_view_to_clipboard()
+        clipboard_pixmap = QtWidgets.QApplication.clipboard().pixmap()
+        self.assertFalse(clipboard_pixmap.isNull())
+        self.assertGreater(clipboard_pixmap.width(), 0)
+
+        mode = (
+            QtPrintSupport.QPrinter.PrinterMode.HighResolution
+            if QT_API == 6
+            else QtPrintSupport.QPrinter.HighResolution
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            printer = QtPrintSupport.QPrinter(mode)
+            pdf_format = (
+                QtPrintSupport.QPrinter.OutputFormat.PdfFormat
+                if QT_API == 6
+                else QtPrintSupport.QPrinter.PdfFormat
+            )
+            output = str(Path(directory) / "current-view.pdf")
+            printer.setOutputFormat(pdf_format)
+            printer.setOutputFileName(output)
+            window._draw_view_pixmap_to_printer(
+                printer, window._current_view_pixmap()
+            )
+            self.assertTrue(Path(output).read_bytes().startswith(b"%PDF"))
         window.project.dirty = False
         window.close()
 

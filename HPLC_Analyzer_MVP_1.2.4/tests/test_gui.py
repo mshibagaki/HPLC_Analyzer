@@ -996,6 +996,34 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_fraction_collector_range_draws_interval_lines_and_undoes(self):
+        window = self.make_window()
+        original_peaks = deepcopy(window.project.datasets[0].peaks)
+        window.fraction_interval_spin.setValue(1.5)
+        window.fraction_button.setChecked(True)
+        self.assertEqual(window._span_selector_mode, "fraction")
+        window._on_fraction_span_selected(2.0, 8.0)
+        self.assertEqual(len(window.project.fraction_regions), 1)
+        region = window.project.fraction_regions[0]
+        self.assertEqual((region.start_min, region.end_min), (2.0, 8.0))
+        self.assertEqual(region.interval_min, 1.5)
+        cyan_lines = [
+            line
+            for line in window.axes.lines
+            if line.get_color() == "#0891b2"
+        ]
+        positions = sorted(
+            {round(float(line.get_xdata()[0]), 6) for line in cyan_lines}
+        )
+        self.assertEqual(positions, [2.0, 3.5, 5.0, 6.5, 8.0])
+        self.assertEqual(window.project.datasets[0].peaks, original_peaks)
+        window.clear_fraction_regions()
+        self.assertEqual(window.project.fraction_regions, [])
+        window.undo()
+        self.assertEqual(len(window.project.fraction_regions), 1)
+        window.project.dirty = False
+        window.close()
+
     def test_numeric_auv_and_independent_time_shift(self):
         window = self.make_window()
         dataset = window.project.datasets[0]

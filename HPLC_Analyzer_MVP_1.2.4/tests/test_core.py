@@ -41,6 +41,7 @@ from hplc_app.exporters import (
 from hplc_app.models import (
     AnalysisMethod,
     Dataset,
+    FractionRegion,
     GradientPoint,
     MeasurementMetadata,
     PeakRegion,
@@ -1607,6 +1608,9 @@ class ProjectTests(unittest.TestCase):
                 color="#123456",
             )
         ]
+        project.fraction_regions = [
+            FractionRegion(start_min=2.0, end_min=8.0, interval_min=1.5)
+        ]
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "new_fields.hplcproj")
             save_project(path, project)
@@ -1626,6 +1630,10 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.annotations[0].text, "LL-37")
             self.assertEqual(loaded.annotations[0].dataset_id, dataset.id)
             self.assertEqual(loaded.annotations[0].font_family, "Arial")
+            self.assertEqual(len(loaded.fraction_regions), 1)
+            self.assertEqual(loaded.fraction_regions[0].start_min, 2.0)
+            self.assertEqual(loaded.fraction_regions[0].end_min, 8.0)
+            self.assertEqual(loaded.fraction_regions[0].interval_min, 1.5)
 
     def test_peak_area_seconds_round_trip_and_v113_migration(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))

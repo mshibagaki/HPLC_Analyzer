@@ -269,6 +269,23 @@ class TextAnnotation:
 
 
 @dataclass
+class FractionRegion:
+    """A selected collection window divided into fixed time intervals."""
+
+    id: str = field(default_factory=new_id)
+    start_min: float = 0.0
+    end_min: float = 0.0
+    interval_min: float = 1.0
+
+    def __post_init__(self):
+        values = (self.start_min, self.end_min, self.interval_min)
+        if not all(np.isfinite(float(value)) for value in values):
+            raise ValueError("Fraction range values must be finite")
+        if float(self.interval_min) <= 0:
+            raise ValueError("Fraction interval must be positive")
+
+
+@dataclass
 class Dataset:
     id: str = field(default_factory=new_id)
     run_id: str = ""
@@ -433,6 +450,7 @@ class Project:
     runs: List[Run] = field(default_factory=list)
     datasets: List[Dataset] = field(default_factory=list)
     annotations: List[TextAnnotation] = field(default_factory=list)
+    fraction_regions: List[FractionRegion] = field(default_factory=list)
     condition_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     gradient_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     project_path: str = ""

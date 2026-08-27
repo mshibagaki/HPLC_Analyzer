@@ -14,6 +14,7 @@ from .models import (
     AnalysisMethod,
     Dataset,
     GradientPoint,
+    FractionRegion,
     MeasurementMetadata,
     PeakRegion,
     Project,
@@ -151,6 +152,9 @@ def save_project(path: str, project: Project) -> None:
         "condition_presets": sanitize_condition_presets(project.condition_presets),
         "gradient_presets": project.gradient_presets,
         "annotations": [asdict(annotation) for annotation in project.annotations],
+        "fraction_regions": [
+            asdict(region) for region in project.fraction_regions
+        ],
         "datasets": [],
     }
     used_names = set()
@@ -242,6 +246,17 @@ def load_project(path: str) -> Project:
                         )
                         for annotation in (manifest.get("annotations", []) or [])
                         if isinstance(annotation, dict)
+                    ],
+                    fraction_regions=[
+                        FractionRegion(
+                            **{
+                                key: value
+                                for key, value in region.items()
+                                if key in FractionRegion.__dataclass_fields__
+                            }
+                        )
+                        for region in (manifest.get("fraction_regions", []) or [])
+                        if isinstance(region, dict)
                     ],
                     project_path=source,
                 )

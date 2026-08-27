@@ -205,7 +205,14 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
         if owner is None or not getattr(owner, "_view_initialized", False):
             return
         target = owner._pan_target(event)
-        if target not in ("x", "y1", "y2", "plot"):
+        if target not in (
+            "x",
+            "y1",
+            "y2",
+            "plot",
+            "plot_y1",
+            "plot_y2",
+        ):
             return
         if self._nav_stack() is None:
             self.push_current()
@@ -247,19 +254,19 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
             return
         target = state["target"]
         bbox = owner.axes.bbox
-        if target in ("x", "plot"):
+        if target in ("x", "plot", "plot_y1", "plot_y2"):
             owner.axes.set_xlim(
                 *self._shifted_limits(
                     state["x"], float(event.x) - state["start_x"], bbox.width
                 )
             )
-        if target in ("y1", "plot"):
+        if target in ("y1", "plot", "plot_y1"):
             owner.axes.set_ylim(
                 *self._shifted_limits(
                     state["y1"], float(event.y) - state["start_y"], bbox.height
                 )
             )
-        if target in ("y2", "plot") and owner.axes_right is not None:
+        if target in ("y2", "plot", "plot_y2") and owner.axes_right is not None:
             y2_limits = state.get("y2")
             if y2_limits is not None:
                 owner.axes_right.set_ylim(
@@ -956,6 +963,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode_combo = QtWidgets.QComboBox()
         self.view_mode_combo.addItem("Single", "single")
         self.view_mode_combo.addItem("Overview + detail", "overview_detail")
+        self.view_mode_combo.addItem("Split Y1 / Y2", "split_y_axes")
         self.move_trace_button = QtWidgets.QPushButton()
         self.move_trace_button.setCheckable(True)
         self.move_axis_combo = QtWidgets.QComboBox()
@@ -1497,6 +1505,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode_label.setText(t("view_mode"))
         self.view_mode_combo.setItemText(0, t("view_single"))
         self.view_mode_combo.setItemText(1, t("view_overview_detail"))
+        self.view_mode_combo.setItemText(2, t("view_split_y_axes"))
         self.move_trace_button.setText(t("move_trace"))
         self.pointer_action.setText(t("pointer_line"))
         self.pointer_action.setToolTip(t("pointer_hint"))
@@ -2204,6 +2213,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._annotation_drag = None
         self._overview_view_patch = None
         self.figure.clear()
+        self._split_y_axes = self.project.method.view_mode == "split_y_axes"
+        split_axis = None
         if self.project.method.view_mode == "overview_detail":
             grid = self.figure.add_gridspec(2, 1, height_ratios=(1.0, 3.0))
             self.axes_overview = self.figure.add_subplot(grid[0, 0])
@@ -2216,10 +2227,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 color="#4b5563",
             )
             self.axes_overview.tick_params(axis="x", labelbottom=False)
+        elif self._split_y_axes:
+            self.axes_overview = None
+            grid = self.figure.add_gridspec(2, 1, hspace=0.08)
+            self.axes = self.figure.add_subplot(grid[0, 0])
+            split_axis = self.figure.add_subplot(
+                grid[1, 0], sharex=self.axes
+            )
+            self.axes.tick_params(axis="x", labelbottom=False)
         else:
             self.axes_overview = None
             self.axes = self.figure.add_subplot(111)
-        self.axes_right = None
+        self.axes_right = split_axis
         self.axes_gradient = None
         self.axes_overview_right = None
         self._dataset_lines = {}
@@ -2233,7 +2252,9 @@ class MainWindow(QtWidgets.QMainWindow):
         unit = self.project.method.display_unit
         selected = self._selected_dataset()
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
-        if any(dataset.y_axis == 2 for dataset in visible):
+        if not self._split_y_axes and any(
+            dataset.y_axis == 2 for dataset in visible
+        ):
             self.axes_right = self.axes.twinx()
             if self.axes_overview is not None:
                 self.axes_overview_right = self.axes_overview.twinx()
@@ -2244,8 +2265,13 @@ class MainWindow(QtWidgets.QMainWindow):
             and selected.visible
             and selected.measurement.gradient
         ):
-            self.axes_gradient = self.axes.twinx()
-            if self.axes_right is not None:
+            gradient_host = (
+                self.axes_right
+                if self._split_y_axes and selected.y_axis == 2
+                else self.axes
+            )
+            self.axes_gradient = gradient_host.twinx()
+            if self.axes_right is not None and not self._split_y_axes:
                 self.axes_gradient.spines["right"].set_position(("outward", 62))
 
         plotted = 0
@@ -2406,7 +2432,8 @@ class MainWindow(QtWidgets.QMainWindow):
         x_label, y_label = self._axis_labels()
         axis_1_label = "Y axis 1"
         axis_2_label = "Y axis 2"
-        self.axes.set_xlabel(self.project.method.x_axis_label.strip() or x_label)
+        x_axis = self.axes_right if self._split_y_axes else self.axes
+        x_axis.set_xlabel(self.project.method.x_axis_label.strip() or x_label)
         self.axes.set_ylabel(
             self.project.method.y_axis_1_label.strip() or "%s — %s" % (y_label, axis_1_label)
         )
@@ -2428,6 +2455,8 @@ class MainWindow(QtWidgets.QMainWindow):
             full_bounds = self._full_x_bounds()
             self.axes.set_xlim(*full_bounds)
             self.axes.margins(x=0)
+            if self._split_y_axes and self.axes_right is not None:
+                self.axes_right.margins(x=0)
             if self.axes_overview is not None:
                 self.axes_overview.set_xlim(*full_bounds)
                 self.axes_overview.margins(x=0)
@@ -2515,8 +2544,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_edit_span_selected if mode == "edit" else self._on_span_selected
         )
         color = "#f59e0b" if mode == "edit" else "#2563eb"
+        selected = self._selected_dataset()
+        selector_axis = (
+            self.axes_right
+            if selected is not None
+            and selected.y_axis == 2
+            and self.axes_right is not None
+            else self.axes
+        )
         self._span_selector = SpanSelector(
-            self.axes,
+            selector_axis,
             callback,
             "horizontal",
             useblit=True,
@@ -3108,6 +3145,26 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 return "x"
 
+        if getattr(self, "_split_y_axes", False) and self.axes_right is not None:
+            edge = 5.0
+            for axis, y_target, plot_target in (
+                (self.axes, "y1", "plot_y1"),
+                (self.axes_right, "y2", "plot_y2"),
+            ):
+                bbox = axis.bbox
+                if (
+                    bbox.x0 - edge <= x_value <= bbox.x1 + edge
+                    and bbox.y0 - edge <= y_value <= bbox.y0 + edge
+                ):
+                    return "x"
+                if (
+                    bbox.y0 <= y_value <= bbox.y1
+                    and bbox.x0 - edge <= x_value <= bbox.x0 + edge
+                ):
+                    return y_target
+                if self._display_point_in_bbox(x_value, y_value, bbox):
+                    return plot_target
+
         plot_bbox = self.axes.bbox
         edge = 5.0
         if (
@@ -3214,6 +3271,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 zoom_mode="y",
                 y_axes=[self.axes_right],
                 y_centers={self.axes_right: center_y},
+            )
+            return
+
+        if target in ("plot_y1", "plot_y2"):
+            target_axis = self.axes if target == "plot_y1" else self.axes_right
+            _axis_x, center_y = self._event_center_for_axis(event, target_axis)
+            self._zoom_view(
+                factor,
+                center_x,
+                source_axis=target_axis,
+                center_y=center_y,
+                zoom_mode="both",
+                y_axes=[target_axis],
+                y_centers={target_axis: center_y},
             )
             return
 

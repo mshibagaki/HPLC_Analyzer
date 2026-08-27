@@ -1351,6 +1351,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.work_directories_action = self._action(self.edit_work_directories)
         self.reload_work_directories_action = self._action(self.reload_work_directories)
         self.export_figure_action = self._action(self.export_figure)
+        self.copy_view_action = self._action(self.copy_view_to_clipboard)
+        self.print_view_action = self._action(self.print_current_view)
         self.export_peaks_action = self._action(self.export_peaks)
         self.export_trace_action = self._action(self.export_trace)
         self.export_traces_action = self._action(self.export_visible_traces)
@@ -1374,6 +1376,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.file_menu.addSeparator()
         for action in (
             self.export_figure_action,
+            self.copy_view_action,
+            self.print_view_action,
             self.export_peaks_action,
             self.export_trace_action,
             self.export_traces_action,
@@ -1439,6 +1443,8 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.work_directories_action, "work_directories"),
             (self.reload_work_directories_action, "reload_work_directories"),
             (self.export_figure_action, "export_figure"),
+            (self.copy_view_action, "copy_view"),
+            (self.print_view_action, "print_view"),
             (self.export_peaks_action, "export_peaks"),
             (self.export_trace_action, "export_trace"),
             (self.export_traces_action, "export_traces"),
@@ -4162,6 +4168,79 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
         finally:
             self._request_canvas_draw(force=True)
+
+    def _current_view_pixmap(self):
+        self.canvas.draw()
+        return self.canvas.grab()
+
+    def copy_view_to_clipboard(self):
+        pixmap = self._current_view_pixmap()
+        QtWidgets.QApplication.clipboard().setPixmap(pixmap)
+        self.statusBar().showMessage(
+            "現在の表示画面をクリップボードへコピーしました。"
+            if self._application_language == "ja"
+            else "The current view was copied to the clipboard.",
+            5000,
+        )
+
+    @staticmethod
+    def _draw_view_pixmap_to_printer(printer, pixmap):
+        painter = QtGui.QPainter()
+        if not painter.begin(printer):
+            raise RuntimeError("Could not initialize the selected printer")
+        try:
+            unit = (
+                QtPrintSupport.QPrinter.Unit.DevicePixel
+                if QT_API == 6
+                else QtPrintSupport.QPrinter.DevicePixel
+            )
+            page_rect = printer.pageRect(unit)
+            keep_aspect = (
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio
+                if QT_API == 6
+                else QtCore.Qt.KeepAspectRatio
+            )
+            smooth = (
+                QtCore.Qt.TransformationMode.SmoothTransformation
+                if QT_API == 6
+                else QtCore.Qt.SmoothTransformation
+            )
+            target_size = pixmap.size()
+            target_size.scale(
+                int(page_rect.width()), int(page_rect.height()), keep_aspect
+            )
+            scaled = pixmap.scaled(target_size, keep_aspect, smooth)
+            x = page_rect.x() + (page_rect.width() - scaled.width()) / 2.0
+            y = page_rect.y() + (page_rect.height() - scaled.height()) / 2.0
+            painter.drawPixmap(QtCore.QPointF(x, y), scaled)
+        finally:
+            painter.end()
+
+    def print_current_view(self):
+        mode = (
+            QtPrintSupport.QPrinter.PrinterMode.HighResolution
+            if QT_API == 6
+            else QtPrintSupport.QPrinter.HighResolution
+        )
+        printer = QtPrintSupport.QPrinter(mode)
+        dialog = QtPrintSupport.QPrintDialog(printer, self)
+        dialog.setWindowTitle(self.translator("print_view"))
+        if not dialog_exec(dialog):
+            return
+        try:
+            self._draw_view_pixmap_to_printer(
+                printer, self._current_view_pixmap()
+            )
+            self.statusBar().showMessage(
+                "表示画面の印刷ジョブを送信しました。"
+                if self._application_language == "ja"
+                else "The current-view print job was sent.",
+                7000,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, self.translator("error"), str(exc)
+            )
 
     def export_peaks(self):
         if not any(dataset.peaks for dataset in self.project.datasets):

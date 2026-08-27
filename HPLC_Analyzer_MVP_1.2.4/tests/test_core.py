@@ -103,6 +103,7 @@ from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import check_for_updates, parse_stable_version
 from hplc_app.settings_store import (
     ApplicationSettings,
+    AUTOMATIC_UPDATE_CHECK,
     DATABASE_PATH,
     FIGURE_FORMAT,
     IMPORT_DIRECTORY,
@@ -2837,6 +2838,7 @@ class ApplicationSettingsTests(unittest.TestCase):
     def test_all_application_keys_round_trip_without_renaming_legacy_keys(self):
         expected_keys = {
             "ui/language",
+            "updates/automatic_check",
             "paths/import_directory",
             "paths/save_directory",
             "paths/last_import_directory",
@@ -2854,6 +2856,7 @@ class ApplicationSettingsTests(unittest.TestCase):
         store = ApplicationSettings(backend)
         values = {
             UI_LANGUAGE: "en",
+            AUTOMATIC_UPDATE_CHECK: False,
             IMPORT_DIRECTORY: "C:/HPLC/import",
             SAVE_DIRECTORY: "C:/HPLC/save",
             LAST_IMPORT_DIRECTORY: "C:/HPLC/last-import",
@@ -2868,6 +2871,7 @@ class ApplicationSettingsTests(unittest.TestCase):
         }
         self.assertTrue(store.set_many(values))
         self.assertEqual(store.get(UI_LANGUAGE), "en")
+        self.assertFalse(store.get(AUTOMATIC_UPDATE_CHECK))
         self.assertEqual(store.get(IMPORT_DIRECTORY), "C:/HPLC/import")
         self.assertEqual(store.get(SAVE_DIRECTORY), "C:/HPLC/save")
         self.assertEqual(store.get(LAST_IMPORT_DIRECTORY), "C:/HPLC/last-import")

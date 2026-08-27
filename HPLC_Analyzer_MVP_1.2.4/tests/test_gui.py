@@ -335,6 +335,57 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_update_preferences_and_result_presentation_are_non_mutating(self):
+        window = self.make_window()
+        dialog = PreferencesDialog(
+            window.project.method,
+            language="en",
+            automatic_update_check=False,
+        )
+        self.assertFalse(dialog.automatic_update_checkbox.isChecked())
+        dialog.automatic_update_checkbox.setChecked(True)
+        dialog._accept()
+        self.assertTrue(dialog.automatic_update_check_value)
+
+        update = {
+            "status": "update_available",
+            "latest_version": "1.3.0",
+            "release_url": "https://github.com/mshibagaki/HPLC_Analyzer/releases/tag/v1.3.0",
+            "reason": "",
+        }
+        with patch.object(
+            QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Yes
+        ) as question, patch.object(QtGui.QDesktopServices, "openUrl") as open_url:
+            window._present_update_check_result(update, manual=True)
+        question.assert_called_once()
+        open_url.assert_called_once()
+        self.assertIn("github.com", open_url.call_args[0][0].toString())
+
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            window._present_update_check_result(
+                {"status": "error", "reason": "offline"}, manual=False
+            )
+        warning.assert_not_called()
+        window._update_check_thread = object()
+        self.assertFalse(window.check_for_updates())
+        window._update_check_thread = None
+        current = {
+            "status": "current",
+            "latest_version": "1.2.4",
+            "release_url": "https://github.com/mshibagaki/HPLC_Analyzer/releases/tag/v1.2.4",
+            "reason": "",
+        }
+        with patch("hplc_app.gui.check_for_updates", return_value=current):
+            self.assertTrue(window.check_for_updates(manual=False))
+            elapsed = QtCore.QElapsedTimer()
+            elapsed.start()
+            while window._update_check_thread is not None and elapsed.elapsed() < 3000:
+                QtWidgets.QApplication.processEvents()
+        self.assertIsNone(window._update_check_thread)
+        self.assertTrue(window.check_updates_action.isEnabled())
+        window.project.dirty = False
+        window.close()
+
     def test_application_language_persists_without_dirtying_or_rewriting_project(self):
         class MemorySettings:
             def __init__(self):

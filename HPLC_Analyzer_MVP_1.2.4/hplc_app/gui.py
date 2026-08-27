@@ -95,6 +95,7 @@ from .rendering import (
 )
 from .settings_store import (
     ApplicationSettings,
+    AUTOMATIC_UPDATE_CHECK,
     DATABASE_PATH,
     FIGURE_FORMAT,
     IMPORT_DIRECTORY,
@@ -108,6 +109,7 @@ from .settings_store import (
     SAVE_DIRECTORY,
     UI_LANGUAGE,
 )
+from .update_check import check_for_updates
 from .screen_renderer import create_screen_render_surface
 from .qt_compat import (
     QAction,
@@ -143,6 +145,15 @@ COLORS = (
     "#7f7f7f",
     "#bcbd22",
 )
+
+
+class UpdateCheckWorker(QtCore.QObject):
+    """Run the network-only update check outside the GUI thread."""
+
+    finished = QtCore.Signal(dict)
+
+    def run(self):
+        self.finished.emit(check_for_updates(APP_VERSION))
 
 INTEGRATION_BOUNDARY_COLOR = "#9ca3af"
 AVAILABLE_PLOT_FONTS = {font.name for font in font_manager.fontManager.ttflist}
@@ -480,6 +491,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._database_path = self._settings.get(DATABASE_PATH)
         self._figure_export_format = self._settings.get(FIGURE_FORMAT)
         self._render_quality = self._settings.get(RENDERING_QUALITY)
+        self._automatic_update_check = self._settings.get(AUTOMATIC_UPDATE_CHECK)
+        self._update_check_thread = None
+        self._update_check_worker = None
+        self._automatic_update_timer = QtCore.QTimer(self)
+        self._automatic_update_timer.setSingleShot(True)
+        self._automatic_update_timer.timeout.connect(
+            lambda: self.check_for_updates(False)
+        )
+        self._automatic_update_scheduled = False
         self.axes_right = None
         self.axes_gradient = None
         self._overview_dataset_lines = {}
@@ -1469,8 +1489,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.help_menu = bar.addMenu("")
         self.quantitation_help_action = self._action(self.show_quantitation_help)
+        self.check_updates_action = self._action(
+            lambda _checked=False: self.check_for_updates(True)
+        )
         self.about_action = self._action(self.about)
         self.help_menu.addAction(self.quantitation_help_action)
+        self.help_menu.addAction(self.check_updates_action)
         self.help_menu.addSeparator()
         self.help_menu.addAction(self.about_action)
         self._update_undo_actions()
@@ -1506,6 +1530,7 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.japanese_action, "japanese"),
             (self.english_action, "english"),
             (self.quantitation_help_action, "quantitation_help"),
+            (self.check_updates_action, "check_updates"),
             (self.about_action, "about"),
         )
         for action, key in action_texts:
@@ -4202,19 +4227,32 @@ class MainWindow(QtWidgets.QMainWindow):
             save_directory=self._save_directory,
             database_path=self._database_path,
             render_quality=self._render_quality,
+            automatic_update_check=self._automatic_update_check,
         )
         if not dialog_exec(dialog):
             return
         self._import_directory = dialog.import_directory_value
         self._save_directory = dialog.save_directory_value
         self._database_path = dialog.database_path_value
+        self._automatic_update_check = dialog.automatic_update_check_value
         self._settings.set_many(
             {
                 IMPORT_DIRECTORY: self._import_directory,
                 SAVE_DIRECTORY: self._save_directory,
                 DATABASE_PATH: self._database_path,
+                AUTOMATIC_UPDATE_CHECK: self._automatic_update_check,
             }
         )
+        if not self._automatic_update_check:
+            self._automatic_update_timer.stop()
+            self._automatic_update_scheduled = False
+        if (
+            self._automatic_update_check
+            and self.isVisible()
+            and not self._automatic_update_scheduled
+        ):
+            self._automatic_update_scheduled = True
+            self._automatic_update_timer.start(1500)
         render_quality_changed = dialog.render_quality_value != self._render_quality
         self._set_render_quality(
             dialog.render_quality_value,
@@ -4234,6 +4272,71 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_title()
         if render_quality_changed:
             self._plot()
+
+    def check_for_updates(self, manual=True):
+        """Start one asynchronous update check and return without blocking Qt."""
+
+        if self._update_check_thread is not None:
+            return False
+        thread = QtCore.QThread(self)
+        worker = UpdateCheckWorker()
+        worker.moveToThread(thread)
+        self._update_check_thread = thread
+        self._update_check_worker = worker
+        self.check_updates_action.setEnabled(False)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda result: self._present_update_check_result(result, bool(manual))
+        )
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(lambda: self._update_check_complete(thread))
+        thread.start()
+        return True
+
+    def _update_check_complete(self, thread):
+        if self._update_check_thread is thread:
+            self._update_check_thread = None
+            self._update_check_worker = None
+            self.check_updates_action.setEnabled(True)
+        thread.deleteLater()
+
+    def _present_update_check_result(self, result, manual):
+        status = result.get("status")
+        if status == "update_available":
+            answer = QtWidgets.QMessageBox.question(
+                self,
+                APP_NAME,
+                self.translator(
+                    "update_available", version=result.get("latest_version", "")
+                ),
+            )
+            if answer == QtWidgets.QMessageBox.Yes:
+                QtGui.QDesktopServices.openUrl(
+                    QtCore.QUrl(str(result.get("release_url", "")))
+                )
+        elif manual and status == "current":
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("update_current")
+            )
+        elif manual and status == "no_release":
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("update_no_release")
+            )
+        elif manual:
+            QtWidgets.QMessageBox.warning(
+                self,
+                APP_NAME,
+                self.translator(
+                    "update_failed", reason=result.get("reason", "")
+                ),
+            )
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._automatic_update_check and not self._automatic_update_scheduled:
+            self._automatic_update_scheduled = True
+            self._automatic_update_timer.start(1500)
 
     def _database_not_configured(self):
         QtWidgets.QMessageBox.information(
@@ -4943,6 +5046,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         if self._confirm_unsaved():
+            self._automatic_update_timer.stop()
             self._open_windows.discard(self)
             event.accept()
         else:

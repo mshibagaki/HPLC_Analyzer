@@ -848,6 +848,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hide_all_button = QtWidgets.QPushButton()
         self.move_dataset_up_button = QtWidgets.QPushButton()
         self.move_dataset_down_button = QtWidgets.QPushButton()
+        self.group_run_button = QtWidgets.QPushButton()
+        self.ungroup_run_button = QtWidgets.QPushButton()
         button_grid.addWidget(self.import_button, 0, 0)
         button_grid.addWidget(self.remove_button, 0, 1)
         button_grid.addWidget(self.metadata_button, 1, 0)
@@ -858,6 +860,8 @@ class MainWindow(QtWidgets.QMainWindow):
         button_grid.addWidget(self.hide_all_button, 3, 1)
         button_grid.addWidget(self.move_dataset_up_button, 4, 0)
         button_grid.addWidget(self.move_dataset_down_button, 4, 1)
+        button_grid.addWidget(self.group_run_button, 5, 0)
+        button_grid.addWidget(self.ungroup_run_button, 5, 1)
         left_layout.addLayout(button_grid)
         self.import_button.clicked.connect(self.import_ascii)
         self.remove_button.clicked.connect(self.remove_dataset)
@@ -873,6 +877,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.move_dataset_down_button.clicked.connect(
             lambda: self.move_selected_dataset(1)
         )
+        self.group_run_button.clicked.connect(self.group_selected_runs)
+        self.ungroup_run_button.clicked.connect(self.ungroup_selected_runs)
         splitter.addWidget(left)
 
         right = QtWidgets.QWidget()
@@ -1446,6 +1452,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.hide_all_button.setText(t("hide_all"))
         self.move_dataset_up_button.setText(t("move_up"))
         self.move_dataset_down_button.setText(t("move_down"))
+        self.group_run_button.setText(t("group_run"))
+        self.ungroup_run_button.setText(t("ungroup_run"))
         self.display_group.setTitle(t("display_group"))
         self.navigation_group.setTitle(t("navigation_group"))
         self.integration_group.setTitle(t("integration_group"))
@@ -1657,6 +1665,69 @@ class MainWindow(QtWidgets.QMainWindow):
                 if 0 <= index.row() < len(self.project.datasets)
             }
         )
+
+    def group_selected_runs(self):
+        rows = self._selected_dataset_rows()
+        current = self.dataset_table.currentRow()
+        if len(rows) < 2 or current not in rows:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("select_run_group")
+            )
+            return
+        datasets = [self.project.datasets[row] for row in rows]
+        if len({dataset.run_id for dataset in datasets}) < 2:
+            return
+        target = self.project.run_for(self.project.datasets[current])
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            APP_NAME,
+            self.translator(
+                "confirm_run_group",
+                count=len(datasets),
+                run_id=target.id,
+                label=target.label,
+            ),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        before = self._capture_analysis_state()
+        self.project.group_datasets_into_run(datasets, target)
+        self._push_undo_snapshot(
+            before, self._history_label("Runを統合", "Group Runs")
+        )
+        self.project.dirty = True
+        self._refresh_all(current)
+
+    def ungroup_selected_runs(self):
+        rows = self._selected_dataset_rows()
+        if not rows:
+            return
+        run_counts = {}
+        for dataset in self.project.datasets:
+            run_counts[dataset.run_id] = run_counts.get(dataset.run_id, 0) + 1
+        datasets = [
+            self.project.datasets[row]
+            for row in rows
+            if run_counts.get(self.project.datasets[row].run_id, 0) > 1
+        ]
+        if not datasets:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            APP_NAME,
+            self.translator("confirm_run_ungroup", count=len(datasets)),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return
+        before = self._capture_analysis_state()
+        self.project.ungroup_datasets(datasets)
+        self._push_undo_snapshot(
+            before, self._history_label("Runを分離", "Ungroup Runs")
+        )
+        self.project.dirty = True
+        self._refresh_all(rows[0])
 
     def _dataset_item_changed(self, item: QtWidgets.QTableWidgetItem):
         if self._updating_table:

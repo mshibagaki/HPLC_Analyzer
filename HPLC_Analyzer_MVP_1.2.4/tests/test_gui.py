@@ -2362,6 +2362,77 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(window.project.dirty)
         window.close()
 
+    def test_run_group_and_ungroup_preserve_channel_values_and_are_undoable(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        first.label = "Authoritative"
+        first.measurement.column_name = "C4"
+        second.measurement.column_name = "Other"
+        first_wavelength = first.measurement.wavelength_nm
+        second_wavelength = second.measurement.wavelength_nm
+        original_run_ids = [first.run_id, second.run_id]
+        window._refresh_dataset_table(0)
+        model = window.dataset_table.model()
+        selection = window.dataset_table.selectionModel()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+        window.dataset_table.setCurrentCell(0, 0)
+        selection.select(model.index(1, 0), select | rows)
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ) as question:
+            window.group_selected_runs()
+        self.assertIn("Authoritative", question.call_args.args[2])
+        self.assertEqual(first.run_id, second.run_id)
+        self.assertEqual(second.label, "Authoritative")
+        self.assertEqual(second.measurement.column_name, "C4")
+        self.assertEqual(first.measurement.wavelength_nm, first_wavelength)
+        self.assertEqual(second.measurement.wavelength_nm, second_wavelength)
+        self.assertEqual(len(window.project.runs), 1)
+        self.assertEqual(len(window._undo_stack), 1)
+        window.undo()
+        self.assertEqual(
+            [dataset.run_id for dataset in window.project.datasets],
+            original_run_ids,
+        )
+        window.redo()
+        self.assertEqual(
+            window.project.datasets[0].run_id,
+            window.project.datasets[1].run_id,
+        )
+
+        window.dataset_table.clearSelection()
+        window.dataset_table.setCurrentCell(1, 0)
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ):
+            window.ungroup_selected_runs()
+        self.assertNotEqual(
+            window.project.datasets[0].run_id,
+            window.project.datasets[1].run_id,
+        )
+        self.assertEqual(window.project.datasets[1].label, "Authoritative")
+        self.assertEqual(window.project.datasets[1].measurement.column_name, "C4")
+        window.undo()
+        self.assertEqual(
+            window.project.datasets[0].run_id,
+            window.project.datasets[1].run_id,
+        )
+        window.project.dirty = False
+        window.close()
+
     def test_multiple_selected_dataset_rows_cannot_be_drag_reordered(self):
         window = self.make_window()
         window.show()

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import sys
+from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
@@ -21,6 +22,16 @@ WAVELENGTH_COLOR_PALETTES = {
     214: ("#d62728", "#ef4444", "#b91c1c", "#f87171"),
     280: ("#1f77b4", "#2563eb", "#1d4ed8", "#60a5fa"),
 }
+
+
+@dataclass(frozen=True)
+class ScreenRendererCapabilities:
+    """Backend-neutral features exposed by an interactive screen surface."""
+
+    backend_id: str
+    supports_vector_export: bool = False
+    supports_native_snapshot: bool = False
+    supports_matplotlib_artists: bool = False
 
 
 def default_trace_color(wavelength_nm, ordinal: int = 0) -> Optional[str]:

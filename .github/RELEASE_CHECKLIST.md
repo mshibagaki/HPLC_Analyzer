@@ -6,12 +6,15 @@ Copy this checklist into the GitHub Release draft or a linked release-evidence I
 
 - [ ] Candidate version: `__________`
 - [ ] Stable version: `__________`
-- [ ] `VERIFIED_COMMIT` (40-character SHA): `________________________________________`
+- [ ] `VERIFIED_RC_COMMIT` (40-character SHA): `________________________________________`
+- [ ] `VERIFIED_STABLE_COMMIT` containing the Stable `APP_VERSION` (40-character SHA): `________________________________________`
 - [ ] Final RC annotated tag: `__________`
 - [ ] Stable annotated tag: `__________`
 - [ ] RC GitHub Release has the prerelease flag enabled.
 - [ ] Stable GitHub Release will have the prerelease flag disabled.
-- [ ] `git rev-parse "FINAL_RC_TAG^{commit}"`, `git rev-parse "STABLE_TAG^{commit}"`, and `VERIFIED_COMMIT` are identical.
+- [ ] `git rev-parse "FINAL_RC_TAG^{commit}"` equals `VERIFIED_RC_COMMIT`.
+- [ ] `git rev-parse "STABLE_TAG^{commit}"` equals `VERIFIED_STABLE_COMMIT`; it is expected to differ from the RC commit because `APP_VERSION` changed from RC to Stable.
+- [ ] Every required gate was repeated on assets built from `VERIFIED_STABLE_COMMIT` before the Stable tag was created.
 - [ ] If the RC changed, a new RC number was used and every gate was repeated.
 
 ## Versions and formats

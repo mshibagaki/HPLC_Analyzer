@@ -16,6 +16,9 @@ class ReleaseDocumentationTests(unittest.TestCase):
             "annotated tag",
             'v1.3.0-rc.1^{commit}',
             'v1.3.0^{commit}',
+            "1.3.0-dev.1",
+            "VERIFIED_STABLE_COMMIT",
+            "Never tag the earlier `rc` commit as Stable",
             "Windows 11 x64",
             "Windows 7 SP1 32-bit/Core 2",
             "SHA256SUMS.txt",
@@ -31,7 +34,8 @@ class ReleaseDocumentationTests(unittest.TestCase):
             encoding="utf-8"
         )
         for required in (
-            "VERIFIED_COMMIT",
+            "VERIFIED_RC_COMMIT",
+            "VERIFIED_STABLE_COMMIT",
             "Project schema",
             "Preset format",
             "Lab database schema",

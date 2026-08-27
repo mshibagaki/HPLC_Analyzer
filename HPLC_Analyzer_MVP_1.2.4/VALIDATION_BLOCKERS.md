@@ -4,6 +4,8 @@ Updated: 2026-08-28
 
 This file records work that source changes and automated CI cannot complete alone. An unavailable physical or external gate is `BLOCKED — evidence required`; it is never treated as passed or silently marked not applicable. Release execution remains governed by `.github/RELEASE_PROCESS.md` and `.github/RELEASE_CHECKLIST.md`.
 
+Version context: latest published Stable is `1.2.4`; current main development line is `1.3.0-dev.1`. No `1.3.0` tag or Release exists yet.
+
 ## Current hard blockers
 
 | Area | Status | Why source work cannot finish it | Evidence or decision required |

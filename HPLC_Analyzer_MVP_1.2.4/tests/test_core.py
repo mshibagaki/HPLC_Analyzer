@@ -59,10 +59,12 @@ from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogr
 from hplc_app.peak_fitting import emg_profile, fit_peak, gaussian_profile
 from hplc_app.preset_store import (
     apply_preset_operation,
+    build_preset_package,
     filter_preset_names,
     load_preset_store,
     load_preset_store_with_metadata,
     merge_preset_sources,
+    merge_preset_package,
     record_preset_saved,
     record_preset_used,
     save_preset_store,
@@ -1122,6 +1124,51 @@ class ProjectTests(unittest.TestCase):
                 renamed, renamed_metadata, "conditions", "duplicate", "renamed", "renamed"
             )
         self.assertEqual(presets, {"original": {"column_name": "C18"}})
+
+    def test_preset_package_export_and_explicit_conflict_policies(self):
+        conditions = {"shared": {"column_name": "old"}}
+        gradients = {"fast": {"gradient": []}}
+        metadata = {
+            "conditions": {"shared": {"id": "old-id", "created_at": "", "updated_at": "", "last_used_at": ""}},
+            "gradients": {"fast": {"id": "gradient-id", "created_at": "", "updated_at": "", "last_used_at": ""}},
+        }
+        package = build_preset_package(conditions, gradients, metadata)
+        package["presets"]["conditions"]["shared"]["column_name"] = "imported"
+        package["presets"]["conditions"]["new"] = {"column_name": "new"}
+        package["metadata"]["conditions"]["new"] = {"id": "new-id"}
+        with self.assertRaisesRegex(ValueError, "requires a policy"):
+            merge_preset_package(conditions, gradients, metadata, package)
+        replaced, merged_gradients, merged_metadata, imported = merge_preset_package(
+            conditions,
+            gradients,
+            metadata,
+            package,
+            {("conditions", "shared"): "replace", ("gradients", "fast"): "skip"},
+        )
+        self.assertEqual(replaced["shared"]["column_name"], "imported")
+        self.assertEqual(replaced["new"]["column_name"], "new")
+        self.assertEqual(merged_metadata["conditions"]["new"]["id"], "new-id")
+        self.assertEqual(merged_gradients, gradients)
+        self.assertEqual(imported["gradients"], [])
+        kept, _gradients, kept_metadata, imported = merge_preset_package(
+            conditions,
+            gradients,
+            metadata,
+            package,
+            {("conditions", "shared"): "keep_both", ("gradients", "fast"): "skip"},
+        )
+        self.assertIn("shared (imported)", kept)
+        self.assertNotEqual(
+            kept_metadata["conditions"]["shared (imported)"]["id"], "old-id"
+        )
+        self.assertIn("shared (imported)", imported["conditions"])
+
+    def test_preset_package_rejects_malformed_input_without_mutation(self):
+        conditions = {"safe": {"column_name": "C18"}}
+        metadata = {"conditions": {}, "gradients": {}}
+        with self.assertRaisesRegex(ValueError, "Unsupported"):
+            merge_preset_package(conditions, {}, metadata, {"format": 99})
+        self.assertEqual(conditions, {"safe": {"column_name": "C18"}})
 
     def test_format1_preset_metadata_migration_rename_and_usage_are_stable(self):
         with tempfile.TemporaryDirectory() as directory:

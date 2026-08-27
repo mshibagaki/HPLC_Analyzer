@@ -430,6 +430,46 @@ class GuiTests(unittest.TestCase):
         self.assertNotIn("fast copy", dialog.gradients)
         dialog.close()
 
+    def test_preset_manager_exports_and_imports_with_explicit_conflict_choice(self):
+        metadata = {
+            "conditions": {"C18": {"id": "condition-id"}},
+            "gradients": {},
+        }
+        dialog = PresetManagerDialog(
+            {"C18": {"column_name": "old"}}, {}, metadata, "en"
+        )
+        dialog.condition_list.setCurrentRow(0)
+        with tempfile.TemporaryDirectory() as directory:
+            export_path = Path(directory) / "presets.json"
+            with patch.object(
+                QtWidgets.QInputDialog,
+                "getItem",
+                return_value=("Selected preset only", True),
+            ), patch.object(
+                QtWidgets.QFileDialog,
+                "getSaveFileName",
+                return_value=(str(export_path), "JSON (*.json)"),
+            ):
+                self.assertTrue(dialog._export_package())
+            package = json.loads(export_path.read_text(encoding="utf-8"))
+            self.assertEqual(set(package["presets"]["conditions"]), {"C18"})
+            self.assertEqual(package["presets"]["gradients"], {})
+
+            package["presets"]["conditions"]["C18"]["column_name"] = "new"
+            export_path.write_text(json.dumps(package), encoding="utf-8")
+            with patch.object(
+                QtWidgets.QFileDialog,
+                "getOpenFileName",
+                return_value=(str(export_path), "JSON (*.json)"),
+            ), patch.object(
+                QtWidgets.QInputDialog,
+                "getItem",
+                return_value=("Replace", True),
+            ):
+                self.assertTrue(dialog._import_package())
+        self.assertEqual(dialog.conditions["C18"]["column_name"], "new")
+        dialog.close()
+
     def test_application_language_persists_without_dirtying_or_rewriting_project(self):
         class MemorySettings:
             def __init__(self):

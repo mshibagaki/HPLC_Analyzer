@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import tempfile
+from types import SimpleNamespace
 import unittest
 
-from hplc_app.import_batch import discover_chromatogram_files
+from hplc_app.import_batch import (
+    discover_chromatogram_files,
+    discover_reload_candidates,
+)
 
 
 class ImportBatchTests(unittest.TestCase):
@@ -36,6 +41,34 @@ class ImportBatchTests(unittest.TestCase):
             missing = Path(directory) / "missing"
             with self.assertRaisesRegex(ValueError, "does not exist"):
                 discover_chromatogram_files(missing)
+
+    def test_reload_classifies_new_duplicate_and_changed_files_across_directories(self):
+        with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
+            first = Path(first_dir) / "first.gcd"
+            duplicate = Path(second_dir) / "duplicate.TXT"
+            changed = Path(second_dir) / "changed.gcd"
+            first.write_bytes(b"new-content")
+            duplicate.write_bytes(b"new-content")
+            changed.write_bytes(b"changed-content")
+            directories = [
+                SimpleNamespace(path=first_dir, label="pac1", recursive=False, enabled=True),
+                SimpleNamespace(path=second_dir, label="pac2", recursive=False, enabled=True),
+            ]
+            existing = [
+                SimpleNamespace(
+                    original_path=str(changed),
+                    sha256=hashlib.sha256(b"old-content").hexdigest(),
+                )
+            ]
+
+            candidates, duplicate_count, changed_paths, errors = (
+                discover_reload_candidates(directories, existing)
+            )
+
+            self.assertEqual(candidates, [(str(first), "pac1")])
+            self.assertEqual(duplicate_count, 1)
+            self.assertEqual(changed_paths, [str(changed)])
+            self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":

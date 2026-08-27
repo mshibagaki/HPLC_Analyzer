@@ -27,6 +27,7 @@ from hplc_app.dialogs import (
     ProjectNamingDialog,
     QuantitationHelpDialog,
     TextAnnotationDialog,
+    WorkDirectoriesDialog,
 )
 from hplc_app.gui import (
     DATASET_LABEL_COLUMN,
@@ -36,7 +37,7 @@ from hplc_app.gui import (
     DATASET_X_SHIFT_COLUMN,
     MainWindow,
 )
-from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation
+from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation, WorkDirectory
 from hplc_app.parser import load_ascii_file
 from hplc_app.preset_store import (
     load_preset_store,
@@ -44,6 +45,7 @@ from hplc_app.preset_store import (
     preset_store_path,
 )
 from hplc_app.qt_compat import (
+    CHECKED,
     ITEM_IS_EDITABLE,
     QT_API,
     STANDARD_SAVE_SHORTCUT,
@@ -2884,6 +2886,74 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(FakeProgressDialog.instances[0].closed)
         window.project.dirty = False
         window.close()
+
+    def test_work_directory_reload_finds_only_new_files_and_holds_changed_paths(self):
+        window = self.make_window()
+        window.project = Project()
+        with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
+            first = Path(first_directory) / "first.TXT"
+            second = Path(second_directory) / "second.TXT"
+            first.write_bytes((SAMPLES / "210601.TXT").read_bytes())
+            second.write_bytes((SAMPLES / "225120.TXT").read_bytes())
+            window.project.work_directories = [
+                WorkDirectory(path=first_directory, label="pac1"),
+                WorkDirectory(path=second_directory, label="pac2"),
+            ]
+
+            candidates, duplicates, changed, errors = (
+                window._work_directory_reload_candidates()
+            )
+            self.assertEqual(
+                candidates,
+                [(str(first), "pac1"), (str(second), "pac2")],
+            )
+            self.assertEqual((duplicates, changed, errors), (0, [], []))
+
+            imported = window._import_chromatogram_paths(
+                [path for path, _label in candidates],
+                group_labels=[label for _path, label in candidates],
+            )
+            self.assertEqual(imported, 2)
+            self.assertEqual(
+                [item.measurement.group for item in window.project.datasets],
+                ["pac1", "pac2"],
+            )
+            candidates, duplicates, changed, errors = (
+                window._work_directory_reload_candidates()
+            )
+            self.assertEqual(candidates, [])
+            self.assertEqual(duplicates, 2)
+            self.assertEqual((changed, errors), ([], []))
+
+            first.write_bytes((SAMPLES / "191720.TXT").read_bytes())
+            candidates, duplicates, changed, errors = (
+                window._work_directory_reload_candidates()
+            )
+            self.assertEqual(candidates, [])
+            self.assertEqual(duplicates, 1)
+            self.assertEqual(changed, [str(first)])
+            self.assertEqual(errors, [])
+        window.project.dirty = False
+        window.close()
+
+    def test_work_directory_dialog_edits_flags_and_order(self):
+        dialog = WorkDirectoriesDialog(
+            [
+                WorkDirectory(path="C:/HPLC/pac1", label="pac1"),
+                WorkDirectory(path="C:/HPLC/pac2", label="pac2"),
+            ],
+            "en",
+        )
+        dialog.table.item(0, 1).setText("first revised")
+        dialog.table.item(0, 3).setCheckState(CHECKED)
+        dialog.table.selectRow(0)
+        dialog._move(1)
+        dialog._accept()
+        self.assertEqual(
+            [entry.label for entry in dialog.directories],
+            ["pac2", "first revised"],
+        )
+        self.assertTrue(dialog.directories[1].recursive)
 
     def test_directory_import_cancel_keeps_completed_files_and_skips_remaining(self):
         window = self.make_window()

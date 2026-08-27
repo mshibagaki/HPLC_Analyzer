@@ -38,6 +38,7 @@ from .dialogs import (
     ProjectNamingDialog,
     QuantitationHelpDialog,
     TextAnnotationDialog,
+    WorkDirectoriesDialog,
     dialog_exec,
 )
 from .database import initialize_database, sync_project_to_database
@@ -48,6 +49,7 @@ from .exporters import (
     export_peak_csv,
 )
 from .i18n import Translator
+from .import_batch import discover_chromatogram_files, discover_reload_candidates
 from .models import (
     Dataset,
     PeakRegion,
@@ -1150,6 +1152,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "method": deepcopy(self.project.method),
             "runs": deepcopy(self.project.runs),
             "annotations": deepcopy(self.project.annotations),
+            "work_directories": deepcopy(self.project.work_directories),
             "condition_presets": deepcopy(self.project.condition_presets),
             "gradient_presets": deepcopy(self.project.gradient_presets),
             "dataset_order": [dataset.id for dataset in self.project.datasets],
@@ -1165,6 +1168,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method = deepcopy(state["method"])
         self.project.runs = deepcopy(state.get("runs", self.project.runs))
         self.project.annotations = deepcopy(state.get("annotations", []))
+        self.project.work_directories = deepcopy(state.get("work_directories", []))
         self.project.condition_presets = deepcopy(state["condition_presets"])
         self.project.gradient_presets = deepcopy(state["gradient_presets"])
         order = state.get("dataset_order", [])
@@ -1317,6 +1321,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.save_as_action = self._action(self.save_project_as)
         self.import_action = self._action(self.import_ascii)
         self.import_directory_action = self._action(self.import_directory)
+        self.work_directories_action = self._action(self.edit_work_directories)
+        self.reload_work_directories_action = self._action(self.reload_work_directories)
         self.export_figure_action = self._action(self.export_figure)
         self.export_peaks_action = self._action(self.export_peaks)
         self.export_trace_action = self._action(self.export_trace)
@@ -1336,6 +1342,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.import_action)
         self.file_menu.addAction(self.import_directory_action)
+        self.file_menu.addAction(self.work_directories_action)
+        self.file_menu.addAction(self.reload_work_directories_action)
         self.file_menu.addSeparator()
         for action in (
             self.export_figure_action,
@@ -1401,6 +1409,8 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.save_as_action, "save_as"),
             (self.import_action, "import"),
             (self.import_directory_action, "import_directory"),
+            (self.work_directories_action, "work_directories"),
+            (self.reload_work_directories_action, "reload_work_directories"),
             (self.export_figure_action, "export_figure"),
             (self.export_peaks_action, "export_peaks"),
             (self.export_trace_action, "export_trace"),
@@ -3431,7 +3441,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.draw_idle()
 
     def _import_chromatogram_paths(
-        self, paths, group_label="", show_progress=False
+        self, paths, group_label="", show_progress=False, group_labels=None
     ) -> int:
         paths = [str(path) for path in paths]
         if not paths:
@@ -3463,7 +3473,9 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
             try:
                 dataset = load_chromatogram_file(path)
-                normalized_group = str(group_label).strip()
+                normalized_group = str(
+                    group_labels[index] if group_labels is not None else group_label
+                ).strip()
                 if normalized_group:
                     dataset.measurement.group = normalized_group
                 dataset.color = COLORS[len(self.project.datasets) % len(COLORS)]
@@ -3541,6 +3553,71 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._settings.set(LAST_IMPORT_DIRECTORY, str(directory), sync=True)
         return imported
+
+    def edit_work_directories(self):
+        before_state = self._capture_analysis_state()
+        before = deepcopy(self.project.work_directories)
+        dialog = WorkDirectoriesDialog(
+            before, self._application_language, self
+        )
+        if not dialog_exec(dialog):
+            return False
+        if dialog.directories == before:
+            return False
+        self.project.work_directories = dialog.directories
+        self._push_undo_snapshot(
+            before_state,
+            self._history_label("作業ディレクトリ", "Work directories"),
+        )
+        self.project.dirty = True
+        self._update_title()
+        return True
+
+    def _work_directory_reload_candidates(self):
+        return discover_reload_candidates(
+            self.project.work_directories, self.project.datasets
+        )
+
+    def reload_work_directories(self):
+        if not self.project.work_directories:
+            QtWidgets.QMessageBox.information(
+                self,
+                APP_NAME,
+                self.translator("no_work_directories"),
+            )
+            self.edit_work_directories()
+            return 0
+        candidates, duplicate_count, changed, errors = self._work_directory_reload_candidates()
+        lines = [
+            self.translator(
+                "work_directory_reload_summary",
+                new=len(candidates),
+                duplicate=duplicate_count,
+                changed=len(changed),
+                errors=len(errors),
+            )
+        ]
+        if changed:
+            lines.append(self.translator("changed_files_held"))
+            lines.extend("- " + path for path in changed[:10])
+        if errors:
+            lines.append(self.translator("reload_errors"))
+            lines.extend("- " + value for value in errors[:10])
+        if not candidates:
+            QtWidgets.QMessageBox.information(self, APP_NAME, "\n".join(lines))
+            return 0
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            APP_NAME,
+            "\n".join(lines + [self.translator("import_new_files_question")]),
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return 0
+        return self._import_chromatogram_paths(
+            [path for path, _label in candidates],
+            show_progress=True,
+            group_labels=[label for _path, label in candidates],
+        )
 
     @staticmethod
     def _classify_dropped_urls(urls):

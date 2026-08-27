@@ -48,6 +48,7 @@ from hplc_app.models import (
     Run,
     Solvent,
     TextAnnotation,
+    WorkDirectory,
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
@@ -701,7 +702,7 @@ class ProjectTests(unittest.TestCase):
         untouched = deepcopy(manifest)
         migrated = migrate_project_manifest(manifest)
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 104)
+        self.assertEqual(migrated["schema_version"], 105)
         self.assertEqual(len(migrated["runs"]), 2)
         self.assertEqual(
             [item["id"] for item in migrated["runs"]],
@@ -789,7 +790,7 @@ class ProjectTests(unittest.TestCase):
         migrated = migrate_project_manifest(manifest)
 
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 104)
+        self.assertEqual(migrated["schema_version"], 105)
         self.assertEqual(migrated["runs"][0]["label"], "sample A")
         self.assertEqual(migrated["runs"][0]["short_label"], "A")
         self.assertEqual(
@@ -804,6 +805,24 @@ class ProjectTests(unittest.TestCase):
             [dataset["measurement"]["wavelength_nm"] for dataset in migrated["datasets"]],
             [214.0, 280.0],
         )
+
+    def test_schema_104_adds_empty_work_directories_and_rejects_invalid_value(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 104,
+            "runs": [],
+            "datasets": [],
+        }
+        untouched = deepcopy(manifest)
+        migrated = migrate_project_manifest(manifest)
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], 105)
+        self.assertEqual(migrated["work_directories"], [])
+        invalid = dict(manifest, work_directories={"path": "C:/HPLC"})
+        with self.assertRaisesRegex(
+            ProjectMigrationError, "work directories must be an array"
+        ):
+            migrate_project_manifest(invalid)
 
     def test_manifest_migration_rejects_invalid_structures_clearly(self):
         with self.assertRaisesRegex(ProjectMigrationError, "datasets must be an array"):
@@ -1296,6 +1315,14 @@ class ProjectTests(unittest.TestCase):
             column_name="COSMOSIL C4",
             condition_name="RP-C4",
             author="MShiba",
+            work_directories=[
+                WorkDirectory(
+                    path="C:/HPLC/pac1", label="pac1", recursive=True
+                ),
+                WorkDirectory(
+                    path="D:/HPLC/pac2", label="pac2", enabled=False
+                ),
+            ],
             datasets=[dataset],
             condition_presets={"280 nm": {"wavelength_nm": 280.0, "aux_range_au_per_v": 1.0}},
             gradient_presets={
@@ -1338,6 +1365,7 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.column_name, "COSMOSIL C4")
             self.assertEqual(loaded.condition_name, "RP-C4")
             self.assertEqual(loaded.author, "MShiba")
+            self.assertEqual(loaded.work_directories, project.work_directories)
             with zipfile.ZipFile(path, "r") as archive:
                 manifest = json.loads(archive.read("project.json").decode("utf-8"))
             self.assertEqual(manifest["format_major"], PROJECT_FORMAT_MAJOR)

@@ -20,6 +20,7 @@ from .models import (
     Run,
     Solvent,
     TextAnnotation,
+    WorkDirectory,
     sanitize_condition_presets,
 )
 from .parser import dataset_from_bytes
@@ -74,6 +75,37 @@ def _run_from_dict(data: Dict[str, Any]) -> Run:
     }
     run.gradient = [GradientPoint(**point) for point in gradient_data]
     return run
+
+
+def _work_directories_from_value(value):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ProjectError("Project work directories must be an array")
+    directories = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ProjectError("Each project work directory must be an object")
+        path_value = item.get("path", "")
+        label_value = item.get("label", "")
+        recursive = item.get("recursive", False)
+        enabled = item.get("enabled", True)
+        if not isinstance(path_value, str) or not isinstance(label_value, str):
+            raise ProjectError("Project work directory path and label must be text")
+        if not isinstance(recursive, bool) or not isinstance(enabled, bool):
+            raise ProjectError("Project work directory flags must be boolean")
+        path = path_value.strip()
+        if not path:
+            raise ProjectError("Project work directory path is missing")
+        directories.append(
+            WorkDirectory(
+                path=path,
+                label=label_value,
+                recursive=recursive,
+                enabled=enabled,
+            )
+        )
+    return directories
 
 
 def _method_from_dict(data: Dict[str, Any], schema_version: int = PROJECT_SCHEMA_VERSION) -> AnalysisMethod:
@@ -151,6 +183,7 @@ def save_project(path: str, project: Project) -> None:
         "condition_presets": sanitize_condition_presets(project.condition_presets),
         "gradient_presets": project.gradient_presets,
         "annotations": [asdict(annotation) for annotation in project.annotations],
+        "work_directories": [asdict(item) for item in project.work_directories],
         "datasets": [],
     }
     used_names = set()
@@ -243,6 +276,9 @@ def load_project(path: str) -> Project:
                         for annotation in (manifest.get("annotations", []) or [])
                         if isinstance(annotation, dict)
                     ],
+                    work_directories=_work_directories_from_value(
+                        manifest.get("work_directories", [])
+                    ),
                     project_path=source,
                 )
             except ValueError as exc:

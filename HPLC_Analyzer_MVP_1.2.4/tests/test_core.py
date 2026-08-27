@@ -1596,6 +1596,11 @@ class ProjectTests(unittest.TestCase):
         project.method.retention_label_font_size = 11.5
         project.method.retention_label_color = "#000000"
         project.method.auto_peak_snr_threshold = 8.0
+        dataset.measurement.analyte_name = "LL-37"
+        dataset.measurement.analyte_id = "analyte-ll37"
+        dataset.measurement.analyte_aliases = ["CAP18", "hCAP-18"]
+        dataset.measurement.analyte_source = "UniProt P49913"
+        dataset.measurement.extinction_coefficient_unit = "M^-1 cm^-1"
         project.annotations = [
             TextAnnotation(
                 text="LL-37",
@@ -1620,6 +1625,13 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.method.retention_label_font_size, 11.5)
             self.assertEqual(loaded.method.retention_label_color, "#000000")
             self.assertEqual(loaded.method.auto_peak_snr_threshold, 8.0)
+            loaded_meta = loaded.datasets[0].measurement
+            self.assertEqual(loaded_meta.analyte_id, "analyte-ll37")
+            self.assertEqual(loaded_meta.analyte_aliases, ["CAP18", "hCAP-18"])
+            self.assertEqual(loaded_meta.analyte_source, "UniProt P49913")
+            self.assertEqual(
+                loaded_meta.extinction_coefficient_unit, "M^-1 cm^-1"
+            )
             self.assertEqual(loaded.datasets[0].peaks[0].integration_source, "auto")
             self.assertEqual(loaded.datasets[0].peaks[0].notes, "identified as LL-37")
             self.assertEqual(len(loaded.annotations), 1)

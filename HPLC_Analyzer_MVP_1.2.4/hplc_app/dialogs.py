@@ -21,6 +21,7 @@ from .models import (
     Project,
     Solvent,
     TextAnnotation,
+    new_id,
     sanitize_condition_presets,
 )
 from .naming import build_project_filename, normalize_analysis_date
@@ -422,6 +423,10 @@ class MetadataDialog(QtWidgets.QDialog):
             "試料情報" if language == "ja" else "Analyte information",
             (
                 ("analyte", "分析対象物" if language == "ja" else "Analyte", meta.analyte_name),
+                ("analyte_id", "分析対象物ID" if language == "ja" else "Analyte ID", meta.analyte_id),
+                ("analyte_aliases", "別名（カンマ区切り）" if language == "ja" else "Aliases (comma-separated)", ", ".join(meta.analyte_aliases)),
+                ("analyte_source", "データ出典" if language == "ja" else "Data source", meta.analyte_source),
+                ("epsilon_unit", "吸光係数の単位" if language == "ja" else "Extinction coefficient unit", meta.extinction_coefficient_unit),
                 ("injection", "注入量 (µL)" if language == "ja" else "Injection volume (µL)", format_optional(meta.injection_volume_ul)),
                 ("eps214", "ε214 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_214)),
                 ("eps280", "ε280 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_280)),
@@ -487,6 +492,18 @@ class MetadataDialog(QtWidgets.QDialog):
         meta.column_temperature_c = numeric["temperature"]
         meta.injection_volume_ul = numeric["injection"]
         meta.analyte_name = self.fields["analyte"].text().strip()
+        meta.analyte_id = self.fields["analyte_id"].text().strip()
+        if meta.analyte_name and not meta.analyte_id:
+            meta.analyte_id = "analyte-" + new_id()
+        meta.analyte_aliases = [
+            item.strip()
+            for item in self.fields["analyte_aliases"].text().split(",")
+            if item.strip()
+        ]
+        meta.analyte_source = self.fields["analyte_source"].text().strip()
+        meta.extinction_coefficient_unit = (
+            self.fields["epsilon_unit"].text().strip() or "M^-1 cm^-1"
+        )
         meta.molar_absorptivity_214 = numeric["eps214"]
         meta.molar_absorptivity_280 = numeric["eps280"]
         meta.molecular_weight_g_mol = numeric["mw"]

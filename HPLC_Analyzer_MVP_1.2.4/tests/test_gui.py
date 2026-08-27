@@ -2555,6 +2555,32 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_retention_labels_are_drawn_for_every_selected_chromatogram(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        second.peaks = [PeakRegion(start_min=5.0, end_min=10.0)]
+        recalculate_dataset_peaks(second)
+        window.dataset_table.clearSelection()
+        window.dataset_table.setCurrentCell(0, 0)
+        for row in (0, 1):
+            selection = QtWidgets.QTableWidgetSelectionRange(
+                row, 0, row, window.dataset_table.columnCount() - 1
+            )
+            window.dataset_table.setRangeSelected(selection, True)
+        window.project.method.show_retention_labels = True
+        window._plot()
+
+        first_label = "%.2f" % first.peaks[0].retention_time_min
+        second_label = "%.2f" % second.peaks[0].retention_time_min
+        self.assertIn(first_label, [text.get_text() for text in window.axes.texts])
+        self.assertIn(
+            second_label,
+            [text.get_text() for text in window.axes_right.texts],
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1])
+        window.project.dirty = False
+        window.close()
+
     def test_presets_are_remembered_across_projects(self):
         first = MainWindow()
         first.project.condition_presets = {

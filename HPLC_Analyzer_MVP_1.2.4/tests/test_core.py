@@ -100,6 +100,7 @@ from hplc_app.renderer_parity import (
     unavailable_parity_report,
 )
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
+from hplc_app.update_check import check_for_updates, parse_stable_version
 from hplc_app.settings_store import (
     ApplicationSettings,
     DATABASE_PATH,
@@ -576,6 +577,69 @@ class AnalysisTests(unittest.TestCase):
                 ((4.0, 12.0), (-0.5, 2.5)),
                 ((5.0, 12.0), (0.0, 100.0)),
             )
+        )
+
+    def test_update_check_selects_latest_stable_release(self):
+        payload = json.dumps(
+            [
+                {
+                    "tag_name": "v1.4.0-rc.1",
+                    "html_url": "https://github.com/mshibagaki/HPLC_Analyzer/releases/tag/v1.4.0-rc.1",
+                    "draft": False,
+                    "prerelease": True,
+                },
+                {
+                    "tag_name": "v1.3.0",
+                    "html_url": "https://github.com/mshibagaki/HPLC_Analyzer/releases/tag/v1.3.0",
+                    "published_at": "2026-08-28T00:00:00Z",
+                    "draft": False,
+                    "prerelease": False,
+                },
+            ]
+        ).encode("utf-8")
+        result = check_for_updates("1.2.4", fetch=lambda _url, _timeout: payload)
+        self.assertEqual(result["status"], "update_available")
+        self.assertEqual(result["latest_version"], "1.3.0")
+        self.assertTrue(result["release_url"].endswith("/tag/v1.3.0"))
+
+    def test_update_check_reports_current_no_release_and_nonfatal_errors(self):
+        stable = json.dumps(
+            [{
+                "tag_name": "1.2.4",
+                "html_url": "https://github.com/mshibagaki/HPLC_Analyzer/releases/tag/v1.2.4",
+                "draft": False,
+                "prerelease": False,
+            }]
+        ).encode("utf-8")
+        self.assertEqual(
+            check_for_updates("1.2.4", fetch=lambda _url, _timeout: stable)["status"],
+            "current",
+        )
+        self.assertEqual(
+            check_for_updates("1.2.4", fetch=lambda _url, _timeout: b"[]")["status"],
+            "no_release",
+        )
+        result = check_for_updates(
+            "1.2.4", fetch=lambda _url, _timeout: (_ for _ in ()).throw(OSError("offline"))
+        )
+        self.assertEqual(result["status"], "error")
+        self.assertIn("offline", result["reason"])
+
+    def test_update_check_rejects_prerelease_semver_and_untrusted_release_url(self):
+        self.assertEqual(parse_stable_version("v1.2.3"), (1, 2, 3))
+        self.assertIsNone(parse_stable_version("1.3.0-rc.1"))
+        self.assertIsNone(parse_stable_version("01.2.3"))
+        payload = json.dumps(
+            [{
+                "tag_name": "9.0.0",
+                "html_url": "https://example.invalid/releases/tag/9.0.0",
+                "draft": False,
+                "prerelease": False,
+            }]
+        ).encode("utf-8")
+        self.assertEqual(
+            check_for_updates("1.2.4", fetch=lambda _url, _timeout: payload)["status"],
+            "no_release",
         )
 
     def test_default_trace_colors_follow_wavelength_families(self):

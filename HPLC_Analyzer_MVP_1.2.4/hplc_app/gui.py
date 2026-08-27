@@ -68,6 +68,7 @@ from .naming import (
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
+from .peak_fitting import PeakFitResult, evaluate_fit_profile, fit_peak
 from .preset_store import (
     load_preset_store_with_metadata,
     merge_preset_sources,
@@ -949,6 +950,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_retention_checkbox = QtWidgets.QCheckBox()
         self.show_gradient_checkbox = QtWidgets.QCheckBox()
         self.show_grid_checkbox = QtWidgets.QCheckBox()
+        self.gradient_legend_name_checkbox = QtWidgets.QCheckBox()
         self.legend_label = QtWidgets.QLabel()
         self.legend_combo = QtWidgets.QComboBox()
         for label, value in (
@@ -974,10 +976,11 @@ class MainWindow(QtWidgets.QMainWindow):
         display_controls.addWidget(self.show_integration_checkbox, 3, 0, 1, 2)
         display_controls.addWidget(self.show_retention_checkbox, 4, 0, 1, 2)
         display_controls.addWidget(self.show_gradient_checkbox, 5, 0, 1, 2)
-        display_controls.addWidget(self.show_grid_checkbox, 6, 0, 1, 2)
-        display_controls.addWidget(self.axis_labels_button, 7, 0, 1, 2)
-        display_controls.addWidget(self.annotation_button, 8, 0, 1, 2)
-        display_controls.setRowStretch(9, 1)
+        display_controls.addWidget(self.gradient_legend_name_checkbox, 6, 0, 1, 2)
+        display_controls.addWidget(self.show_grid_checkbox, 7, 0, 1, 2)
+        display_controls.addWidget(self.axis_labels_button, 8, 0, 1, 2)
+        display_controls.addWidget(self.annotation_button, 9, 0, 1, 2)
+        display_controls.setRowStretch(10, 1)
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
@@ -1046,6 +1049,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fraction_interval_spin.setSuffix(" min")
         self.clear_fractions_button = QtWidgets.QPushButton()
         self.auto_detect_button = QtWidgets.QPushButton()
+        self.fit_peak_button = QtWidgets.QPushButton()
         self.select_all_peaks_button = QtWidgets.QPushButton()
         self.delete_peak_button = QtWidgets.QPushButton()
         integration_controls.addWidget(self.baseline_label, 0, 0)
@@ -1053,7 +1057,8 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.integrate_button, 1, 0)
         integration_controls.addWidget(self.edit_peak_button, 1, 1)
         integration_controls.addWidget(self.split_peak_button, 1, 2)
-        integration_controls.addWidget(self.auto_detect_button, 2, 0, 1, 3)
+        integration_controls.addWidget(self.auto_detect_button, 2, 0, 1, 2)
+        integration_controls.addWidget(self.fit_peak_button, 2, 2)
         integration_controls.addWidget(self.select_all_peaks_button, 3, 0, 1, 2)
         integration_controls.addWidget(self.delete_peak_button, 3, 2)
         integration_controls.addWidget(self.fraction_button, 4, 0)
@@ -1101,6 +1106,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_retention_checkbox.toggled.connect(self._method_controls_changed)
         self.show_gradient_checkbox.toggled.connect(self._method_controls_changed)
         self.show_grid_checkbox.toggled.connect(self._method_controls_changed)
+        self.gradient_legend_name_checkbox.toggled.connect(self._method_controls_changed)
         self.legend_combo.currentIndexChanged.connect(self._method_controls_changed)
         self.zoom_axis_combo.currentIndexChanged.connect(self._zoom_axis_changed)
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
@@ -1111,6 +1117,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.edit_peak_button.toggled.connect(self._toggle_edit_range_mode)
         self.delete_peak_button.clicked.connect(self.delete_peak)
         self.auto_detect_button.clicked.connect(self.auto_detect_peaks)
+        self.fit_peak_button.clicked.connect(self.fit_selected_peak)
         self.select_all_peaks_button.clicked.connect(self.peak_table.selectAll)
         self.move_trace_button.toggled.connect(self._toggle_move_mode)
         self.axis_labels_button.clicked.connect(self.edit_axis_labels)
@@ -1569,6 +1576,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_retention_checkbox.setText(t("show_retention_labels"))
         self.show_gradient_checkbox.setText(t("show_gradient_b"))
         self.show_grid_checkbox.setText(t("show_major_grid"))
+        self.gradient_legend_name_checkbox.setText(t("gradient_legend_include_name"))
         self.reset_view_button.setText(t("reset_view"))
         self.reset_x_view_button.setText(t("reset_x_view"))
         self.reset_y_view_button.setText(t("reset_y_view"))
@@ -1590,6 +1598,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.annotation_action.setText(t("add_text_annotation"))
         self.annotation_action.setToolTip(t("text_annotation_hint"))
         self.auto_detect_button.setText(t("auto_detect"))
+        self.fit_peak_button.setText(t("fit_peak"))
         self.select_all_peaks_button.setText(t("select_all_peaks"))
         self.peak_title.setText(t("peaks"))
         self._set_peak_headers()
@@ -2052,6 +2061,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_grid_checkbox.blockSignals(True)
         self.show_grid_checkbox.setChecked(self.project.method.show_major_grid)
         self.show_grid_checkbox.blockSignals(False)
+        self.gradient_legend_name_checkbox.blockSignals(True)
+        self.gradient_legend_name_checkbox.setChecked(
+            self.project.method.gradient_legend_include_dataset_name
+        )
+        self.gradient_legend_name_checkbox.blockSignals(False)
         self.legend_combo.blockSignals(True)
         self.legend_combo.setCurrentIndex(max(0, self.legend_combo.findData(self.project.method.legend_location)))
         self.legend_combo.blockSignals(False)
@@ -2073,6 +2087,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method.show_retention_labels = self.show_retention_checkbox.isChecked()
         self.project.method.show_gradient_b = self.show_gradient_checkbox.isChecked()
         self.project.method.show_major_grid = self.show_grid_checkbox.isChecked()
+        self.project.method.gradient_legend_include_dataset_name = (
+            self.gradient_legend_name_checkbox.isChecked()
+        )
         self.project.method.legend_location = self.legend_combo.currentData()
         self.project.dirty = True
         self._plot()
@@ -2481,6 +2498,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if dataset.id in selected_dataset_ids and (
                 self.project.method.show_integration_areas
                 or self.project.method.show_retention_labels
+                or any(peak.fit_model for peak in dataset.peaks)
             ):
                 selected_peak_rows = (
                     set(self._selected_peak_rows())
@@ -2496,6 +2514,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         "boundary_lines": [],
                         "retention_line": None,
                         "baseline_line": None,
+                        "fit_line": None,
                     }
                     if self.project.method.show_integration_areas:
                         overlay["patch"] = target_axes.axvspan(
@@ -2532,6 +2551,40 @@ class MainWindow(QtWidgets.QMainWindow):
                                 alpha=0.95 if is_selected_peak else 0.55,
                                 antialiased=not self._is_lightweight_rendering(),
                             )[0]
+                    if peak.fit_model and peak.fit_parameters:
+                        fit_mask = (
+                            (dataset.time_min >= peak.start_min)
+                            & (dataset.time_min <= peak.end_min)
+                        )
+                        fit_time = dataset.time_min[fit_mask]
+                        if fit_time.size >= 3:
+                            fit_result = PeakFitResult(
+                                model=peak.fit_model,
+                                parameters=dict(peak.fit_parameters),
+                                retention_time_min=float(
+                                    peak.fit_retention_time_min or fit_time[0]
+                                ),
+                                rmse_uv=float(peak.fit_rmse_uv or 0.0),
+                                r_squared=float(peak.fit_r_squared or 0.0),
+                                aic=float(peak.fit_aic or 0.0),
+                                point_count=int(fit_time.size),
+                            )
+                            fitted_uv = evaluate_fit_profile(fit_time, fit_result)
+                            baseline_time, baseline_uv = baseline_trace(dataset, peak)
+                            if baseline_time.size == fit_time.size:
+                                fitted_uv = fitted_uv + baseline_uv
+                            fitted_values = reference_values_for_display(
+                                dataset, fitted_uv, unit
+                            )
+                            overlay["fit_line"] = target_axes.plot(
+                                fit_time + dataset.x_shift_min,
+                                fitted_values + dataset.offset,
+                                color="#c026d3",
+                                linewidth=max(1.2, self.project.method.line_width),
+                                linestyle=":",
+                                alpha=0.95,
+                                zorder=18,
+                            )[0]
                     if self.project.method.show_retention_labels and peak.retention_time_min is not None:
                         retention = float(peak.retention_time_min)
                         label_y = float(np.interp(retention, dataset.time_min, values)) + dataset.offset
@@ -2558,7 +2611,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self.axes_gradient is not None and selected is not None:
             ordered_gradient = sorted(selected.measurement.gradient, key=lambda point: point.time_min)
-            gradient_label = "%%B (%s)" % self.project.legend_label_for(selected)
+            gradient_label = "%B"
+            if self.project.method.gradient_legend_include_dataset_name:
+                gradient_label = "%B ({})".format(
+                    self.project.legend_label_for(selected)
+                )
             gradient_x = np.asarray(
                 [point.time_min for point in ordered_gradient], dtype=float
             )
@@ -3811,6 +3868,62 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
         self.statusBar().showMessage(
             self.translator("auto_detected", count=len(added)), 7000
+        )
+
+    def fit_selected_peak(self):
+        dataset = self._selected_dataset()
+        row = self.peak_table.currentRow()
+        if dataset is None or not (0 <= row < len(dataset.peaks)):
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("select_peak")
+            )
+            return
+        labels = (
+            ("自動選択", "auto"),
+            ("Gaussian", "gaussian"),
+            ("EMG（テーリング）", "emg"),
+        ) if self._application_language == "ja" else (
+            ("Automatic", "auto"),
+            ("Gaussian", "gaussian"),
+            ("EMG (tailing)", "emg"),
+        )
+        display_items = [label for label, _value in labels]
+        selected_label, accepted = QtWidgets.QInputDialog.getItem(
+            self,
+            self.translator("fit_peak"),
+            "モデル" if self._application_language == "ja" else "Model",
+            display_items,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        model = dict(labels).get(selected_label, "auto")
+        before = self._capture_analysis_state()
+        peak = dataset.peaks[row]
+        try:
+            result = fit_peak(dataset, peak, model)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(
+                self, self.translator("warning"), str(exc)
+            )
+            return
+        peak.fit_model = result.model
+        peak.fit_parameters = dict(result.parameters)
+        peak.fit_retention_time_min = result.retention_time_min
+        peak.fit_rmse_uv = result.rmse_uv
+        peak.fit_r_squared = result.r_squared
+        peak.fit_aic = result.aic
+        self._push_undo_snapshot(
+            before, self._history_label("ピークフィット", "Fit peak")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+        self.statusBar().showMessage(
+            "%s: R²=%.5f, RMSE=%.4g µV"
+            % (result.model.upper(), result.r_squared, result.rmse_uv),
+            7000,
         )
 
     def _reset_view(self):

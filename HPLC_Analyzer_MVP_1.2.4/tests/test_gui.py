@@ -44,6 +44,7 @@ from hplc_app.gui import (
 )
 from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation, WorkDirectory
 from hplc_app.parser import load_ascii_file
+from hplc_app.peak_fitting import PeakFitResult
 from hplc_app.preset_store import (
     load_preset_store,
     load_preset_store_with_metadata,
@@ -2803,6 +2804,57 @@ class GuiTests(unittest.TestCase):
             [text.get_text() for text in window.axes_right.texts],
         )
         self.assertEqual(window._selected_dataset_rows(), [0, 1])
+        window.project.dirty = False
+        window.close()
+
+    def test_gradient_legend_can_hide_or_show_chromatogram_name(self):
+        window = self.make_window()
+        self.assertFalse(window.project.method.gradient_legend_include_dataset_name)
+        labels = window.axes_gradient.get_legend_handles_labels()[1]
+        self.assertEqual(labels, ["%B"])
+
+        window.gradient_legend_name_checkbox.setChecked(True)
+        self.app.processEvents()
+        labels = window.axes_gradient.get_legend_handles_labels()[1]
+        self.assertEqual(
+            labels, ["%B ({})".format(window.project.datasets[0].legend_label())]
+        )
+        self.assertTrue(window.project.method.gradient_legend_include_dataset_name)
+        window.project.dirty = False
+        window.close()
+
+    def test_peak_fit_result_is_saved_plotted_and_undoable(self):
+        window = self.make_window()
+        window.peak_table.selectRow(0)
+        result = PeakFitResult(
+            model="gaussian",
+            parameters={
+                "amplitude_uv": 1000.0,
+                "center_min": 7.0,
+                "sigma_min": 0.5,
+            },
+            retention_time_min=7.0,
+            rmse_uv=2.5,
+            r_squared=0.999,
+            aic=12.0,
+            point_count=50,
+        )
+        with patch.object(
+            QtWidgets.QInputDialog,
+            "getItem",
+            return_value=("Automatic", True),
+        ), patch("hplc_app.gui.fit_peak", return_value=result):
+            window._application_language = "en"
+            window.fit_selected_peak()
+        peak = window.project.datasets[0].peaks[0]
+        self.assertEqual(peak.fit_model, "gaussian")
+        self.assertEqual(peak.fit_parameters["sigma_min"], 0.5)
+        self.assertAlmostEqual(peak.fit_r_squared, 0.999)
+        self.assertIsNotNone(
+            window._peak_overlay_artists[peak.id]["fit_line"]
+        )
+        window.undo()
+        self.assertEqual(window.project.datasets[0].peaks[0].fit_model, "")
         window.project.dirty = False
         window.close()
 

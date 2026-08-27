@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from unittest import mock
 import zipfile
 
@@ -85,6 +86,13 @@ from hplc_app.rendering import (
     default_trace_color,
     minmax_decimate,
     screen_series,
+)
+from hplc_app.renderer_benchmark import (
+    RendererWorkload,
+    arrays_digest,
+    benchmark_backend,
+    benchmark_suite,
+    synthetic_chromatograms,
 )
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.settings_store import (
@@ -499,6 +507,43 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(capabilities.supports_matplotlib_artists)
         with self.assertRaises((AttributeError, TypeError)):
             capabilities.backend_id = "changed"
+
+    def test_renderer_benchmark_is_deterministic_and_non_mutating(self):
+        workload = RendererWorkload(trace_count=2, point_count=200, repeats=1)
+        first_x, first_traces = synthetic_chromatograms(workload)
+        second_x, second_traces = synthetic_chromatograms(workload)
+        digest = arrays_digest(first_x, first_traces)
+        self.assertEqual(digest, arrays_digest(second_x, second_traces))
+        result = benchmark_backend("matplotlib_agg", workload)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["raw_data_sha256"], digest)
+        self.assertEqual(len(result["durations_seconds"]), 1)
+
+    def test_renderer_benchmark_skips_missing_optional_backend(self):
+        workload = RendererWorkload(trace_count=1, point_count=20, repeats=1)
+        with patch(
+            "hplc_app.renderer_benchmark.importlib.import_module",
+            side_effect=ImportError("not installed"),
+        ):
+            result = benchmark_backend("pyqtgraph", workload)
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("optional dependency unavailable", result["reason"])
+        self.assertEqual(result["durations_seconds"], [])
+
+    def test_renderer_benchmark_suite_schema_and_validation(self):
+        with self.assertRaises(ValueError):
+            RendererWorkload(trace_count=0)
+        workload = RendererWorkload(trace_count=1, point_count=20, repeats=1)
+        with patch(
+            "hplc_app.renderer_benchmark.importlib.import_module",
+            side_effect=ImportError("not installed"),
+        ):
+            suite = benchmark_suite(workload)
+        self.assertEqual(suite["schema_version"], 1)
+        self.assertEqual(
+            [result["backend_id"] for result in suite["results"]],
+            ["matplotlib_agg", "pyqtgraph"],
+        )
 
     def test_default_trace_colors_follow_wavelength_families(self):
         self.assertEqual(default_trace_color(280.0, 0), "#1f77b4")

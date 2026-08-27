@@ -52,6 +52,7 @@ from hplc_app.models import (
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
 from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
+from hplc_app.peak_fitting import emg_profile, fit_peak, gaussian_profile
 from hplc_app.preset_store import (
     filter_preset_names,
     load_preset_store,
@@ -497,6 +498,34 @@ class AnalysisTests(unittest.TestCase):
             peak.amount_nmol, expected_area_sec * 1000.0 / (60.0 * 10000.0), places=4
         )
         self.assertAlmostEqual(peak.amount_ug, peak.amount_nmol * 10.0, places=4)
+
+    def test_peak_fitting_selects_gaussian_and_tailing_models_non_destructively(self):
+        x = np.linspace(0.0, 10.0, 401)
+        gaussian_dataset = Dataset(
+            time_min=x.copy(),
+            intensity_uv=2500.0 * gaussian_profile(x, 5.0, 0.42),
+        )
+        gaussian_region = PeakRegion(start_min=2.0, end_min=8.0)
+        original_signal = gaussian_dataset.intensity_uv.copy()
+        gaussian = fit_peak(gaussian_dataset, gaussian_region, "auto")
+        self.assertEqual(gaussian.model, "gaussian")
+        self.assertAlmostEqual(gaussian.retention_time_min, 5.0, delta=0.08)
+        self.assertGreater(gaussian.r_squared, 0.995)
+        self.assertTrue(np.array_equal(gaussian_dataset.intensity_uv, original_signal))
+        self.assertIsNone(gaussian_region.retention_time_min)
+
+        tailed_dataset = Dataset(
+            time_min=x.copy(),
+            intensity_uv=1800.0 * emg_profile(x, 4.4, 0.28, 0.85),
+        )
+        tailed = fit_peak(
+            tailed_dataset,
+            PeakRegion(start_min=2.0, end_min=9.5),
+            "auto",
+        )
+        self.assertEqual(tailed.model, "emg")
+        self.assertGreater(tailed.parameters["tau_min"], 0.2)
+        self.assertGreater(tailed.r_squared, 0.98)
 
     def test_manual_baseline_is_saved_and_used(self):
         dataset = self.synthetic_dataset()

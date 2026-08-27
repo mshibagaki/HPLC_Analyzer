@@ -432,7 +432,9 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 
 現在の安定版は`v1.2.4`です。次の基盤更新は、後方互換性を維持しながら`v1.3.0`として開発する予定です。実際のバージョン番号は、対象リリースの内容が確定した時点で明示的なリリース作業として更新し、通常の機能修正や整理のついでには変更しません。
 
-公開GitHub ReleasesのmetadataだけをHTTPSで確認する更新通知を用意しています。`ヘルプ → 更新を確認…`から手動確認でき、環境設定で起動後のStable版自動確認を無効化できます。確認はGUI thread外で行い、自動確認時の最新版・offline・proxy・rate limit・壊れた応答は通常操作へ通知しません。Stable確認ではdraft/prereleaseを除外し、SemVerと公式repository配下のRelease URLを検証します。現段階ではinstallerのdownload・hash/署名検証・起動は行いません。
+公開GitHub ReleasesのmetadataだけをHTTPSで確認する更新通知を用意しています。`ヘルプ → 更新を確認…`から手動確認でき、環境設定で起動後のStable版自動確認を無効化できます。確認はGUI thread外で行い、自動確認時の最新版・offline・proxy・rate limit・壊れた応答は通常操作へ通知しません。Stable確認ではdraft/prereleaseを除外し、SemVerと公式repository配下のRelease URLを検証します。現段階ではApplication UIからinstallerのdownloadや起動は行いません。
+
+installer更新用の非実行型検証基盤では、公式repositoryのRelease asset URL、download上限、専用一時directory、安全なfilename、SHA-256 manifestとの一致、Windows Authenticode状態と署名者thumbprintを検証できます。正式な署名identityが設定されていない現段階ではApplication UIからdownloadせず、この検証に成功してもinstaller起動許可は常にfalseです。
 
 Windows 7版とWindows 11版は同じアプリケーションバージョンを使用します。依存パッケージやビルド環境は異なりますが、OSごとに別のアプリケーションバージョン番号は付けません。`.hplcproj`互換性を壊す可能性がある変更は、バージョン番号だけで判断せず、移行・後方読込処理と両OS間の互換性確認を伴う必要があります。
 

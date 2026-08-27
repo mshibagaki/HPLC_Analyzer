@@ -506,6 +506,58 @@ class Project:
             self.__dict__.get("_run_index", {}).pop(run_id, None)
         return dataset
 
+    def _remove_orphan_runs(self) -> None:
+        used = {dataset.run_id for dataset in self.datasets}
+        self.runs[:] = [run for run in self.runs if run.id in used]
+        object.__setattr__(self, "_run_index", {run.id: run for run in self.runs})
+
+    def group_datasets_into_run(
+        self, datasets: List[Dataset], target_run: Run
+    ) -> None:
+        """Bind explicit Dataset choices to one authoritative existing Run."""
+        selected_ids = {dataset.id for dataset in datasets}
+        project_ids = {dataset.id for dataset in self.datasets}
+        if len(selected_ids) < 2:
+            raise ValueError("Select at least two Datasets to group")
+        if not selected_ids.issubset(project_ids):
+            raise ValueError("Every grouped Dataset must belong to the Project")
+        indexed = self.__dict__.get("_run_index", {}).get(target_run.id)
+        if indexed is None or indexed is not target_run:
+            raise ValueError("The target Run must belong to the Project")
+        for dataset in self.datasets:
+            if dataset.id in selected_ids:
+                dataset.bind_run(target_run)
+        self._remove_orphan_runs()
+
+    def ungroup_datasets(self, datasets: List[Dataset]) -> None:
+        """Give every explicit Dataset its own snapshot of shared Run values."""
+        selected_ids = {dataset.id for dataset in datasets}
+        project_ids = {dataset.id for dataset in self.datasets}
+        if not selected_ids:
+            raise ValueError("Select at least one Dataset to ungroup")
+        if not selected_ids.issubset(project_ids):
+            raise ValueError("Every ungrouped Dataset must belong to the Project")
+        replacements = []
+        for dataset in self.datasets:
+            if dataset.id not in selected_ids:
+                continue
+            replacements.append(
+                (
+                    dataset,
+                    Run.from_measurement(
+                        dataset.measurement,
+                        dataset.effective_gradient_preset_name(),
+                        label=dataset.label,
+                        short_label=dataset.short_label,
+                    ),
+                )
+            )
+        for dataset, run in replacements:
+            self.runs.append(run)
+            self.__dict__.get("_run_index", {})[run.id] = run
+            dataset.bind_run(run)
+        self._remove_orphan_runs()
+
     def replace_dataset_measurement(
         self, dataset: Dataset, metadata: MeasurementMetadata
     ) -> None:

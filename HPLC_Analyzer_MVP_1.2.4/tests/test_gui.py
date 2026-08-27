@@ -1128,6 +1128,11 @@ class GuiTests(unittest.TestCase):
         window.show_integration_checkbox.setChecked(False)
         self.app.processEvents()
         self.assertEqual(len(window.axes.patches), 0)
+        self.assertFalse(any(line.get_visible() for line in window.axes.get_xgridlines()))
+        window.show_grid_checkbox.setChecked(True)
+        self.app.processEvents()
+        self.assertTrue(any(line.get_visible() for line in window.axes.get_xgridlines()))
+        self.assertTrue(window.project.method.show_major_grid)
         with tempfile.TemporaryDirectory() as directory:
             for suffix in ("png", "svg", "pdf"):
                 path = Path(directory) / ("figure." + suffix)

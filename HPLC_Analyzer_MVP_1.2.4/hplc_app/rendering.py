@@ -17,6 +17,25 @@ import numpy as np
 HIGH_QUALITY = "high_quality"
 LIGHTWEIGHT = "lightweight"
 RENDER_QUALITIES = (HIGH_QUALITY, LIGHTWEIGHT)
+WAVELENGTH_COLOR_PALETTES = {
+    214: ("#d62728", "#ef4444", "#b91c1c", "#f87171"),
+    280: ("#1f77b4", "#2563eb", "#1d4ed8", "#60a5fa"),
+}
+
+
+def default_trace_color(wavelength_nm, ordinal: int = 0) -> Optional[str]:
+    """Return a wavelength-family default; explicit dataset colors stay authoritative."""
+
+    if wavelength_nm is None:
+        return None
+    try:
+        wavelength = float(wavelength_nm)
+    except (TypeError, ValueError):
+        return None
+    for target, palette in WAVELENGTH_COLOR_PALETTES.items():
+        if abs(wavelength - target) <= 0.5:
+            return palette[max(0, int(ordinal)) % len(palette)]
+    return None
 
 
 def normalize_render_quality(value: object, default: str = HIGH_QUALITY) -> str:

@@ -87,6 +87,7 @@ from .rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
     default_render_quality,
+    default_trace_color,
     normalize_render_quality,
     screen_series,
 )
@@ -144,6 +145,17 @@ COLORS = (
 
 INTEGRATION_BOUNDARY_COLOR = "#9ca3af"
 AVAILABLE_PLOT_FONTS = {font.name for font in font_manager.fontManager.ttflist}
+
+
+def dataset_display_color(dataset: Dataset, ordinal: int) -> str:
+    """Resolve an explicit color first, then a wavelength-aware display default."""
+
+    return (
+        dataset.color
+        or default_trace_color(dataset.measurement.wavelength_nm, ordinal)
+        or COLORS[ordinal % len(COLORS)]
+    )
+
 
 DATASET_VISIBLE_COLUMN = 0
 DATASET_RUN_ID_COLUMN = 1
@@ -925,6 +937,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox = QtWidgets.QCheckBox()
         self.show_retention_checkbox = QtWidgets.QCheckBox()
         self.show_gradient_checkbox = QtWidgets.QCheckBox()
+        self.show_grid_checkbox = QtWidgets.QCheckBox()
         self.legend_label = QtWidgets.QLabel()
         self.legend_combo = QtWidgets.QComboBox()
         for label, value in (
@@ -950,9 +963,10 @@ class MainWindow(QtWidgets.QMainWindow):
         display_controls.addWidget(self.show_integration_checkbox, 3, 0, 1, 2)
         display_controls.addWidget(self.show_retention_checkbox, 4, 0, 1, 2)
         display_controls.addWidget(self.show_gradient_checkbox, 5, 0, 1, 2)
-        display_controls.addWidget(self.axis_labels_button, 6, 0, 1, 2)
-        display_controls.addWidget(self.annotation_button, 7, 0, 1, 2)
-        display_controls.setRowStretch(8, 1)
+        display_controls.addWidget(self.show_grid_checkbox, 6, 0, 1, 2)
+        display_controls.addWidget(self.axis_labels_button, 7, 0, 1, 2)
+        display_controls.addWidget(self.annotation_button, 8, 0, 1, 2)
+        display_controls.setRowStretch(9, 1)
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
@@ -1063,6 +1077,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox.toggled.connect(self._method_controls_changed)
         self.show_retention_checkbox.toggled.connect(self._method_controls_changed)
         self.show_gradient_checkbox.toggled.connect(self._method_controls_changed)
+        self.show_grid_checkbox.toggled.connect(self._method_controls_changed)
         self.legend_combo.currentIndexChanged.connect(self._method_controls_changed)
         self.zoom_axis_combo.currentIndexChanged.connect(self._zoom_axis_changed)
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
@@ -1511,6 +1526,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox.setText(t("show_integration"))
         self.show_retention_checkbox.setText(t("show_retention_labels"))
         self.show_gradient_checkbox.setText(t("show_gradient_b"))
+        self.show_grid_checkbox.setText(t("show_major_grid"))
         self.reset_view_button.setText(t("reset_view"))
         self.reset_x_view_button.setText(t("reset_x_view"))
         self.reset_y_view_button.setText(t("reset_y_view"))
@@ -1654,7 +1670,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 DATASET_OFFSET_COLUMN,
                 QtWidgets.QTableWidgetItem(_format(dataset.offset)),
             )
-            color_value = dataset.color or COLORS[row % len(COLORS)]
+            color_value = dataset_display_color(dataset, row)
             color_item = _read_only_item(color_value)
             color_item.setBackground(QtGui.QColor(color_value))
             color_item.setForeground(QtGui.QColor("#ffffff" if QtGui.QColor(color_value).lightness() < 128 else "#000000"))
@@ -1990,6 +2006,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_gradient_checkbox.blockSignals(True)
         self.show_gradient_checkbox.setChecked(self.project.method.show_gradient_b)
         self.show_gradient_checkbox.blockSignals(False)
+        self.show_grid_checkbox.blockSignals(True)
+        self.show_grid_checkbox.setChecked(self.project.method.show_major_grid)
+        self.show_grid_checkbox.blockSignals(False)
         self.legend_combo.blockSignals(True)
         self.legend_combo.setCurrentIndex(max(0, self.legend_combo.findData(self.project.method.legend_location)))
         self.legend_combo.blockSignals(False)
@@ -2010,6 +2029,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method.show_integration_areas = self.show_integration_checkbox.isChecked()
         self.project.method.show_retention_labels = self.show_retention_checkbox.isChecked()
         self.project.method.show_gradient_b = self.show_gradient_checkbox.isChecked()
+        self.project.method.show_major_grid = self.show_grid_checkbox.isChecked()
         self.project.method.legend_location = self.legend_combo.currentData()
         self.project.dirty = True
         self._plot()
@@ -2300,7 +2320,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 values = display_values(dataset, unit)
             except ValueError:
                 continue
-            color = dataset.color or COLORS[index % len(COLORS)]
+            color = dataset_display_color(dataset, index)
             label = self.project.legend_label_for(dataset)
             target_axes = self.axes_right if dataset.y_axis == 2 and self.axes_right is not None else self.axes
             full_x = dataset.time_min + dataset.x_shift_min
@@ -2458,7 +2478,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.axes_right.set_ylabel(
                 self.project.method.y_axis_2_label.strip() or "%s — %s" % (y_label, axis_2_label)
             )
-        self.axes.grid(False)
+        self.axes.grid(
+            self.project.method.show_major_grid,
+            which="major",
+            color="#d1d5db",
+            linewidth=0.6,
+            alpha=0.75,
+        )
+        if self.axes_overview is not None:
+            self.axes_overview.grid(
+                self.project.method.show_major_grid,
+                which="major",
+                color="#d1d5db",
+                linewidth=0.5,
+                alpha=0.6,
+            )
 
         times = [float(dataset.time_min[-1] + dataset.x_shift_min) for dataset in visible if dataset.time_min.size]
         times.extend(
@@ -3512,7 +3546,17 @@ class MainWindow(QtWidgets.QMainWindow):
                 ).strip()
                 if normalized_group:
                     dataset.measurement.group = normalized_group
-                dataset.color = COLORS[len(self.project.datasets) % len(COLORS)]
+                wavelength = dataset.measurement.wavelength_nm
+                same_wavelength_count = sum(
+                    1
+                    for existing in self.project.datasets
+                    if existing.measurement.wavelength_nm is not None
+                    and wavelength is not None
+                    and abs(existing.measurement.wavelength_nm - wavelength) <= 0.5
+                )
+                dataset.color = default_trace_color(
+                    wavelength, same_wavelength_count
+                ) or COLORS[len(self.project.datasets) % len(COLORS)]
                 self.project.add_dataset(dataset)
                 imported += 1
             except Exception as exc:
@@ -3834,7 +3878,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if dataset is None:
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
-        initial = QtGui.QColor(dataset.color or COLORS[self.dataset_table.currentRow() % len(COLORS)])
+        initial = QtGui.QColor(
+            dataset_display_color(dataset, self.dataset_table.currentRow())
+        )
         color = QtWidgets.QColorDialog.getColor(initial, self, self.translator("change_color"))
         if not color.isValid():
             return

@@ -78,6 +78,7 @@ from hplc_app.rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
     default_render_quality,
+    default_trace_color,
     minmax_decimate,
     screen_series,
 )
@@ -483,6 +484,13 @@ class AnalysisTests(unittest.TestCase):
         )
         self.assertTrue(np.array_equal(full_x, values))
         self.assertTrue(np.array_equal(full_y, values * 2.0))
+
+    def test_default_trace_colors_follow_wavelength_families(self):
+        self.assertEqual(default_trace_color(280.0, 0), "#1f77b4")
+        self.assertEqual(default_trace_color(280.0, 1), "#2563eb")
+        self.assertEqual(default_trace_color(214.0, 0), "#d62728")
+        self.assertEqual(default_trace_color(214.4, 1), "#ef4444")
+        self.assertIsNone(default_trace_color(220.0, 0))
 
     def test_manual_integration_and_quantitation(self):
         dataset = self.synthetic_dataset()
@@ -1336,6 +1344,7 @@ class ProjectTests(unittest.TestCase):
         dataset.x_shift_min = 0.25
         dataset.gradient_preset_name = "RP-C4"
         project.method.show_gradient_b = True
+        project.method.show_major_grid = True
         project.method.legend_location = "upper left"
         project.method.legend_components = [
             "run_id",
@@ -1365,6 +1374,7 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.condition_presets["280 nm"]["wavelength_nm"], 280.0)
             self.assertIn("RP-C4", loaded.gradient_presets)
             self.assertTrue(loaded.method.show_gradient_b)
+            self.assertTrue(loaded.method.show_major_grid)
             self.assertEqual(loaded.method.legend_location, "upper left")
             self.assertEqual(
                 loaded.method.legend_components,

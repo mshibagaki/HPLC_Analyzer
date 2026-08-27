@@ -35,6 +35,7 @@ from .dialogs import (
     MetadataDialog,
     PeakRangeDialog,
     PreferencesDialog,
+    PresetManagerDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
     ReportOptionsDialog,
@@ -1467,7 +1468,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.settings_menu = bar.addMenu("")
         self.preferences_action = self._action(self.edit_preferences)
+        self.preset_manager_action = self._action(self.manage_presets)
         self.settings_menu.addAction(self.preferences_action)
+        self.settings_menu.addAction(self.preset_manager_action)
         self.settings_menu.addSeparator()
         self.language_menu = self.settings_menu.addMenu("")
         self.japanese_action = self._action(lambda: self.set_language("ja"), checkable=True)
@@ -1525,6 +1528,7 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.undo_action, "undo"),
             (self.redo_action, "redo"),
             (self.preferences_action, "preferences"),
+            (self.preset_manager_action, "preset_manager"),
             (self.database_open_action, "database_open"),
             (self.database_sync_action, "database_sync"),
             (self.japanese_action, "japanese"),
@@ -4278,6 +4282,29 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_title()
         if render_quality_changed:
             self._plot()
+
+    def manage_presets(self):
+        dialog = PresetManagerDialog(
+            self._global_condition_presets,
+            self._global_gradient_presets,
+            self._global_preset_metadata,
+            self._application_language,
+            self,
+        )
+        if not dialog_exec(dialog):
+            return False
+        if (
+            dialog.conditions == self._global_condition_presets
+            and dialog.gradients == self._global_gradient_presets
+        ):
+            return False
+        self._global_preset_metadata = deepcopy(dialog.metadata)
+        self.project.condition_presets = deepcopy(dialog.conditions)
+        self.project.gradient_presets = deepcopy(dialog.gradients)
+        self._persist_global_presets()
+        self.project.dirty = True
+        self._update_title()
+        return True
 
     def check_for_updates(self, manual=True):
         """Start one asynchronous update check and return without blocking Qt."""

@@ -24,6 +24,7 @@ from hplc_app.dialogs import (
     LegendComposerDialog,
     MetadataDialog,
     PresetPreviewDialog,
+    PresetManagerDialog,
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
@@ -385,6 +386,49 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(window.check_updates_action.isEnabled())
         window.project.dirty = False
         window.close()
+
+    def test_preset_manager_renames_duplicates_and_deletes_both_kinds(self):
+        metadata = {
+            "conditions": {
+                "C18": {"id": "condition-id", "created_at": "", "updated_at": "", "last_used_at": ""}
+            },
+            "gradients": {
+                "fast": {"id": "gradient-id", "created_at": "", "updated_at": "", "last_used_at": ""}
+            },
+        }
+        dialog = PresetManagerDialog(
+            {"C18": {"column_name": "C18"}},
+            {"fast": {"gradient": []}},
+            metadata,
+            "en",
+        )
+        dialog.condition_list.setCurrentRow(0)
+        with patch.object(
+            QtWidgets.QInputDialog, "getText", return_value=("RP C18", True)
+        ):
+            dialog._rename_or_duplicate("rename")
+        self.assertIn("RP C18", dialog.conditions)
+        self.assertEqual(dialog.metadata["conditions"]["RP C18"]["id"], "condition-id")
+
+        dialog.tabs.setCurrentIndex(1)
+        dialog.gradient_list.setCurrentRow(0)
+        with patch.object(
+            QtWidgets.QInputDialog, "getText", return_value=("fast copy", True)
+        ):
+            dialog._rename_or_duplicate("duplicate")
+        self.assertIn("fast copy", dialog.gradients)
+        self.assertNotEqual(
+            dialog.metadata["gradients"]["fast copy"]["id"], "gradient-id"
+        )
+        dialog.gradient_list.setCurrentRow(
+            [dialog.gradient_list.item(row).text() for row in range(dialog.gradient_list.count())].index("fast copy")
+        )
+        with patch.object(
+            QtWidgets.QMessageBox, "question", return_value=QtWidgets.QMessageBox.Yes
+        ):
+            dialog._delete()
+        self.assertNotIn("fast copy", dialog.gradients)
+        dialog.close()
 
     def test_application_language_persists_without_dirtying_or_rewriting_project(self):
         class MemorySettings:

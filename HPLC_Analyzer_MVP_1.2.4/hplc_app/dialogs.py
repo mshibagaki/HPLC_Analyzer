@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import asdict
+import json
 import math
 from pathlib import Path
 from typing import Dict, Optional
@@ -29,7 +30,9 @@ from .models import (
 from .naming import build_project_filename, normalize_analysis_date
 from .preset_store import (
     apply_preset_operation,
+    build_preset_package,
     filter_preset_names,
+    merge_preset_package,
     normalize_preset_metadata,
     record_preset_deleted,
     record_preset_saved,
@@ -79,9 +82,13 @@ class PresetManagerDialog(QtWidgets.QDialog):
         self.rename_button = QtWidgets.QPushButton("名前変更…" if language == "ja" else "Rename…")
         self.duplicate_button = QtWidgets.QPushButton("複製…" if language == "ja" else "Duplicate…")
         self.delete_button = QtWidgets.QPushButton("削除" if language == "ja" else "Delete")
+        self.import_button = QtWidgets.QPushButton("Import…")
+        self.export_button = QtWidgets.QPushButton("Export…")
         for button in (self.rename_button, self.duplicate_button, self.delete_button):
             actions.addWidget(button)
         actions.addStretch(1)
+        actions.addWidget(self.import_button)
+        actions.addWidget(self.export_button)
         root.addLayout(actions)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
@@ -90,6 +97,8 @@ class PresetManagerDialog(QtWidgets.QDialog):
         self.rename_button.clicked.connect(lambda: self._rename_or_duplicate("rename"))
         self.duplicate_button.clicked.connect(lambda: self._rename_or_duplicate("duplicate"))
         self.delete_button.clicked.connect(self._delete)
+        self.import_button.clicked.connect(self._import_package)
+        self.export_button.clicked.connect(self._export_package)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.tabs.currentChanged.connect(lambda _index: self._update_buttons())
@@ -170,6 +179,130 @@ class PresetManagerDialog(QtWidgets.QDialog):
         else:
             self.gradients = updated
         self._refresh()
+
+    def _export_package(self):
+        kind, _presets, widget = self._current()
+        current = widget.currentItem().text() if widget.currentItem() else ""
+        choices = (
+            ["すべて", "選択中のみ"]
+            if self.language == "ja"
+            else ["All presets", "Selected preset only"]
+        )
+        choice, accepted = QtWidgets.QInputDialog.getItem(
+            self,
+            self.windowTitle(),
+            "出力範囲" if self.language == "ja" else "Export scope",
+            choices,
+            0,
+            False,
+        )
+        if not accepted:
+            return False
+        names = None
+        if choice == choices[1]:
+            if not current:
+                return False
+            names = {"conditions": [], "gradients": [], kind: [current]}
+        path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "プリセットを書き出す" if self.language == "ja" else "Export presets",
+            "hplc-presets.json",
+            "JSON (*.json)",
+        )
+        if not path:
+            return False
+        if not Path(path).suffix:
+            path += ".json"
+        package = build_preset_package(
+            self.conditions, self.gradients, self.metadata, names
+        )
+        try:
+            Path(path).write_text(
+                json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(exc))
+            return False
+        return True
+
+    def _import_package(self):
+        path, _selected_filter = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "プリセットを読み込む" if self.language == "ja" else "Import presets",
+            "",
+            "JSON (*.json)",
+        )
+        if not path:
+            return False
+        try:
+            package = json.loads(Path(path).read_text(encoding="utf-8"))
+            incoming = package.get("presets", {}) if isinstance(package, dict) else {}
+            validation_conflicts = {}
+            if isinstance(incoming, dict):
+                for kind, existing in (
+                    ("conditions", self.conditions),
+                    ("gradients", self.gradients),
+                ):
+                    values = incoming.get(kind, {})
+                    if isinstance(values, dict):
+                        validation_conflicts.update(
+                            {
+                                (kind, name): "skip"
+                                for name in values
+                                if name in existing
+                            }
+                        )
+            merge_preset_package(
+                self.conditions,
+                self.gradients,
+                self.metadata,
+                package,
+                validation_conflicts,
+            )
+            conflicts = {}
+            labels = (
+                ["スキップ", "置換", "別名で両方保持"]
+                if self.language == "ja"
+                else ["Skip", "Replace", "Keep both with a new name"]
+            )
+            policies = ("skip", "replace", "keep_both")
+            for kind, existing in (
+                ("conditions", self.conditions),
+                ("gradients", self.gradients),
+            ):
+                values = incoming.get(kind, {})
+                if not isinstance(values, dict):
+                    raise ValueError("Invalid %s presets" % kind)
+                for name in values:
+                    if name not in existing:
+                        continue
+                    choice, accepted = QtWidgets.QInputDialog.getItem(
+                        self,
+                        self.windowTitle(),
+                        ("同名プリセット「%s」" if self.language == "ja" else "Preset '%s' already exists") % name,
+                        labels,
+                        0,
+                        False,
+                    )
+                    if not accepted:
+                        return False
+                    conflicts[(kind, name)] = policies[labels.index(choice)]
+            conditions, gradients, metadata, imported = merge_preset_package(
+                self.conditions,
+                self.gradients,
+                self.metadata,
+                package,
+                conflicts,
+            )
+        except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(exc))
+            return False
+        self.conditions = conditions
+        self.gradients = gradients
+        self.metadata = metadata
+        selected = (imported["conditions"] + imported["gradients"])
+        self._refresh(selected[-1] if selected else "")
+        return True
 
 
 def _populate_preset_sort_combo(combo, language: str):

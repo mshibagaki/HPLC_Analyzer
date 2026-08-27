@@ -143,6 +143,88 @@ def apply_preset_operation(presets, metadata, kind, action, name, new_name=""):
     return updated_presets, updated_metadata
 
 
+def build_preset_package(conditions, gradients, metadata, names=None):
+    """Build a portable package containing preset payloads and metadata only."""
+
+    selected = names or {
+        "conditions": list(conditions),
+        "gradients": list(gradients),
+    }
+    package = {"format": 1, "presets": {}, "metadata": {}}
+    for kind, presets in (("conditions", conditions), ("gradients", gradients)):
+        requested = selected.get(kind, [])
+        package["presets"][kind] = {
+            name: deepcopy(presets[name]) for name in requested if name in presets
+        }
+        records = metadata.get(kind, {}) if isinstance(metadata, dict) else {}
+        package["metadata"][kind] = {
+            name: deepcopy(records[name])
+            for name in package["presets"][kind]
+            if name in records
+        }
+    return package
+
+
+def merge_preset_package(conditions, gradients, metadata, package, conflicts=None):
+    """Validate and atomically merge a portable package with explicit policies."""
+
+    if not isinstance(package, dict) or package.get("format") != 1:
+        raise ValueError("Unsupported preset package format")
+    incoming = package.get("presets")
+    incoming_metadata = package.get("metadata", {})
+    if not isinstance(incoming, dict) or not isinstance(incoming_metadata, dict):
+        raise ValueError("Invalid preset package")
+    policies = conflicts or {}
+    updated = {
+        "conditions": deepcopy(conditions),
+        "gradients": deepcopy(gradients),
+    }
+    updated_metadata = deepcopy(metadata)
+    used_ids = {
+        str(record.get("id", ""))
+        for records in updated_metadata.values()
+        if isinstance(records, dict)
+        for record in records.values()
+        if isinstance(record, dict) and record.get("id")
+    }
+    imported_names = {"conditions": [], "gradients": []}
+    for kind in PRESET_KINDS:
+        values = incoming.get(kind, {})
+        records = incoming_metadata.get(kind, {})
+        if not isinstance(values, dict) or not isinstance(records, dict):
+            raise ValueError("Invalid %s presets" % kind)
+        for name, payload in values.items():
+            if not isinstance(name, str) or not name.strip() or not isinstance(payload, dict):
+                raise ValueError("Invalid preset entry")
+            target = name.strip()
+            policy = policies.get((kind, target), policies.get(target, "error"))
+            exists = target in updated[kind]
+            if exists and policy == "skip":
+                continue
+            if exists and policy == "keep_both":
+                base = target + " (imported)"
+                target = base
+                suffix = 2
+                while target in updated[kind]:
+                    target = "%s %d" % (base, suffix)
+                    suffix += 1
+            elif exists and policy != "replace":
+                raise ValueError("Preset conflict requires a policy: %s" % name)
+            if exists and policy == "replace":
+                old_record = updated_metadata.get(kind, {}).get(target, {})
+                used_ids.discard(str(old_record.get("id", "")))
+            updated[kind][target] = deepcopy(payload)
+            raw_record = records.get(name, {})
+            record = _metadata_record(kind, target, raw_record)
+            candidate_id = str(record.get("id", ""))
+            if policy == "keep_both" or not candidate_id or candidate_id in used_ids:
+                record["id"] = uuid.uuid4().hex
+            used_ids.add(record["id"])
+            updated_metadata.setdefault(kind, {})[target] = record
+            imported_names[kind].append(target)
+    return updated["conditions"], updated["gradients"], updated_metadata, imported_names
+
+
 def stable_preset_names(names, metadata, kind: str, sort_by: str = "created"):
     """Sort deterministically while keeping unknown legacy dates honest."""
     records = metadata.get(kind, {}) if isinstance(metadata, dict) else {}

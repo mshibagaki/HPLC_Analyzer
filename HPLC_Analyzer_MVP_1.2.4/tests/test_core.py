@@ -4,6 +4,7 @@ from copy import deepcopy
 from contextlib import closing
 import csv
 import ast
+import hashlib
 import math
 import json
 import os
@@ -15,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from unittest import mock
@@ -104,6 +106,12 @@ from hplc_app.renderer_parity import (
 )
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import check_for_updates, parse_stable_version
+from hplc_app.updater_download import (
+    official_release_asset_url,
+    parse_sha256_manifest,
+    probe_authenticode,
+    stage_verified_installer,
+)
 from hplc_app.settings_store import (
     ApplicationSettings,
     AUTOMATIC_UPDATE_CHECK,
@@ -645,6 +653,103 @@ class AnalysisTests(unittest.TestCase):
             check_for_updates("1.2.4", fetch=lambda _url, _timeout: payload)["status"],
             "no_release",
         )
+
+    def test_updater_stages_hash_and_signature_verified_installer_without_launch(self):
+        installer = b"signed-installer-fixture"
+        digest = hashlib.sha256(installer).hexdigest()
+        filename = "HPLC-Analyzer-1.3.0.exe"
+        base = "https://github.com/mshibagaki/HPLC_Analyzer/releases/download/v1.3.0/"
+
+        def fetch(url, _limit, _timeout):
+            if url.endswith("SHA256SUMS.txt"):
+                return (digest + " *" + filename + "\n").encode("utf-8")
+            return installer
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = stage_verified_installer(
+                base + filename,
+                base + "SHA256SUMS.txt",
+                filename,
+                directory,
+                fetch=fetch,
+                authenticode_probe=lambda _path: {
+                    "status": "valid",
+                    "thumbprint": "ABC123",
+                    "reason": "Valid",
+                },
+            )
+            self.assertEqual(result["status"], "verified")
+            self.assertEqual(Path(result["path"]).read_bytes(), installer)
+            self.assertFalse(result["launch_allowed"])
+
+    def test_updater_rejects_untrusted_urls_bad_paths_and_hash_mismatch(self):
+        self.assertTrue(
+            official_release_asset_url(
+                "https://github.com/mshibagaki/HPLC_Analyzer/releases/download/v1/x.exe"
+            )
+        )
+        self.assertFalse(
+            official_release_asset_url(
+                "https://example.invalid/mshibagaki/HPLC_Analyzer/releases/download/v1/x.exe"
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "exactly once"):
+            parse_sha256_manifest(b"", "safe.exe")
+        base = "https://github.com/mshibagaki/HPLC_Analyzer/releases/download/v1/"
+        with tempfile.TemporaryDirectory() as directory:
+            result = stage_verified_installer(
+                base + "safe.exe",
+                base + "SHA256SUMS.txt",
+                "safe.exe",
+                directory,
+                fetch=lambda url, _limit, _timeout: (
+                    ("0" * 64 + " *safe.exe\n").encode("utf-8")
+                    if url.endswith("txt")
+                    else b"different"
+                ),
+            )
+            self.assertEqual(result["status"], "error")
+            self.assertIn("does not match", result["reason"])
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            unsafe = stage_verified_installer(
+                base + "safe.exe",
+                base + "SHA256SUMS.txt",
+                "../safe.exe",
+                directory,
+                fetch=lambda *_args: b"",
+            )
+            self.assertIn("Unsafe", unsafe["reason"])
+            existing = Path(directory) / "safe.exe"
+            existing.write_bytes(b"user-file")
+            collision = stage_verified_installer(
+                base + "safe.exe",
+                base + "SHA256SUMS.txt",
+                "safe.exe",
+                directory,
+                fetch=lambda *_args: b"",
+            )
+            self.assertIn("already exists", collision["reason"])
+            self.assertEqual(existing.read_bytes(), b"user-file")
+
+    def test_authenticode_probe_uses_argument_list_and_reports_status(self):
+        calls = []
+
+        def runner(arguments, **kwargs):
+            calls.append((arguments, kwargs))
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {"Status": "Valid", "StatusMessage": "Valid", "Thumbprint": "ab12"}
+                ),
+                stderr="",
+            )
+
+        result = probe_authenticode("C:/Temp/update installer.exe", runner=runner)
+        self.assertEqual(result["status"], "valid")
+        self.assertEqual(result["thumbprint"], "AB12")
+        self.assertIsInstance(calls[0][0], list)
+        self.assertEqual(Path(calls[0][0][-1]), Path("C:/Temp/update installer.exe"))
+        self.assertFalse(calls[0][1].get("shell", False))
 
     def test_default_trace_colors_follow_wavelength_families(self):
         self.assertEqual(default_trace_color(280.0, 0), "#1f77b4")

@@ -253,7 +253,7 @@ class PeakRegion:
 
 @dataclass
 class TextAnnotation:
-    """User-defined text box positioned in chromatogram data coordinates."""
+    """Text positioned in data coordinates with screen-point font and box size."""
 
     id: str = field(default_factory=new_id)
     text: str = ""

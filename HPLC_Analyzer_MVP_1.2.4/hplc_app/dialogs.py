@@ -295,8 +295,10 @@ class TextAnnotationDialog(QtWidgets.QDialog):
 
         hint = QtWidgets.QLabel(
             "配置後はドラッグで移動、ダブルクリックで再編集できます。"
+            "ズームしても文字とボックスの表示サイズは変わりません。"
             if language == "ja"
-            else "After placement, drag to move and double-click to edit again."
+            else "After placement, drag to move and double-click to edit again. "
+            "The text and box stay the same screen size while zooming."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)

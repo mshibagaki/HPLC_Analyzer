@@ -107,9 +107,12 @@ from hplc_app.renderer_parity import (
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import check_for_updates, parse_stable_version
 from hplc_app.updater_download import (
+    normalize_signer_thumbprints,
     official_release_asset_url,
     parse_sha256_manifest,
     probe_authenticode,
+    select_canonical_release_assets,
+    signer_policy_result,
     stage_verified_installer,
 )
 from hplc_app.settings_store import (
@@ -750,6 +753,38 @@ class AnalysisTests(unittest.TestCase):
         self.assertIsInstance(calls[0][0], list)
         self.assertEqual(Path(calls[0][0][-1]), Path("C:/Temp/update installer.exe"))
         self.assertFalse(calls[0][1].get("shell", False))
+
+    def test_updater_selects_exact_canonical_assets_and_rejects_ambiguity(self):
+        base = "https://github.com/mshibagaki/HPLC_Analyzer/releases/download/v1.3.0/"
+        installer = "HPLC_Analyzer_Setup_1.3.0_Windows11_x64.exe"
+        release = {
+            "assets": [
+                {"name": installer, "browser_download_url": base + installer, "size": 12000},
+                {"name": "SHA256SUMS.txt", "browser_download_url": base + "SHA256SUMS.txt", "size": 200},
+                {"name": "notes.txt", "browser_download_url": base + "notes.txt", "size": 20},
+            ]
+        }
+        selected = select_canonical_release_assets(release, "1.3.0")
+        self.assertEqual(selected["installer"]["name"], installer)
+        duplicate = deepcopy(release)
+        duplicate["assets"].append(deepcopy(release["assets"][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            select_canonical_release_assets(duplicate, "1.3.0")
+        release["assets"][0]["browser_download_url"] += "?token=unsafe"
+        with self.assertRaisesRegex(ValueError, "not trusted"):
+            select_canonical_release_assets(release, "1.3.0")
+
+    def test_signer_policy_is_disabled_until_explicit_identity_matches(self):
+        thumbprint = "A1" * 20
+        valid = {"status": "valid", "thumbprint": thumbprint.lower()}
+        self.assertFalse(signer_policy_result(valid)["launch_allowed"])
+        self.assertFalse(
+            signer_policy_result(valid, ["B2" * 20])["launch_allowed"]
+        )
+        self.assertTrue(signer_policy_result(valid, [thumbprint])["launch_allowed"])
+        self.assertEqual(normalize_signer_thumbprints([thumbprint, thumbprint]), (thumbprint,))
+        with self.assertRaisesRegex(ValueError, "40 hexadecimal"):
+            normalize_signer_thumbprints(["not-a-certificate"])
 
     def test_default_trace_colors_follow_wavelength_families(self):
         self.assertEqual(default_trace_color(280.0, 0), "#1f77b4")

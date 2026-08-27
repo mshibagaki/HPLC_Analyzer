@@ -94,6 +94,7 @@ from hplc_app.renderer_benchmark import (
     benchmark_suite,
     synthetic_chromatograms,
 )
+from hplc_app.renderer_parity import FEATURES, unavailable_parity_report
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.settings_store import (
     ApplicationSettings,
@@ -543,6 +544,18 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(
             [result["backend_id"] for result in suite["results"]],
             ["matplotlib_agg", "pyqtgraph"],
+        )
+
+    def test_renderer_parity_unavailable_report_has_complete_schema(self):
+        report = unavailable_parity_report("not installed")
+        self.assertEqual(report["schema_version"], 1)
+        self.assertEqual(report["status"], "skipped")
+        self.assertEqual(set(report["features"]), set(FEATURES))
+        self.assertTrue(
+            all(
+                value["status"] == "not_tested"
+                for value in report["features"].values()
+            )
         )
 
     def test_default_trace_colors_follow_wavelength_families(self):

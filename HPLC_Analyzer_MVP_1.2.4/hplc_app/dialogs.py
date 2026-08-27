@@ -21,6 +21,7 @@ from .models import (
     Project,
     Solvent,
     TextAnnotation,
+    WorkDirectory,
     sanitize_condition_presets,
 )
 from .naming import build_project_filename, normalize_analysis_date
@@ -215,6 +216,142 @@ class DirectoryImportDialog(QtWidgets.QDialog):
     @property
     def directory_path(self):
         return Path(self.directory_edit.text().strip())
+
+
+class WorkDirectoriesDialog(QtWidgets.QDialog):
+    """Edit the project-owned list of directories used by explicit reload."""
+
+    def __init__(self, directories, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.directories = deepcopy(list(directories))
+        self.setWindowTitle(
+            "作業ディレクトリ" if language == "ja" else "Work directories"
+        )
+        self.resize(760, 420)
+        root = QtWidgets.QVBoxLayout(self)
+        explanation = QtWidgets.QLabel(
+            "登録したディレクトリから新規TXT/GCDだけを再読み込みします。"
+            if language == "ja"
+            else "Reload imports only new TXT/GCD files from registered directories."
+        )
+        explanation.setWordWrap(True)
+        root.addWidget(explanation)
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(
+            ("有効", "ラベル", "ディレクトリ", "再帰")
+            if language == "ja"
+            else ("Enabled", "Label", "Directory", "Recursive")
+        )
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setColumnWidth(2, 440)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        root.addWidget(self.table, 1)
+        row = QtWidgets.QHBoxLayout()
+        self.add_button = QtWidgets.QPushButton("追加…" if language == "ja" else "Add…")
+        self.remove_button = QtWidgets.QPushButton("削除" if language == "ja" else "Remove")
+        self.up_button = QtWidgets.QPushButton("↑" if language == "ja" else "Up")
+        self.down_button = QtWidgets.QPushButton("↓" if language == "ja" else "Down")
+        row.addWidget(self.add_button)
+        row.addWidget(self.remove_button)
+        row.addWidget(self.up_button)
+        row.addWidget(self.down_button)
+        row.addStretch(1)
+        root.addLayout(row)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(
+            "保存" if language == "ja" else "Save"
+        )
+        root.addWidget(buttons)
+        self.add_button.clicked.connect(self._add)
+        self.remove_button.clicked.connect(self._remove)
+        self.up_button.clicked.connect(lambda: self._move(-1))
+        self.down_button.clicked.connect(lambda: self._move(1))
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        self._refresh()
+
+    def _refresh(self):
+        self.table.setRowCount(len(self.directories))
+        for row, entry in enumerate(self.directories):
+            enabled = QtWidgets.QTableWidgetItem()
+            enabled.setFlags(enabled.flags() | ITEM_IS_EDITABLE)
+            enabled.setCheckState(CHECKED if entry.enabled else UNCHECKED)
+            self.table.setItem(row, 0, enabled)
+            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.label))
+            path = QtWidgets.QTableWidgetItem(entry.path)
+            path.setFlags(path.flags() & ~ITEM_IS_EDITABLE)
+            self.table.setItem(row, 2, path)
+            recursive = QtWidgets.QTableWidgetItem()
+            recursive.setCheckState(CHECKED if entry.recursive else UNCHECKED)
+            self.table.setItem(row, 3, recursive)
+
+    def _add(self):
+        self._sync_table()
+        selected = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "作業ディレクトリを選択" if self.language == "ja" else "Select work directory",
+            "",
+        )
+        if not selected:
+            return
+        normalized = str(Path(selected).resolve())
+        if any(str(Path(item.path).resolve()).casefold() == normalized.casefold() for item in self.directories):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "作業ディレクトリ" if self.language == "ja" else "Work directories",
+                "同じディレクトリは既に登録されています。"
+                if self.language == "ja"
+                else "That directory is already registered.",
+            )
+            return
+        self.directories.append(WorkDirectory(path=normalized, label=Path(normalized).name))
+        self._refresh()
+        self.table.selectRow(len(self.directories) - 1)
+
+    def _remove(self):
+        self._sync_table()
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()}, reverse=True)
+        for row in rows:
+            del self.directories[row]
+        self._refresh()
+
+    def _move(self, offset):
+        self._sync_table()
+        row = self.table.currentRow()
+        target = row + offset
+        if row < 0 or target < 0 or target >= len(self.directories):
+            return
+        self.directories[row], self.directories[target] = (
+            self.directories[target],
+            self.directories[row],
+        )
+        self._refresh()
+        self.table.selectRow(target)
+
+    def _sync_table(self):
+        for row, entry in enumerate(self.directories):
+            entry.label = self.table.item(row, 1).text().strip() or Path(entry.path).name
+            entry.recursive = self.table.item(row, 3).checkState() == CHECKED
+            entry.enabled = self.table.item(row, 0).checkState() == CHECKED
+
+    def _accept(self):
+        self._sync_table()
+        updated = []
+        for row, entry in enumerate(self.directories):
+            label = self.table.item(row, 1).text().strip()
+            updated.append(
+                WorkDirectory(
+                    path=entry.path,
+                    label=label or Path(entry.path).name,
+                    recursive=self.table.item(row, 3).checkState() == CHECKED,
+                    enabled=self.table.item(row, 0).checkState() == CHECKED,
+                )
+            )
+        self.directories = updated
+        self.accept()
 
 
 class TextAnnotationDialog(QtWidgets.QDialog):

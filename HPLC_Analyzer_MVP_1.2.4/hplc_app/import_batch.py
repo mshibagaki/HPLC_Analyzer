@@ -1,6 +1,7 @@
 """Deterministic discovery of chromatogram files for directory import."""
 
 from pathlib import Path
+import hashlib
 import os
 
 
@@ -33,3 +34,64 @@ def discover_chromatogram_files(directory, recursive=False):
             path.relative_to(root).as_posix(),
         ),
     )
+
+
+def normalized_source_path(path):
+    try:
+        return str(Path(path).resolve()).casefold()
+    except (OSError, RuntimeError):
+        return str(Path(path).absolute()).casefold()
+
+
+def discover_reload_candidates(directories, existing_datasets):
+    """Classify reload files without mutating a Project or parsing raw data."""
+    known_hashes = {
+        str(item.sha256 or "").lower()
+        for item in existing_datasets
+        if item.sha256
+    }
+    seen_hashes = set(known_hashes)
+    known_paths = {
+        normalized_source_path(item.original_path): str(item.sha256 or "").lower()
+        for item in existing_datasets
+        if item.original_path
+    }
+    candidates = []
+    duplicate_count = 0
+    changed = []
+    errors = []
+    seen_paths = set()
+    for entry in directories:
+        if not entry.enabled:
+            continue
+        try:
+            files = discover_chromatogram_files(entry.path, entry.recursive)
+        except (OSError, ValueError) as exc:
+            errors.append("%s: %s" % (entry.path, exc))
+            continue
+        for path in files:
+            normalized = normalized_source_path(path)
+            if normalized in seen_paths:
+                continue
+            seen_paths.add(normalized)
+            try:
+                before = path.stat()
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                after = path.stat()
+            except OSError as exc:
+                errors.append("%s: %s" % (path, exc))
+                continue
+            if (before.st_size, before.st_mtime_ns) != (
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                errors.append("%s: file changed while being read" % path)
+                continue
+            if digest in seen_hashes:
+                duplicate_count += 1
+            elif normalized in known_paths:
+                changed.append(str(path))
+            else:
+                candidates.append((str(path), entry.label or Path(entry.path).name))
+                seen_hashes.add(digest)
+    return candidates, duplicate_count, changed, errors

@@ -114,6 +114,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 
 - CP932/Shift-JIS系の島津ASCII、およびPACsolution GCDを複数読み込み
 - ディレクトリ内のTXT/GCDを相対パス順でプレビューし、共通ラベルを付けて一括読み込み（サブフォルダー検索は任意、途中キャンセル可）
+- 複数の作業ディレクトリをプロジェクトへ登録し、明示的な再読み込みで新規TXT/GCDだけを差分追加（既取込hashはskip、同一pathの内容変更は自動置換せず保留）
 - Raw Intensity（µV）を保持し、AU/VからAU/mAUへ換算
 - 表示ラベル、短縮ラベル、サンプル名、ID、グループ、反復、タグを保存
 - 元ファイルのフルパス、元ディレクトリ、SHA-256を記録
@@ -253,7 +254,7 @@ Amount (nmol) = Area_mAU_sec × Q_mL_min × 1000 / (60 × epsilon × l_cm)
 ## 基本操作
 
 1. `設定 → 環境設定`で、読み込み開始フォルダ、データ保存先、自動検出条件を指定します。研究室DBを使う場合は、全PCで研究室共有フォルダ上の同じ`.sqlite3`ファイルを指定します。
-2. `ファイル → クロマトグラムを読み込む`で1つ以上のGCDまたはTXTを選びます。ディレクトリ単位なら`ファイル → ディレクトリを一括読み込み`で対象、共通ラベル、読み込み順を確認できます。
+2. `ファイル → クロマトグラムを読み込む`で1つ以上のGCDまたはTXTを選びます。ディレクトリ単位なら`ファイル → ディレクトリを一括読み込み`で対象、共通ラベル、読み込み順を確認できます。継続的にファイルが増える場所は`ファイル → 作業ディレクトリを管理`で複数登録し、`作業ディレクトリを再読み込み`を実行すると新規ファイルだけを追加できます。同一SHA-256は重複追加せず、同じパスの内容が変わったファイルは既存解析を守るため自動置換しません。
 3. 左表で表示、ラベル、波長、グループ、縦軸、AU/V、時間シフト、縦オフセットを調整します。
 4. `詳細・定量条件`でサンプル、測定条件、試料情報を設定します。複数データは`条件の一括入力・プリセット`の表から直接編集でき、Shift/Ctrlでの複数選択とCtrl+C/Ctrl+Vに対応します。条件／グラジエントプリセットは名前で絞り込み、作成・使用・更新日時または名前で並べ替え、`内容・差分…`から適用前に確認できます。入力エラーがあれば表やProjectへ一部適用せず、該当セルを表示します。
 5. `グラジエント`でA–D液の実組成と時系列プログラムを入力します。一括画面ではGradient列をダブルクリックして、選択Runの内容を確認・編集できます。
@@ -284,7 +285,7 @@ Amount (nmol) = Area_mAU_sec × Q_mL_min × 1000 / (60 × epsilon × l_cm)
 
 v1系列では`.hplcproj`の基本フィールドとプロジェクトIDを維持します。今後のv1.xはv1.0.0で保存したファイルを読み込める方針です。v1.1.4で追加した秒単位の面積と、旧v1.x向けの分単位互換値はv1.2.4でも保持します。一般的な互換性と同様に、古いアプリが将来追加された機能を完全に再現できることまでは保証しません。
 
-### Run IDとデータ項目の所属（schema 104）
+### Run IDとデータ項目の所属（schema 104以降）
 
 1回の物理的な測定を`Run`、その測定から得た波長別などの各信号を`Dataset`として保存します。`Dataset.run_id`は必ず同じプロジェクト内の`Run.id`を参照し、Runの検索はID索引から行います。
 
@@ -294,6 +295,8 @@ v1系列では`.hplcproj`の基本フィールドとプロジェクトIDを維�
 セル光路長と214/280 nmのモル吸光係数は同じ測定内で共有するためRunに置き、検出波長とAU/Vはチャンネルごとに異なり得るためDatasetに置きます。同じRun IDを持つDatasetの表示ラベルと短縮ラベルは自動的に同期します。
 
 schema 102以前のプロジェクトは、ラベル、時刻、元ファイル名が同じでも自動的にまとめず、旧Dataset 1件につきRun 1件を決定的なIDで作成します。schema 103で同じRunを共有しながらDatasetラベルが異なる場合は、Runに保存済みのラベル、なければ先頭Datasetのラベルを正本として同期します。移行では元データ、追跡情報、積分範囲と科学計算値を変更しません。新形式の保存時も各Datasetの従来`label`、`short_label`、`measurement`欄へRunの正本値を投影するため、Runを認識しない旧v1アプリは従来項目を読み取れます。Runと互換欄の値が食い違う場合はRunを正本として扱います。
+
+schema 105ではProject固有の`work_directories`を追加しました。schema 104以前からの移行では空配列を追加するだけで、既存Dataset、Run、raw bytes、解析値を変更しません。
 
 プリセットはプロジェクトにも保存されますが、ソフト側にも記憶されます。別のプロジェクトを開いた場合や新規プロジェクトを作成した場合も、保存済みプリセットを利用できます。v1.1.5以降は、従来のWindows設定を初回起動時にユーザーのアプリ設定フォルダー内の`presets.json`へ自動移行し、以後は両方へ同期します。v1.2.4を更新インストールまたはアンインストールしても、このユーザー設定ファイルは削除しません。
 
@@ -420,14 +423,14 @@ Windows 7 Debug版は、通常版が起動しない場合に原因を確認す�
 Release候補のsource整合性は、GitHub Releaseに記載するversionとproject schemaを明示して確認します。Application version、installer定義、固定依存、Windows 7 offline manifestとwheel閉包のいずれかが一致しなければ失敗します。
 
 ```bat
-python scripts\release_consistency.py source --release-version v1.2.4 --project-schema 104
+python scripts\release_consistency.py source --release-version v1.2.4 --project-schema 105
 ```
 
 Windows 11 installer、Windows 7 installer、Windows 7 Offline Build Kitの署名と最終ファイル名が確定した後、3ファイルだけを置いたRelease用directoryでchecksumを生成します。署名やrenameの前に最終checksumを作ってはいけません。既存の`SHA256SUMS.txt`は誤操作防止のため`--force`なしでは上書きされません。
 
 ```bat
 python scripts\release_checksums.py write --release-dir dist\release
-python scripts\release_consistency.py assets --release-version v1.2.4 --project-schema 104 --release-dir dist\release
+python scripts\release_consistency.py assets --release-version v1.2.4 --project-schema 105 --release-dir dist\release
 ```
 
 `assets`検査は、3つの正規artifact名、両installerのversion resource、Offline Build Kit内のApplication versionとproject schema、`SHA256SUMS.txt`の完全一致を確認します。GitHubへuploadした後もclean directoryへ再downloadし、`python scripts\release_checksums.py verify --release-dir <directory>`で再検証します。

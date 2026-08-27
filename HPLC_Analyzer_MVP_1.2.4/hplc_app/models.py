@@ -269,6 +269,16 @@ class TextAnnotation:
 
 
 @dataclass
+class WorkDirectory:
+    """One project-owned source directory used for explicit reloads."""
+
+    path: str = ""
+    label: str = ""
+    recursive: bool = False
+    enabled: bool = True
+
+
+@dataclass
 class Dataset:
     id: str = field(default_factory=new_id)
     run_id: str = ""
@@ -433,6 +443,7 @@ class Project:
     runs: List[Run] = field(default_factory=list)
     datasets: List[Dataset] = field(default_factory=list)
     annotations: List[TextAnnotation] = field(default_factory=list)
+    work_directories: List[WorkDirectory] = field(default_factory=list)
     condition_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     gradient_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     project_path: str = ""

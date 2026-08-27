@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 import numpy as np
 from matplotlib import font_manager
@@ -18,6 +19,18 @@ from .models import Dataset, PeakRegion, Project
 A4_SIZE_INCHES = (8.2677165, 11.6929134)
 REPORT_DPI = 150
 INTEGRATION_BOUNDARY_COLOR = "#9ca3af"
+
+
+@dataclass(frozen=True)
+class ReportOptions:
+    """Session-only choices controlling report content without changing analysis."""
+
+    integration_range: bool = True
+    baseline: bool = True
+    retention_time: bool = True
+    gradient_b: bool = True
+    gradient_conditions: bool = True
+    quantitation: bool = True
 
 
 def _number(value, digits=4) -> str:
@@ -117,39 +130,64 @@ def _metadata_lines(dataset: Dataset, language: str) -> List[str]:
     return ["%s: %s" % (label, value or "—") for label, value in labels]
 
 
-def _peak_rows(peaks: Iterable[PeakRegion], start_number: int = 1):
+def _peak_rows(
+    peaks: Iterable[PeakRegion],
+    options: ReportOptions,
+    start_number: int = 1,
+):
     rows = []
     for number, peak in enumerate(peaks, start=start_number):
-        rows.append(
+        row = [str(number)]
+        if options.retention_time:
+            row.append(_number(peak.retention_time_min))
+        if options.integration_range:
+            row.append("%s–%s" % (_number(peak.start_min), _number(peak.end_min)))
+        row.extend(
             (
-                str(number),
-                _number(peak.retention_time_min),
-                "%s–%s" % (_number(peak.start_min), _number(peak.end_min)),
                 _number(peak.area_mau_sec),
                 _number(peak.area_percent),
                 _number(peak.fwhm_min),
-                _number(peak.gradient_b_pct),
-                _number(peak.amount_ug),
-                "Auto" if peak.integration_source == "auto" else "Manual",
             )
         )
+        if options.gradient_b:
+            row.append(_number(peak.gradient_b_pct))
+        if options.quantitation:
+            row.append(_number(peak.amount_ug))
+        if options.baseline:
+            row.append("Auto" if peak.integration_source == "auto" else "Manual")
+        rows.append(tuple(row))
     return rows
 
 
-def _add_peak_table(axis, peaks, start_number: int, language: str):
+def _add_peak_table(
+    axis,
+    peaks,
+    start_number: int,
+    language: str,
+    options: ReportOptions,
+):
     axis.axis("off")
-    headers = (
-        "#",
-        "RT (min)",
-        "Range (min)",
-        "Area (mAU·sec)",
-        "%Area",
-        "FWHM (min)",
-        "%B",
-        "Amount (µg)",
-        "Method",
-    )
-    rows = _peak_rows(peaks, start_number)
+    headers = ["#"]
+    widths = [0.045]
+    if options.retention_time:
+        headers.append("RT (min)")
+        widths.append(0.085)
+    if options.integration_range:
+        headers.append("Range (min)")
+        widths.append(0.15)
+    headers.extend(("Area (mAU·sec)", "%Area", "FWHM (min)"))
+    widths.extend((0.14, 0.075, 0.1))
+    if options.gradient_b:
+        headers.append("%B")
+        widths.append(0.06)
+    if options.quantitation:
+        headers.append("Amount (µg)")
+        widths.append(0.11)
+    if options.baseline:
+        headers.append("Method")
+        widths.append(0.09)
+    width_total = sum(widths)
+    rows = _peak_rows(peaks, options, start_number)
     if not rows:
         axis.text(
             0.5,
@@ -165,11 +203,11 @@ def _add_peak_table(axis, peaks, start_number: int, language: str):
         colLabels=headers,
         loc="center",
         cellLoc="center",
-        colWidths=(0.045, 0.085, 0.15, 0.14, 0.075, 0.1, 0.06, 0.11, 0.09),
+        colWidths=tuple(width / width_total for width in widths),
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(6.7)
-    table.scale(1.0, 1.25)
+    table.set_fontsize(6.2)
+    table.scale(1.0, 1.08)
     for (row, _column), cell in table.get_celld().items():
         cell.set_linewidth(0.35)
         if row == 0:
@@ -177,7 +215,12 @@ def _add_peak_table(axis, peaks, start_number: int, language: str):
             cell.set_text_props(weight="bold")
 
 
-def _plot_dataset(axis, project: Project, dataset: Dataset):
+def _plot_dataset(
+    axis,
+    project: Project,
+    dataset: Dataset,
+    options: ReportOptions,
+):
     unit = project.method.display_unit
     try:
         values = display_values(dataset, unit)
@@ -190,21 +233,22 @@ def _plot_dataset(axis, project: Project, dataset: Dataset):
     for peak in dataset.peaks:
         start = peak.start_min + dataset.x_shift_min
         end = peak.end_min + dataset.x_shift_min
-        axis.axvspan(
-            start,
-            end,
-            color=color,
-            alpha=0.08,
-        )
-        for boundary in (start, end):
-            axis.axvline(
-                boundary,
-                color=INTEGRATION_BOUNDARY_COLOR,
-                linestyle="--",
-                linewidth=0.65,
-                alpha=0.75,
+        if options.integration_range:
+            axis.axvspan(
+                start,
+                end,
+                color=color,
+                alpha=0.08,
             )
-        if peak.retention_time_min is not None:
+            for boundary in (start, end):
+                axis.axvline(
+                    boundary,
+                    color=INTEGRATION_BOUNDARY_COLOR,
+                    linestyle="--",
+                    linewidth=0.65,
+                    alpha=0.75,
+                )
+        if options.retention_time and peak.retention_time_min is not None:
             displayed_retention = peak.retention_time_min + dataset.x_shift_min
             axis.axvline(
                 displayed_retention,
@@ -230,7 +274,7 @@ def _plot_dataset(axis, project: Project, dataset: Dataset):
                 color=project.method.retention_label_color or "#000000",
             )
         baseline_time, baseline_uv = baseline_trace(dataset, peak)
-        if baseline_time.size:
+        if options.baseline and baseline_time.size:
             baseline = reference_values_for_display(dataset, baseline_uv, unit)
             axis.plot(
                 baseline_time + dataset.x_shift_min,
@@ -265,12 +309,12 @@ def _plot_dataset(axis, project: Project, dataset: Dataset):
     axis.set_xlabel(project.method.x_axis_label.strip() or "Retention time (min)")
     axis.set_ylabel(_axis_label(project, dataset, unit))
     right = float(time[-1]) if time.size else 1.0
-    if dataset.measurement.gradient:
+    if options.gradient_conditions and dataset.measurement.gradient:
         right = max(right, max(point.time_min for point in dataset.measurement.gradient))
     axis.set_xlim(0.0, max(1.0e-9, right))
     axis.margins(x=0)
     axis.grid(False)
-    if dataset.measurement.gradient:
+    if options.gradient_conditions and dataset.measurement.gradient:
         gradient = sorted(dataset.measurement.gradient, key=lambda point: point.time_min)
         gradient_axis = axis.twinx()
         gradient_axis.plot(
@@ -288,13 +332,15 @@ def analysis_report_figures(
     project: Project,
     datasets: Iterable[Dataset],
     language: str = "ja",
+    options: Optional[ReportOptions] = None,
 ) -> List[Figure]:
+    options = options or ReportOptions()
     figures: List[Figure] = []
     report_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     for dataset in datasets:
         figure = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
-        figure.subplots_adjust(left=0.075, right=0.9, top=0.94, bottom=0.06, hspace=0.38)
-        grid = figure.add_gridspec(4, 1, height_ratios=(0.5, 1.15, 3.4, 3.9))
+        figure.subplots_adjust(left=0.075, right=0.9, top=0.95, bottom=0.055, hspace=0.3)
+        grid = figure.add_gridspec(4, 1, height_ratios=(0.42, 0.95, 3.8, 2.65))
         title_axis = figure.add_subplot(grid[0])
         title_axis.axis("off")
         title_axis.text(0.0, 0.72, project.title, fontsize=13, weight="bold", va="center")
@@ -316,11 +362,11 @@ def analysis_report_figures(
         metadata_axis.text(0.51, 1.0, "\n".join(lines[midpoint:]), va="top", fontsize=7.4, linespacing=1.35)
 
         plot_axis = figure.add_subplot(grid[2])
-        _plot_dataset(plot_axis, project, dataset)
+        _plot_dataset(plot_axis, project, dataset, options)
         plot_axis.set_title("Chromatogram", fontsize=9, loc="left")
 
         table_axis = figure.add_subplot(grid[3])
-        _add_peak_table(table_axis, dataset.peaks[:15], 1, language)
+        _add_peak_table(table_axis, dataset.peaks[:20], 1, language, options)
         table_axis.set_title(
             "ピーク表" if language == "ja" else "Peak table",
             fontsize=9,
@@ -338,9 +384,9 @@ def analysis_report_figures(
         _apply_report_fonts(figure)
         figures.append(figure)
 
-        remaining = dataset.peaks[15:]
-        for offset in range(0, len(remaining), 32):
-            page_peaks = remaining[offset : offset + 32]
+        remaining = dataset.peaks[20:]
+        for offset in range(0, len(remaining), 40):
+            page_peaks = remaining[offset : offset + 40]
             continuation = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
             continuation.subplots_adjust(left=0.06, right=0.94, top=0.93, bottom=0.06)
             table_axis = continuation.add_subplot(111)
@@ -354,7 +400,7 @@ def analysis_report_figures(
                 loc="left",
                 pad=12,
             )
-            _add_peak_table(table_axis, page_peaks, 16 + offset, language)
+            _add_peak_table(table_axis, page_peaks, 21 + offset, language, options)
             continuation.text(0.94, 0.025, report_time, fontsize=6, ha="right", color="#6b7280")
             _apply_report_fonts(continuation)
             figures.append(continuation)
@@ -367,11 +413,12 @@ def export_analysis_report_pdf(
     project: Project,
     datasets: Iterable[Dataset],
     language: str = "ja",
+    options: Optional[ReportOptions] = None,
 ) -> str:
     destination = str(path)
     if not destination.lower().endswith(".pdf"):
         destination += ".pdf"
-    figures = analysis_report_figures(project, datasets, language)
+    figures = analysis_report_figures(project, datasets, language, options)
     if not figures:
         raise ValueError("No chromatograms are available for the report")
     with PdfPages(
@@ -393,10 +440,11 @@ def render_analysis_report_pages(
     project: Project,
     datasets: Iterable[Dataset],
     language: str = "ja",
+    options: Optional[ReportOptions] = None,
 ) -> List[str]:
     destination = Path(directory)
     destination.mkdir(parents=True, exist_ok=True)
-    figures = analysis_report_figures(project, datasets, language)
+    figures = analysis_report_figures(project, datasets, language, options)
     paths: List[str] = []
     for number, figure in enumerate(figures, start=1):
         path = destination / ("report_page_%03d.png" % number)

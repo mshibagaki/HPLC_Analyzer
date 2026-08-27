@@ -14,12 +14,16 @@ from .models import (
     AnalysisMethod,
     Dataset,
     GradientPoint,
+    LEGEND_COMPONENTS,
+    FractionRegion,
     MeasurementMetadata,
     PeakRegion,
     Project,
     Run,
     Solvent,
     TextAnnotation,
+    WorkDirectory,
+    VerticalMarker,
     sanitize_condition_presets,
 )
 from .parser import dataset_from_bytes
@@ -76,9 +80,51 @@ def _run_from_dict(data: Dict[str, Any]) -> Run:
     return run
 
 
+def _work_directories_from_value(value):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ProjectError("Project work directories must be an array")
+    directories = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ProjectError("Each project work directory must be an object")
+        path_value = item.get("path", "")
+        label_value = item.get("label", "")
+        recursive = item.get("recursive", False)
+        enabled = item.get("enabled", True)
+        if not isinstance(path_value, str) or not isinstance(label_value, str):
+            raise ProjectError("Project work directory path and label must be text")
+        if not isinstance(recursive, bool) or not isinstance(enabled, bool):
+            raise ProjectError("Project work directory flags must be boolean")
+        path = path_value.strip()
+        if not path:
+            raise ProjectError("Project work directory path is missing")
+        directories.append(
+            WorkDirectory(
+                path=path,
+                label=label_value,
+                recursive=recursive,
+                enabled=enabled,
+            )
+        )
+    return directories
+
+
 def _method_from_dict(data: Dict[str, Any], schema_version: int = PROJECT_SCHEMA_VERSION) -> AnalysisMethod:
     allowed = set(AnalysisMethod.__dataclass_fields__)
     values = {key: value for key, value in data.items() if key in allowed}
+    components = values.get("legend_components")
+    if components is not None:
+        if not isinstance(components, list) or not all(
+            isinstance(item, str) and item in LEGEND_COMPONENTS
+            for item in components
+        ):
+            raise ProjectError("Legend components must be a valid string array")
+        values["legend_components"] = list(dict.fromkeys(components))
+    separator = values.get("legend_separator")
+    if separator is not None and not isinstance(separator, str):
+        raise ProjectError("Legend separator must be text")
     # v0.7.0 replaces the old fixed wheel-zoom default with cursor-sensitive
     # zoom.  Existing projects therefore receive the new behaviour once, while
     # v0.7.0 projects can still persist an explicitly selected fixed mode.
@@ -151,6 +197,13 @@ def save_project(path: str, project: Project) -> None:
         "condition_presets": sanitize_condition_presets(project.condition_presets),
         "gradient_presets": project.gradient_presets,
         "annotations": [asdict(annotation) for annotation in project.annotations],
+        "work_directories": [asdict(item) for item in project.work_directories],
+        "vertical_markers": [
+            asdict(marker) for marker in project.vertical_markers
+        ],
+        "fraction_regions": [
+            asdict(region) for region in project.fraction_regions
+        ],
         "datasets": [],
     }
     used_names = set()
@@ -242,6 +295,31 @@ def load_project(path: str) -> Project:
                         )
                         for annotation in (manifest.get("annotations", []) or [])
                         if isinstance(annotation, dict)
+                    ],
+                    work_directories=_work_directories_from_value(
+                        manifest.get("work_directories", [])
+                    ),
+                    vertical_markers=[
+                        VerticalMarker(
+                            **{
+                                key: value
+                                for key, value in marker.items()
+                                if key in VerticalMarker.__dataclass_fields__
+                            }
+                        )
+                        for marker in (manifest.get("vertical_markers", []) or [])
+                        if isinstance(marker, dict)
+                    ],
+                    fraction_regions=[
+                        FractionRegion(
+                            **{
+                                key: value
+                                for key, value in region.items()
+                                if key in FractionRegion.__dataclass_fields__
+                            }
+                        )
+                        for region in (manifest.get("fraction_regions", []) or [])
+                        if isinstance(region, dict)
                     ],
                     project_path=source,
                 )

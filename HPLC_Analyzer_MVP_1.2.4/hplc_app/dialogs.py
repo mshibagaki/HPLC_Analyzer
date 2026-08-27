@@ -17,10 +17,13 @@ from .models import (
     AnalysisMethod,
     Dataset,
     GradientPoint,
+    LEGEND_COMPONENTS,
     PeakRegion,
     Project,
     Solvent,
     TextAnnotation,
+    WorkDirectory,
+    new_id,
     sanitize_condition_presets,
 )
 from .naming import build_project_filename, normalize_analysis_date
@@ -33,7 +36,7 @@ from .preset_store import (
     stable_preset_names,
 )
 from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
-from .qt_compat import CHECKED, ITEM_IS_EDITABLE, UNCHECKED, QtGui, QtWidgets, dialog_exec
+from .qt_compat import CHECKED, ITEM_IS_EDITABLE, UNCHECKED, USER_ROLE, QtGui, QtWidgets, dialog_exec
 
 
 def optional_float(text: str) -> Optional[float]:
@@ -62,6 +65,114 @@ def _populate_preset_sort_combo(combo, language: str):
     )
     for japanese, english, key in options:
         combo.addItem(japanese if language == "ja" else english, key)
+
+
+class ReportOptionsDialog(QtWidgets.QDialog):
+    """Select session-only details included in the next report operation."""
+
+    OPTION_LABELS = (
+        ("integration_range", "積分範囲", "Integration ranges"),
+        ("baseline", "ベースライン／積分方法", "Baselines / integration method"),
+        ("retention_time", "保持時間", "Retention times"),
+        ("gradient_b", "B %", "B %"),
+        ("gradient_conditions", "グラジエント曲線", "Gradient curve"),
+        ("quantitation", "定量値", "Quantitation values"),
+    )
+
+    def __init__(self, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.setWindowTitle(
+            "レポート出力項目" if language == "ja" else "Report contents"
+        )
+        root = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel(
+            "今回のレポートに含める項目を選択してください。この設定は解析値を変更しません。"
+            if language == "ja"
+            else "Choose content for this report. These choices do not change analysis values."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        self.checkboxes = {}
+        for key, japanese, english in self.OPTION_LABELS:
+            checkbox = QtWidgets.QCheckBox(
+                japanese if language == "ja" else english
+            )
+            checkbox.setChecked(True)
+            root.addWidget(checkbox)
+            self.checkboxes[key] = checkbox
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def option_values(self):
+        return {
+            key: checkbox.isChecked()
+            for key, checkbox in self.checkboxes.items()
+        }
+
+
+class ReportScopeDialog(QtWidgets.QDialog):
+    """Choose which chromatograms are included in a report operation."""
+
+    def __init__(
+        self,
+        total_count,
+        visible_count,
+        selected_count,
+        language="ja",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.language = language
+        self.setWindowTitle("レポート対象" if language == "ja" else "Report scope")
+        root = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel(
+            "解析レポートへ出力するクロマトグラムを選択してください。"
+            if language == "ja"
+            else "Choose which chromatograms to include in the analysis report."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        self.all_radio = QtWidgets.QRadioButton(
+            "すべて (%d)" % total_count
+            if language == "ja"
+            else "All (%d)" % total_count
+        )
+        self.visible_radio = QtWidgets.QRadioButton(
+            "現在表示中 (%d)" % visible_count
+            if language == "ja"
+            else "Currently visible (%d)" % visible_count
+        )
+        self.selected_radio = QtWidgets.QRadioButton(
+            "現在選択中 (%d)" % selected_count
+            if language == "ja"
+            else "Currently selected (%d)" % selected_count
+        )
+        for radio in (self.all_radio, self.visible_radio, self.selected_radio):
+            root.addWidget(radio)
+        self.visible_radio.setEnabled(visible_count > 0)
+        self.selected_radio.setEnabled(selected_count > 0)
+        if visible_count > 0:
+            self.visible_radio.setChecked(True)
+        else:
+            self.all_radio.setChecked(True)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def scope(self):
+        if self.selected_radio.isChecked():
+            return "selected"
+        if self.visible_radio.isChecked():
+            return "visible"
+        return "all"
 
 
 class PresetPreviewDialog(QtWidgets.QDialog):
@@ -217,6 +328,142 @@ class DirectoryImportDialog(QtWidgets.QDialog):
         return Path(self.directory_edit.text().strip())
 
 
+class WorkDirectoriesDialog(QtWidgets.QDialog):
+    """Edit the project-owned list of directories used by explicit reload."""
+
+    def __init__(self, directories, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.directories = deepcopy(list(directories))
+        self.setWindowTitle(
+            "作業ディレクトリ" if language == "ja" else "Work directories"
+        )
+        self.resize(760, 420)
+        root = QtWidgets.QVBoxLayout(self)
+        explanation = QtWidgets.QLabel(
+            "登録したディレクトリから新規TXT/GCDだけを再読み込みします。"
+            if language == "ja"
+            else "Reload imports only new TXT/GCD files from registered directories."
+        )
+        explanation.setWordWrap(True)
+        root.addWidget(explanation)
+        self.table = QtWidgets.QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(
+            ("有効", "ラベル", "ディレクトリ", "再帰")
+            if language == "ja"
+            else ("Enabled", "Label", "Directory", "Recursive")
+        )
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.setColumnWidth(2, 440)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        root.addWidget(self.table, 1)
+        row = QtWidgets.QHBoxLayout()
+        self.add_button = QtWidgets.QPushButton("追加…" if language == "ja" else "Add…")
+        self.remove_button = QtWidgets.QPushButton("削除" if language == "ja" else "Remove")
+        self.up_button = QtWidgets.QPushButton("↑" if language == "ja" else "Up")
+        self.down_button = QtWidgets.QPushButton("↓" if language == "ja" else "Down")
+        row.addWidget(self.add_button)
+        row.addWidget(self.remove_button)
+        row.addWidget(self.up_button)
+        row.addWidget(self.down_button)
+        row.addStretch(1)
+        root.addLayout(row)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText(
+            "保存" if language == "ja" else "Save"
+        )
+        root.addWidget(buttons)
+        self.add_button.clicked.connect(self._add)
+        self.remove_button.clicked.connect(self._remove)
+        self.up_button.clicked.connect(lambda: self._move(-1))
+        self.down_button.clicked.connect(lambda: self._move(1))
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        self._refresh()
+
+    def _refresh(self):
+        self.table.setRowCount(len(self.directories))
+        for row, entry in enumerate(self.directories):
+            enabled = QtWidgets.QTableWidgetItem()
+            enabled.setFlags(enabled.flags() | ITEM_IS_EDITABLE)
+            enabled.setCheckState(CHECKED if entry.enabled else UNCHECKED)
+            self.table.setItem(row, 0, enabled)
+            self.table.setItem(row, 1, QtWidgets.QTableWidgetItem(entry.label))
+            path = QtWidgets.QTableWidgetItem(entry.path)
+            path.setFlags(path.flags() & ~ITEM_IS_EDITABLE)
+            self.table.setItem(row, 2, path)
+            recursive = QtWidgets.QTableWidgetItem()
+            recursive.setCheckState(CHECKED if entry.recursive else UNCHECKED)
+            self.table.setItem(row, 3, recursive)
+
+    def _add(self):
+        self._sync_table()
+        selected = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "作業ディレクトリを選択" if self.language == "ja" else "Select work directory",
+            "",
+        )
+        if not selected:
+            return
+        normalized = str(Path(selected).resolve())
+        if any(str(Path(item.path).resolve()).casefold() == normalized.casefold() for item in self.directories):
+            QtWidgets.QMessageBox.warning(
+                self,
+                "作業ディレクトリ" if self.language == "ja" else "Work directories",
+                "同じディレクトリは既に登録されています。"
+                if self.language == "ja"
+                else "That directory is already registered.",
+            )
+            return
+        self.directories.append(WorkDirectory(path=normalized, label=Path(normalized).name))
+        self._refresh()
+        self.table.selectRow(len(self.directories) - 1)
+
+    def _remove(self):
+        self._sync_table()
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()}, reverse=True)
+        for row in rows:
+            del self.directories[row]
+        self._refresh()
+
+    def _move(self, offset):
+        self._sync_table()
+        row = self.table.currentRow()
+        target = row + offset
+        if row < 0 or target < 0 or target >= len(self.directories):
+            return
+        self.directories[row], self.directories[target] = (
+            self.directories[target],
+            self.directories[row],
+        )
+        self._refresh()
+        self.table.selectRow(target)
+
+    def _sync_table(self):
+        for row, entry in enumerate(self.directories):
+            entry.label = self.table.item(row, 1).text().strip() or Path(entry.path).name
+            entry.recursive = self.table.item(row, 3).checkState() == CHECKED
+            entry.enabled = self.table.item(row, 0).checkState() == CHECKED
+
+    def _accept(self):
+        self._sync_table()
+        updated = []
+        for row, entry in enumerate(self.directories):
+            label = self.table.item(row, 1).text().strip()
+            updated.append(
+                WorkDirectory(
+                    path=entry.path,
+                    label=label or Path(entry.path).name,
+                    recursive=self.table.item(row, 3).checkState() == CHECKED,
+                    enabled=self.table.item(row, 0).checkState() == CHECKED,
+                )
+            )
+        self.directories = updated
+        self.accept()
+
+
 class TextAnnotationDialog(QtWidgets.QDialog):
     """Create or edit one movable text box on the chromatogram."""
 
@@ -295,8 +542,10 @@ class TextAnnotationDialog(QtWidgets.QDialog):
 
         hint = QtWidgets.QLabel(
             "配置後はドラッグで移動、ダブルクリックで再編集できます。"
+            "ズームしても文字とボックスの表示サイズは変わりません。"
             if language == "ja"
-            else "After placement, drag to move and double-click to edit again."
+            else "After placement, drag to move and double-click to edit again. "
+            "The text and box stay the same screen size while zooming."
         )
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -422,6 +671,10 @@ class MetadataDialog(QtWidgets.QDialog):
             "試料情報" if language == "ja" else "Analyte information",
             (
                 ("analyte", "分析対象物" if language == "ja" else "Analyte", meta.analyte_name),
+                ("analyte_id", "分析対象物ID" if language == "ja" else "Analyte ID", meta.analyte_id),
+                ("analyte_aliases", "別名（カンマ区切り）" if language == "ja" else "Aliases (comma-separated)", ", ".join(meta.analyte_aliases)),
+                ("analyte_source", "データ出典" if language == "ja" else "Data source", meta.analyte_source),
+                ("epsilon_unit", "吸光係数の単位" if language == "ja" else "Extinction coefficient unit", meta.extinction_coefficient_unit),
                 ("injection", "注入量 (µL)" if language == "ja" else "Injection volume (µL)", format_optional(meta.injection_volume_ul)),
                 ("eps214", "ε214 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_214)),
                 ("eps280", "ε280 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_280)),
@@ -487,6 +740,18 @@ class MetadataDialog(QtWidgets.QDialog):
         meta.column_temperature_c = numeric["temperature"]
         meta.injection_volume_ul = numeric["injection"]
         meta.analyte_name = self.fields["analyte"].text().strip()
+        meta.analyte_id = self.fields["analyte_id"].text().strip()
+        if meta.analyte_name and not meta.analyte_id:
+            meta.analyte_id = "analyte-" + new_id()
+        meta.analyte_aliases = [
+            item.strip()
+            for item in self.fields["analyte_aliases"].text().split(",")
+            if item.strip()
+        ]
+        meta.analyte_source = self.fields["analyte_source"].text().strip()
+        meta.extinction_coefficient_unit = (
+            self.fields["epsilon_unit"].text().strip() or "M^-1 cm^-1"
+        )
         meta.molar_absorptivity_214 = numeric["eps214"]
         meta.molar_absorptivity_280 = numeric["eps280"]
         meta.molecular_weight_g_mol = numeric["mw"]
@@ -2416,6 +2681,104 @@ class GradientDialog(QtWidgets.QDialog):
         self.dataset.measurement.solvents = solvents
         self.dataset.gradient_preset_name = self.applied_preset_name
         self.accept()
+
+
+class LegendComposerDialog(QtWidgets.QDialog):
+    """Choose ordered fields used to derive on-screen legend labels."""
+
+    FIELD_LABELS = {
+        "run_id": ("Run ID", "Run ID"),
+        "label": ("ラベル", "Label"),
+        "timestamp": ("タイムスタンプ", "Timestamp"),
+        "wavelength": ("波長", "Wavelength"),
+        "column": ("カラム", "Column"),
+        "sample_name": ("サンプル名", "Sample name"),
+        "analyte_name": ("分析対象物", "Analyte"),
+        "group": ("グループ", "Group"),
+    }
+
+    def __init__(self, method: AnalysisMethod, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        selected = (
+            list(method.legend_components)
+            if isinstance(method.legend_components, list)
+            else ["label", "wavelength"]
+        )
+        selected = [item for item in selected if item in LEGEND_COMPONENTS]
+        order = selected + [item for item in LEGEND_COMPONENTS if item not in selected]
+        self.setWindowTitle("凡例設定" if language == "ja" else "Legend composer")
+        self.resize(480, 500)
+        root = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel(
+            "表示する項目を選び、上から順に連結します。空の値は省略されます。"
+            if language == "ja"
+            else "Selected fields are joined from top to bottom. Empty values are skipped."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        self.list_widget = QtWidgets.QListWidget()
+        for field_name in order:
+            labels = self.FIELD_LABELS[field_name]
+            item = QtWidgets.QListWidgetItem(
+                labels[0] if language == "ja" else labels[1]
+            )
+            item.setData(USER_ROLE, field_name)
+            item.setCheckState(CHECKED if field_name in selected else UNCHECKED)
+            self.list_widget.addItem(item)
+        root.addWidget(self.list_widget, 1)
+        move_row = QtWidgets.QHBoxLayout()
+        self.up_button = QtWidgets.QPushButton("↑ 上へ" if language == "ja" else "↑ Up")
+        self.down_button = QtWidgets.QPushButton("↓ 下へ" if language == "ja" else "↓ Down")
+        move_row.addWidget(self.up_button)
+        move_row.addWidget(self.down_button)
+        move_row.addStretch(1)
+        root.addLayout(move_row)
+        form = QtWidgets.QFormLayout()
+        self.separator_edit = QtWidgets.QLineEdit(method.legend_separator)
+        self.separator_edit.setMaxLength(16)
+        form.addRow("区切り文字" if language == "ja" else "Separator", self.separator_edit)
+        root.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+        self.up_button.clicked.connect(lambda: self._move(-1))
+        self.down_button.clicked.connect(lambda: self._move(1))
+
+    def _move(self, offset):
+        row = self.list_widget.currentRow()
+        target = row + offset
+        if row < 0 or target < 0 or target >= self.list_widget.count():
+            return
+        item = self.list_widget.takeItem(row)
+        self.list_widget.insertItem(target, item)
+        self.list_widget.setCurrentRow(target)
+
+    def selected_components(self):
+        return [
+            self.list_widget.item(row).data(USER_ROLE)
+            for row in range(self.list_widget.count())
+            if self.list_widget.item(row).checkState() == CHECKED
+        ]
+
+    def _accept(self):
+        if not self.selected_components():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "凡例設定" if self.language == "ja" else "Legend composer",
+                "1項目以上を選択してください。"
+                if self.language == "ja"
+                else "Select at least one field.",
+            )
+            return
+        self.accept()
+
+    def apply_to_method(self, method):
+        method.legend_components = self.selected_components()
+        method.legend_separator = self.separator_edit.text()
 
 
 class AxisLabelsDialog(QtWidgets.QDialog):

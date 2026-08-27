@@ -41,6 +41,7 @@ from hplc_app.exporters import (
 from hplc_app.models import (
     AnalysisMethod,
     Dataset,
+    FractionRegion,
     GradientPoint,
     MeasurementMetadata,
     PeakRegion,
@@ -48,10 +49,13 @@ from hplc_app.models import (
     Run,
     Solvent,
     TextAnnotation,
+    WorkDirectory,
+    VerticalMarker,
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
 from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
+from hplc_app.peak_fitting import emg_profile, fit_peak, gaussian_profile
 from hplc_app.preset_store import (
     filter_preset_names,
     load_preset_store,
@@ -68,6 +72,7 @@ from hplc_app.project_migrations import (
     migrate_project_manifest,
 )
 from hplc_app.report import (
+    ReportOptions,
     analysis_report_figures,
     export_analysis_report_pdf,
     render_analysis_report_pages,
@@ -76,6 +81,7 @@ from hplc_app.rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
     default_render_quality,
+    default_trace_color,
     minmax_decimate,
     screen_series,
 )
@@ -482,6 +488,13 @@ class AnalysisTests(unittest.TestCase):
         self.assertTrue(np.array_equal(full_x, values))
         self.assertTrue(np.array_equal(full_y, values * 2.0))
 
+    def test_default_trace_colors_follow_wavelength_families(self):
+        self.assertEqual(default_trace_color(280.0, 0), "#1f77b4")
+        self.assertEqual(default_trace_color(280.0, 1), "#2563eb")
+        self.assertEqual(default_trace_color(214.0, 0), "#d62728")
+        self.assertEqual(default_trace_color(214.4, 1), "#ef4444")
+        self.assertIsNone(default_trace_color(220.0, 0))
+
     def test_manual_integration_and_quantitation(self):
         dataset = self.synthetic_dataset()
         peak = integrate_peak(dataset, PeakRegion(start_min=3.5, end_min=6.5))
@@ -497,6 +510,34 @@ class AnalysisTests(unittest.TestCase):
             peak.amount_nmol, expected_area_sec * 1000.0 / (60.0 * 10000.0), places=4
         )
         self.assertAlmostEqual(peak.amount_ug, peak.amount_nmol * 10.0, places=4)
+
+    def test_peak_fitting_selects_gaussian_and_tailing_models_non_destructively(self):
+        x = np.linspace(0.0, 10.0, 401)
+        gaussian_dataset = Dataset(
+            time_min=x.copy(),
+            intensity_uv=2500.0 * gaussian_profile(x, 5.0, 0.42),
+        )
+        gaussian_region = PeakRegion(start_min=2.0, end_min=8.0)
+        original_signal = gaussian_dataset.intensity_uv.copy()
+        gaussian = fit_peak(gaussian_dataset, gaussian_region, "auto")
+        self.assertEqual(gaussian.model, "gaussian")
+        self.assertAlmostEqual(gaussian.retention_time_min, 5.0, delta=0.08)
+        self.assertGreater(gaussian.r_squared, 0.995)
+        self.assertTrue(np.array_equal(gaussian_dataset.intensity_uv, original_signal))
+        self.assertIsNone(gaussian_region.retention_time_min)
+
+        tailed_dataset = Dataset(
+            time_min=x.copy(),
+            intensity_uv=1800.0 * emg_profile(x, 4.4, 0.28, 0.85),
+        )
+        tailed = fit_peak(
+            tailed_dataset,
+            PeakRegion(start_min=2.0, end_min=9.5),
+            "auto",
+        )
+        self.assertEqual(tailed.model, "emg")
+        self.assertGreater(tailed.parameters["tau_min"], 0.2)
+        self.assertGreater(tailed.r_squared, 0.98)
 
     def test_manual_baseline_is_saved_and_used(self):
         dataset = self.synthetic_dataset()
@@ -701,7 +742,7 @@ class ProjectTests(unittest.TestCase):
         untouched = deepcopy(manifest)
         migrated = migrate_project_manifest(manifest)
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 104)
+        self.assertEqual(migrated["schema_version"], 105)
         self.assertEqual(len(migrated["runs"]), 2)
         self.assertEqual(
             [item["id"] for item in migrated["runs"]],
@@ -789,7 +830,7 @@ class ProjectTests(unittest.TestCase):
         migrated = migrate_project_manifest(manifest)
 
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 104)
+        self.assertEqual(migrated["schema_version"], 105)
         self.assertEqual(migrated["runs"][0]["label"], "sample A")
         self.assertEqual(migrated["runs"][0]["short_label"], "A")
         self.assertEqual(
@@ -804,6 +845,24 @@ class ProjectTests(unittest.TestCase):
             [dataset["measurement"]["wavelength_nm"] for dataset in migrated["datasets"]],
             [214.0, 280.0],
         )
+
+    def test_schema_104_adds_empty_work_directories_and_rejects_invalid_value(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 104,
+            "runs": [],
+            "datasets": [],
+        }
+        untouched = deepcopy(manifest)
+        migrated = migrate_project_manifest(manifest)
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], 105)
+        self.assertEqual(migrated["work_directories"], [])
+        invalid = dict(manifest, work_directories={"path": "C:/HPLC"})
+        with self.assertRaisesRegex(
+            ProjectMigrationError, "work directories must be an array"
+        ):
+            migrate_project_manifest(invalid)
 
     def test_manifest_migration_rejects_invalid_structures_clearly(self):
         with self.assertRaisesRegex(ProjectMigrationError, "datasets must be an array"):
@@ -1296,6 +1355,14 @@ class ProjectTests(unittest.TestCase):
             column_name="COSMOSIL C4",
             condition_name="RP-C4",
             author="MShiba",
+            work_directories=[
+                WorkDirectory(
+                    path="C:/HPLC/pac1", label="pac1", recursive=True
+                ),
+                WorkDirectory(
+                    path="D:/HPLC/pac2", label="pac2", enabled=False
+                ),
+            ],
             datasets=[dataset],
             condition_presets={"280 nm": {"wavelength_nm": 280.0, "aux_range_au_per_v": 1.0}},
             gradient_presets={
@@ -1308,7 +1375,17 @@ class ProjectTests(unittest.TestCase):
         dataset.x_shift_min = 0.25
         dataset.gradient_preset_name = "RP-C4"
         project.method.show_gradient_b = True
+        project.method.show_major_grid = True
+        project.method.gradient_legend_include_dataset_name = True
         project.method.legend_location = "upper left"
+        project.method.legend_components = [
+            "run_id",
+            "label",
+            "timestamp",
+            "wavelength",
+            "column",
+        ]
+        project.method.legend_separator = " | "
         project.method.gradient_axis_label = "ACN (%)"
         project.method.show_retention_labels = True
         project.method.zoom_axis = "x"
@@ -1329,7 +1406,14 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.condition_presets["280 nm"]["wavelength_nm"], 280.0)
             self.assertIn("RP-C4", loaded.gradient_presets)
             self.assertTrue(loaded.method.show_gradient_b)
+            self.assertTrue(loaded.method.show_major_grid)
+            self.assertTrue(loaded.method.gradient_legend_include_dataset_name)
             self.assertEqual(loaded.method.legend_location, "upper left")
+            self.assertEqual(
+                loaded.method.legend_components,
+                ["run_id", "label", "timestamp", "wavelength", "column"],
+            )
+            self.assertEqual(loaded.method.legend_separator, " | ")
             self.assertEqual(loaded.method.gradient_axis_label, "ACN (%)")
             self.assertTrue(loaded.method.show_retention_labels)
             self.assertEqual(loaded.method.zoom_axis, "x")
@@ -1338,6 +1422,7 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.column_name, "COSMOSIL C4")
             self.assertEqual(loaded.condition_name, "RP-C4")
             self.assertEqual(loaded.author, "MShiba")
+            self.assertEqual(loaded.work_directories, project.work_directories)
             with zipfile.ZipFile(path, "r") as archive:
                 manifest = json.loads(archive.read("project.json").decode("utf-8"))
             self.assertEqual(manifest["format_major"], PROJECT_FORMAT_MAJOR)
@@ -1397,6 +1482,46 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(second.measurement.column_name, "C18")
         self.assertEqual(first.measurement.wavelength_nm, 220.0)
         self.assertEqual(second.measurement.wavelength_nm, 280.0)
+
+    def test_legend_composer_uses_order_skips_empty_values_and_preserves_authority(self):
+        run = Run(
+            id="run-42",
+            label="Sample A",
+            timestamp="2026-08-27T12:00:00",
+            column_name="C4",
+        )
+        dataset = Dataset(
+            run_id=run.id,
+            label="Sample A",
+            measurement=MeasurementMetadata(wavelength_nm=280.0),
+        )
+        project = Project(runs=[run], datasets=[dataset])
+        project.method.legend_components = [
+            "run_id",
+            "label",
+            "analyte_name",
+            "timestamp",
+            "wavelength",
+            "column",
+        ]
+        project.method.legend_separator = "*"
+        before = deepcopy(run)
+
+        self.assertEqual(
+            project.legend_label_for(dataset),
+            "run-42*Sample A*2026-08-27T12:00:00*280 nm*C4",
+        )
+        self.assertEqual(run, before)
+        dataset.label = "Sample A 280 nm"
+        dataset.short_label = "Sample A 280 nm"
+        self.assertEqual(
+            project.legend_label_for(dataset),
+            "run-42*Sample A 280 nm*2026-08-27T12:00:00*C4",
+        )
+
+        project.method.legend_components = ["run_id", "column"]
+        project.method.legend_separator = ""
+        self.assertEqual(project.legend_label_for(dataset), "run-42C4")
 
     def test_shared_run_round_trip_preserves_sources_peaks_and_channel_values(self):
         first = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -1585,6 +1710,16 @@ class ProjectTests(unittest.TestCase):
             )
         ]
         recalculate_dataset_peaks(dataset)
+        dataset.peaks[0].fit_model = "gaussian"
+        dataset.peaks[0].fit_parameters = {
+            "amplitude_uv": 1200.0,
+            "center_min": 1.5,
+            "sigma_min": 0.2,
+        }
+        dataset.peaks[0].fit_retention_time_min = 1.5
+        dataset.peaks[0].fit_rmse_uv = 3.0
+        dataset.peaks[0].fit_r_squared = 0.998
+        dataset.peaks[0].fit_aic = 42.0
         project = Project(datasets=[dataset])
         project.method.view_mode = "overview_detail"
         project.method.x_tick_mode = "manual"
@@ -1596,6 +1731,11 @@ class ProjectTests(unittest.TestCase):
         project.method.retention_label_font_size = 11.5
         project.method.retention_label_color = "#000000"
         project.method.auto_peak_snr_threshold = 8.0
+        dataset.measurement.analyte_name = "LL-37"
+        dataset.measurement.analyte_id = "analyte-ll37"
+        dataset.measurement.analyte_aliases = ["CAP18", "hCAP-18"]
+        dataset.measurement.analyte_source = "UniProt P49913"
+        dataset.measurement.extinction_coefficient_unit = "M^-1 cm^-1"
         project.annotations = [
             TextAnnotation(
                 text="LL-37",
@@ -1606,6 +1746,12 @@ class ProjectTests(unittest.TestCase):
                 font_size=12.0,
                 color="#123456",
             )
+        ]
+        project.vertical_markers = [
+            VerticalMarker(x_min=7.25, y_axis=2, color="#123456")
+        ]
+        project.fraction_regions = [
+            FractionRegion(start_min=2.0, end_min=8.0, interval_min=1.5)
         ]
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "new_fields.hplcproj")
@@ -1620,12 +1766,32 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.method.retention_label_font_size, 11.5)
             self.assertEqual(loaded.method.retention_label_color, "#000000")
             self.assertEqual(loaded.method.auto_peak_snr_threshold, 8.0)
+            loaded_meta = loaded.datasets[0].measurement
+            self.assertEqual(loaded_meta.analyte_id, "analyte-ll37")
+            self.assertEqual(loaded_meta.analyte_aliases, ["CAP18", "hCAP-18"])
+            self.assertEqual(loaded_meta.analyte_source, "UniProt P49913")
+            self.assertEqual(
+                loaded_meta.extinction_coefficient_unit, "M^-1 cm^-1"
+            )
             self.assertEqual(loaded.datasets[0].peaks[0].integration_source, "auto")
             self.assertEqual(loaded.datasets[0].peaks[0].notes, "identified as LL-37")
+            self.assertEqual(loaded.datasets[0].peaks[0].fit_model, "gaussian")
+            self.assertEqual(
+                loaded.datasets[0].peaks[0].fit_parameters["sigma_min"], 0.2
+            )
+            self.assertEqual(loaded.datasets[0].peaks[0].fit_r_squared, 0.998)
             self.assertEqual(len(loaded.annotations), 1)
             self.assertEqual(loaded.annotations[0].text, "LL-37")
             self.assertEqual(loaded.annotations[0].dataset_id, dataset.id)
             self.assertEqual(loaded.annotations[0].font_family, "Arial")
+            self.assertEqual(len(loaded.vertical_markers), 1)
+            self.assertAlmostEqual(loaded.vertical_markers[0].x_min, 7.25)
+            self.assertEqual(loaded.vertical_markers[0].y_axis, 2)
+            self.assertEqual(loaded.vertical_markers[0].color, "#123456")
+            self.assertEqual(len(loaded.fraction_regions), 1)
+            self.assertEqual(loaded.fraction_regions[0].start_min, 2.0)
+            self.assertEqual(loaded.fraction_regions[0].end_min, 8.0)
+            self.assertEqual(loaded.fraction_regions[0].interval_min, 1.5)
 
     def test_peak_area_seconds_round_trip_and_v113_migration(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -2400,6 +2566,45 @@ class ProjectTests(unittest.TestCase):
         ]
         self.assertIn("Area (mAU·sec)", report_cells)
         for figure in figures:
+            figure.clear()
+
+        compact_options = ReportOptions(
+            integration_range=False,
+            baseline=False,
+            retention_time=False,
+            gradient_b=False,
+            gradient_conditions=False,
+            quantitation=False,
+        )
+        compact = analysis_report_figures(
+            project, [dataset], "en", compact_options
+        )
+        compact_plot = next(
+            axis
+            for axis in compact[0].axes
+            if axis.get_title(loc="left") == "Chromatogram"
+        )
+        self.assertNotIn(
+            retention_label, [text.get_text() for text in compact_plot.texts]
+        )
+        self.assertFalse(
+            any(line.get_color() == "#9ca3af" for line in compact_plot.lines)
+        )
+        compact_cells = [
+            cell.get_text().get_text()
+            for axis in compact[0].axes
+            for table in axis.tables
+            for cell in table.get_celld().values()
+        ]
+        for omitted_header in (
+            "RT (min)",
+            "Range (min)",
+            "%B",
+            "Amount (µg)",
+            "Method",
+        ):
+            self.assertNotIn(omitted_header, compact_cells)
+        for figure in compact:
             figure.clear()
         with tempfile.TemporaryDirectory() as directory:
             pdf_path = export_analysis_report_pdf(

@@ -30,6 +30,10 @@ RUN_MEASUREMENT_FIELD_MAP = {
     "injection_volume_ul": "injection_volume_ul",
     "cell_path_length_cm": "cell_path_length_cm",
     "analyte_name": "analyte_name",
+    "analyte_id": "analyte_id",
+    "analyte_aliases": "analyte_aliases",
+    "analyte_source": "analyte_source",
+    "extinction_coefficient_unit": "extinction_coefficient_unit",
     "molar_absorptivity_214": "molar_absorptivity_214",
     "molar_absorptivity_280": "molar_absorptivity_280",
     "molecular_weight_g_mol": "molecular_weight_g_mol",
@@ -37,6 +41,16 @@ RUN_MEASUREMENT_FIELD_MAP = {
     "gradient": "gradient",
 }
 DATASET_MEASUREMENT_FIELDS = frozenset(("wavelength_nm", "aux_range_au_per_v"))
+LEGEND_COMPONENTS = (
+    "run_id",
+    "label",
+    "timestamp",
+    "wavelength",
+    "column",
+    "sample_name",
+    "analyte_name",
+    "group",
+)
 
 
 def sanitize_condition_presets(
@@ -94,6 +108,10 @@ class MeasurementMetadata:
     injection_volume_ul: Optional[float] = None
     cell_path_length_cm: Optional[float] = 1.0
     analyte_name: str = ""
+    analyte_id: str = ""
+    analyte_aliases: List[str] = field(default_factory=list)
+    analyte_source: str = ""
+    extinction_coefficient_unit: str = "M^-1 cm^-1"
     molar_absorptivity_214: Optional[float] = None
     molar_absorptivity_280: Optional[float] = None
     molecular_weight_g_mol: Optional[float] = None
@@ -171,6 +189,10 @@ class Run:
     injection_volume_ul: Optional[float] = None
     cell_path_length_cm: Optional[float] = 1.0
     analyte_name: str = ""
+    analyte_id: str = ""
+    analyte_aliases: List[str] = field(default_factory=list)
+    analyte_source: str = ""
+    extinction_coefficient_unit: str = "M^-1 cm^-1"
     molar_absorptivity_214: Optional[float] = None
     molar_absorptivity_280: Optional[float] = None
     molecular_weight_g_mol: Optional[float] = None
@@ -249,11 +271,17 @@ class PeakRegion:
     split_group_id: str = ""
     integration_source: str = "manual"
     notes: str = ""
+    fit_model: str = ""
+    fit_parameters: Dict[str, float] = field(default_factory=dict)
+    fit_retention_time_min: Optional[float] = None
+    fit_rmse_uv: Optional[float] = None
+    fit_r_squared: Optional[float] = None
+    fit_aic: Optional[float] = None
 
 
 @dataclass
 class TextAnnotation:
-    """User-defined text box positioned in chromatogram data coordinates."""
+    """Text positioned in data coordinates with screen-point font and box size."""
 
     id: str = field(default_factory=new_id)
     text: str = ""
@@ -266,6 +294,43 @@ class TextAnnotation:
     color: str = "#000000"
     background_color: str = "#ffffff"
     border_color: str = "#6b7280"
+
+
+@dataclass
+class WorkDirectory:
+    """One project-owned source directory used for explicit reloads."""
+
+    path: str = ""
+    label: str = ""
+    recursive: bool = False
+    enabled: bool = True
+
+
+@dataclass
+class VerticalMarker:
+    """Persistent vertical reference line positioned in data coordinates."""
+
+    id: str = field(default_factory=new_id)
+    x_min: float = 0.0
+    y_axis: int = 1
+    color: str = "#7c3aed"
+
+
+@dataclass
+class FractionRegion:
+    """A selected collection window divided into fixed time intervals."""
+
+    id: str = field(default_factory=new_id)
+    start_min: float = 0.0
+    end_min: float = 0.0
+    interval_min: float = 1.0
+
+    def __post_init__(self):
+        values = (self.start_min, self.end_min, self.interval_min)
+        if not all(np.isfinite(float(value)) for value in values):
+            raise ValueError("Fraction range values must be finite")
+        if float(self.interval_min) <= 0:
+            raise ValueError("Fraction interval must be positive")
 
 
 @dataclass
@@ -380,10 +445,16 @@ class AnalysisMethod:
     retention_label_font_size: float = 8.0
     retention_label_color: str = "#000000"
     show_gradient_b: bool = False
+    show_major_grid: bool = False
+    gradient_legend_include_dataset_name: bool = False
     legend_location: str = "best"
     legend_font_family: str = "Arial"
     legend_font_size: float = 9.0
     legend_font_color: str = "#000000"
+    legend_components: List[str] = field(
+        default_factory=lambda: ["label", "wavelength"]
+    )
+    legend_separator: str = "_"
     x_tick_mode: str = "auto"
     x_major_tick_min: float = 5.0
     x_minor_tick_min: float = 1.0
@@ -433,6 +504,9 @@ class Project:
     runs: List[Run] = field(default_factory=list)
     datasets: List[Dataset] = field(default_factory=list)
     annotations: List[TextAnnotation] = field(default_factory=list)
+    work_directories: List[WorkDirectory] = field(default_factory=list)
+    vertical_markers: List[VerticalMarker] = field(default_factory=list)
+    fraction_regions: List[FractionRegion] = field(default_factory=list)
     condition_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     gradient_presets: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     project_path: str = ""
@@ -471,6 +545,46 @@ class Project:
         if run is None:
             raise ValueError("Dataset references a missing Run: %s" % dataset.run_id)
         return run
+
+    def legend_label_for(self, dataset: Dataset) -> str:
+        """Build a derived legend without changing any authoritative field."""
+        run = self.run_for(dataset)
+        components = self.method.legend_components
+        if not isinstance(components, list):
+            components = ["label", "wavelength"]
+        ordered = [name for name in components if name in LEGEND_COMPONENTS]
+        if not ordered:
+            ordered = ["label", "wavelength"]
+        label = (
+            dataset.short_label
+            or run.label
+            or dataset.label
+            or dataset.original_filename
+        )
+        values = {
+            "run_id": run.id,
+            "label": label,
+            "timestamp": run.timestamp,
+            "wavelength": dataset.wavelength_text(),
+            "column": run.column_name,
+            "sample_name": run.sample_name,
+            "analyte_name": run.analyte_name,
+            "group": run.group,
+        }
+        result = []
+        for name in ordered:
+            value = str(values.get(name, "") or "").strip()
+            if not value:
+                continue
+            if name == "wavelength" and any(
+                value.casefold() in existing.casefold() for existing in result
+            ):
+                continue
+            result.append(value)
+        separator = self.method.legend_separator
+        if not isinstance(separator, str):
+            separator = "_"
+        return separator.join(result) or dataset.legend_label()
 
     def add_dataset(self, dataset: Dataset, run: Optional[Run] = None) -> Run:
         index = self.__dict__.get("_run_index", {})

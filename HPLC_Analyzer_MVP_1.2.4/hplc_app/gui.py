@@ -31,13 +31,17 @@ from .dialogs import (
     BatchMetadataDialog,
     DirectoryImportDialog,
     GradientDialog,
+    LegendComposerDialog,
     LabDatabaseDialog,
     MetadataDialog,
     PeakRangeDialog,
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
+    ReportOptionsDialog,
+    ReportScopeDialog,
     TextAnnotationDialog,
+    WorkDirectoriesDialog,
     dialog_exec,
 )
 from .database import initialize_database, sync_project_to_database
@@ -48,11 +52,14 @@ from .exporters import (
     export_peak_csv,
 )
 from .i18n import Translator
+from .import_batch import discover_chromatogram_files, discover_reload_candidates
 from .models import (
     Dataset,
+    FractionRegion,
     PeakRegion,
     Project,
     TextAnnotation,
+    VerticalMarker,
     sanitize_condition_presets,
 )
 from .naming import (
@@ -61,6 +68,7 @@ from .naming import (
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
+from .peak_fitting import PeakFitResult, evaluate_fit_profile, fit_peak
 from .preset_store import (
     load_preset_store_with_metadata,
     merge_preset_sources,
@@ -73,11 +81,16 @@ from .project_io import (
     load_project,
     save_project,
 )
-from .report import export_analysis_report_pdf, render_analysis_report_pages
+from .report import (
+    ReportOptions,
+    export_analysis_report_pdf,
+    render_analysis_report_pages,
+)
 from .rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
     default_render_quality,
+    default_trace_color,
     normalize_render_quality,
     screen_series,
 )
@@ -136,18 +149,31 @@ COLORS = (
 INTEGRATION_BOUNDARY_COLOR = "#9ca3af"
 AVAILABLE_PLOT_FONTS = {font.name for font in font_manager.fontManager.ttflist}
 
+
+def dataset_display_color(dataset: Dataset, ordinal: int) -> str:
+    """Resolve an explicit color first, then a wavelength-aware display default."""
+
+    return (
+        dataset.color
+        or default_trace_color(dataset.measurement.wavelength_nm, ordinal)
+        or COLORS[ordinal % len(COLORS)]
+    )
+
+
 DATASET_VISIBLE_COLUMN = 0
 DATASET_RUN_ID_COLUMN = 1
 DATASET_LABEL_COLUMN = 2
-DATASET_WAVELENGTH_COLUMN = 3
-DATASET_GROUP_COLUMN = 4
-DATASET_Y_AXIS_COLUMN = 5
-DATASET_AUV_COLUMN = 6
-DATASET_X_SHIFT_COLUMN = 7
-DATASET_OFFSET_COLUMN = 8
-DATASET_COLOR_COLUMN = 9
-DATASET_SOURCE_COLUMN = 10
-DATASET_COLUMN_COUNT = 11
+DATASET_TIMESTAMP_COLUMN = 3
+DATASET_WAVELENGTH_COLUMN = 4
+DATASET_GROUP_COLUMN = 5
+DATASET_Y_AXIS_COLUMN = 6
+DATASET_AUV_COLUMN = 7
+DATASET_X_SHIFT_COLUMN = 8
+DATASET_OFFSET_COLUMN = 9
+DATASET_COLOR_COLUMN = 10
+DATASET_COLUMN_NAME_COLUMN = 11
+DATASET_SOURCE_COLUMN = 12
+DATASET_COLUMN_COUNT = 13
 
 
 def _resolved_plot_font(family: str):
@@ -205,7 +231,14 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
         if owner is None or not getattr(owner, "_view_initialized", False):
             return
         target = owner._pan_target(event)
-        if target not in ("x", "y1", "y2", "plot"):
+        if target not in (
+            "x",
+            "y1",
+            "y2",
+            "plot",
+            "plot_y1",
+            "plot_y2",
+        ):
             return
         if self._nav_stack() is None:
             self.push_current()
@@ -247,19 +280,19 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
             return
         target = state["target"]
         bbox = owner.axes.bbox
-        if target in ("x", "plot"):
+        if target in ("x", "plot", "plot_y1", "plot_y2"):
             owner.axes.set_xlim(
                 *self._shifted_limits(
                     state["x"], float(event.x) - state["start_x"], bbox.width
                 )
             )
-        if target in ("y1", "plot"):
+        if target in ("y1", "plot", "plot_y1"):
             owner.axes.set_ylim(
                 *self._shifted_limits(
                     state["y1"], float(event.y) - state["start_y"], bbox.height
                 )
             )
-        if target in ("y2", "plot") and owner.axes_right is not None:
+        if target in ("y2", "plot", "plot_y2") and owner.axes_right is not None:
             y2_limits = state.get("y2")
             if y2_limits is not None:
                 owner.axes_right.set_ylim(
@@ -434,6 +467,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interaction_cursor = None
         self._annotation_artists = {}
         self._annotation_drag = None
+        self._vertical_marker_artists = {}
+        self._selected_vertical_marker_id = ""
         self._edit_range_peak_id = None
         self._overview_view_patch = None
         self.axes_overview = None
@@ -914,6 +949,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox = QtWidgets.QCheckBox()
         self.show_retention_checkbox = QtWidgets.QCheckBox()
         self.show_gradient_checkbox = QtWidgets.QCheckBox()
+        self.show_grid_checkbox = QtWidgets.QCheckBox()
+        self.gradient_legend_name_checkbox = QtWidgets.QCheckBox()
         self.legend_label = QtWidgets.QLabel()
         self.legend_combo = QtWidgets.QComboBox()
         for label, value in (
@@ -926,6 +963,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             self.legend_combo.addItem(label, value)
         self.axis_labels_button = QtWidgets.QPushButton()
+        self.legend_settings_button = QtWidgets.QPushButton()
         self.annotation_action = self._action(checkable=True)
         self.annotation_action.toggled.connect(self._toggle_annotation_mode)
         self.annotation_button = QtWidgets.QToolButton()
@@ -934,12 +972,15 @@ class MainWindow(QtWidgets.QMainWindow):
         display_controls.addWidget(self.unit_combo, 0, 1)
         display_controls.addWidget(self.legend_label, 1, 0)
         display_controls.addWidget(self.legend_combo, 1, 1)
-        display_controls.addWidget(self.show_integration_checkbox, 2, 0, 1, 2)
-        display_controls.addWidget(self.show_retention_checkbox, 3, 0, 1, 2)
-        display_controls.addWidget(self.show_gradient_checkbox, 4, 0, 1, 2)
-        display_controls.addWidget(self.axis_labels_button, 5, 0, 1, 2)
-        display_controls.addWidget(self.annotation_button, 6, 0, 1, 2)
-        display_controls.setRowStretch(7, 1)
+        display_controls.addWidget(self.legend_settings_button, 2, 0, 1, 2)
+        display_controls.addWidget(self.show_integration_checkbox, 3, 0, 1, 2)
+        display_controls.addWidget(self.show_retention_checkbox, 4, 0, 1, 2)
+        display_controls.addWidget(self.show_gradient_checkbox, 5, 0, 1, 2)
+        display_controls.addWidget(self.gradient_legend_name_checkbox, 6, 0, 1, 2)
+        display_controls.addWidget(self.show_grid_checkbox, 7, 0, 1, 2)
+        display_controls.addWidget(self.axis_labels_button, 8, 0, 1, 2)
+        display_controls.addWidget(self.annotation_button, 9, 0, 1, 2)
+        display_controls.setRowStretch(10, 1)
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
@@ -956,6 +997,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode_combo = QtWidgets.QComboBox()
         self.view_mode_combo.addItem("Single", "single")
         self.view_mode_combo.addItem("Overview + detail", "overview_detail")
+        self.view_mode_combo.addItem("Split Y1 / Y2", "split_y_axes")
         self.move_trace_button = QtWidgets.QPushButton()
         self.move_trace_button.setCheckable(True)
         self.move_axis_combo = QtWidgets.QComboBox()
@@ -998,7 +1040,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.edit_peak_button.setCheckable(True)
         self.split_peak_button = QtWidgets.QPushButton()
         self.split_peak_button.setCheckable(True)
+        self.fraction_button = QtWidgets.QPushButton()
+        self.fraction_button.setCheckable(True)
+        self.fraction_interval_spin = QtWidgets.QDoubleSpinBox()
+        self.fraction_interval_spin.setRange(0.01, 1000.0)
+        self.fraction_interval_spin.setDecimals(2)
+        self.fraction_interval_spin.setValue(1.0)
+        self.fraction_interval_spin.setSuffix(" min")
+        self.clear_fractions_button = QtWidgets.QPushButton()
         self.auto_detect_button = QtWidgets.QPushButton()
+        self.fit_peak_button = QtWidgets.QPushButton()
         self.select_all_peaks_button = QtWidgets.QPushButton()
         self.delete_peak_button = QtWidgets.QPushButton()
         integration_controls.addWidget(self.baseline_label, 0, 0)
@@ -1006,10 +1057,14 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.integrate_button, 1, 0)
         integration_controls.addWidget(self.edit_peak_button, 1, 1)
         integration_controls.addWidget(self.split_peak_button, 1, 2)
-        integration_controls.addWidget(self.auto_detect_button, 2, 0, 1, 3)
+        integration_controls.addWidget(self.auto_detect_button, 2, 0, 1, 2)
+        integration_controls.addWidget(self.fit_peak_button, 2, 2)
         integration_controls.addWidget(self.select_all_peaks_button, 3, 0, 1, 2)
         integration_controls.addWidget(self.delete_peak_button, 3, 2)
-        integration_controls.setRowStretch(4, 1)
+        integration_controls.addWidget(self.fraction_button, 4, 0)
+        integration_controls.addWidget(self.fraction_interval_spin, 4, 1)
+        integration_controls.addWidget(self.clear_fractions_button, 4, 2)
+        integration_controls.setRowStretch(5, 1)
 
         controls.addWidget(self.display_group, 4)
         controls.addWidget(self.navigation_group, 2)
@@ -1050,17 +1105,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox.toggled.connect(self._method_controls_changed)
         self.show_retention_checkbox.toggled.connect(self._method_controls_changed)
         self.show_gradient_checkbox.toggled.connect(self._method_controls_changed)
+        self.show_grid_checkbox.toggled.connect(self._method_controls_changed)
+        self.gradient_legend_name_checkbox.toggled.connect(self._method_controls_changed)
         self.legend_combo.currentIndexChanged.connect(self._method_controls_changed)
         self.zoom_axis_combo.currentIndexChanged.connect(self._zoom_axis_changed)
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
         self.integrate_button.toggled.connect(self._toggle_integration)
         self.split_peak_button.toggled.connect(self._toggle_split_mode)
+        self.fraction_button.toggled.connect(self._toggle_fraction_mode)
+        self.clear_fractions_button.clicked.connect(self.clear_fraction_regions)
         self.edit_peak_button.toggled.connect(self._toggle_edit_range_mode)
         self.delete_peak_button.clicked.connect(self.delete_peak)
         self.auto_detect_button.clicked.connect(self.auto_detect_peaks)
+        self.fit_peak_button.clicked.connect(self.fit_selected_peak)
         self.select_all_peaks_button.clicked.connect(self.peak_table.selectAll)
         self.move_trace_button.toggled.connect(self._toggle_move_mode)
         self.axis_labels_button.clicked.connect(self.edit_axis_labels)
+        self.legend_settings_button.clicked.connect(self.edit_legend_composer)
         self.reset_view_button.clicked.connect(self._reset_view)
         self.reset_x_view_button.clicked.connect(self._reset_x_view)
         self.reset_y_view_button.clicked.connect(self._reset_y_view)
@@ -1082,6 +1143,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button,
             self.edit_peak_button,
             self.split_peak_button,
+            self.fraction_button,
             self.move_trace_button,
             self.pointer_action,
             self.annotation_action,
@@ -1150,6 +1212,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "method": deepcopy(self.project.method),
             "runs": deepcopy(self.project.runs),
             "annotations": deepcopy(self.project.annotations),
+            "work_directories": deepcopy(self.project.work_directories),
+            "vertical_markers": deepcopy(self.project.vertical_markers),
+            "fraction_regions": deepcopy(self.project.fraction_regions),
             "condition_presets": deepcopy(self.project.condition_presets),
             "gradient_presets": deepcopy(self.project.gradient_presets),
             "dataset_order": [dataset.id for dataset in self.project.datasets],
@@ -1165,6 +1230,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method = deepcopy(state["method"])
         self.project.runs = deepcopy(state.get("runs", self.project.runs))
         self.project.annotations = deepcopy(state.get("annotations", []))
+        self.project.work_directories = deepcopy(state.get("work_directories", []))
+        self.project.vertical_markers = deepcopy(
+            state.get("vertical_markers", [])
+        )
+        self.project.fraction_regions = deepcopy(
+            state.get("fraction_regions", [])
+        )
         self.project.condition_presets = deepcopy(state["condition_presets"])
         self.project.gradient_presets = deepcopy(state["gradient_presets"])
         order = state.get("dataset_order", [])
@@ -1317,7 +1389,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.save_as_action = self._action(self.save_project_as)
         self.import_action = self._action(self.import_ascii)
         self.import_directory_action = self._action(self.import_directory)
+        self.work_directories_action = self._action(self.edit_work_directories)
+        self.reload_work_directories_action = self._action(self.reload_work_directories)
         self.export_figure_action = self._action(self.export_figure)
+        self.copy_view_action = self._action(self.copy_view_to_clipboard)
+        self.print_view_action = self._action(self.print_current_view)
         self.export_peaks_action = self._action(self.export_peaks)
         self.export_trace_action = self._action(self.export_trace)
         self.export_traces_action = self._action(self.export_visible_traces)
@@ -1336,9 +1412,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.file_menu.addSeparator()
         self.file_menu.addAction(self.import_action)
         self.file_menu.addAction(self.import_directory_action)
+        self.file_menu.addAction(self.work_directories_action)
+        self.file_menu.addAction(self.reload_work_directories_action)
         self.file_menu.addSeparator()
         for action in (
             self.export_figure_action,
+            self.copy_view_action,
+            self.print_view_action,
             self.export_peaks_action,
             self.export_trace_action,
             self.export_traces_action,
@@ -1401,7 +1481,11 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.save_as_action, "save_as"),
             (self.import_action, "import"),
             (self.import_directory_action, "import_directory"),
+            (self.work_directories_action, "work_directories"),
+            (self.reload_work_directories_action, "reload_work_directories"),
             (self.export_figure_action, "export_figure"),
+            (self.copy_view_action, "copy_view"),
+            (self.print_view_action, "print_view"),
             (self.export_peaks_action, "export_peaks"),
             (self.export_trace_action, "export_trace"),
             (self.export_traces_action, "export_traces"),
@@ -1432,6 +1516,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 t("visible"),
                 t("run_id"),
                 t("label"),
+                t("timestamp"),
                 t("wavelength"),
                 t("group"),
                 t("y_axis"),
@@ -1439,6 +1524,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 t("x_shift"),
                 t("offset"),
                 t("color"),
+                t("column"),
                 t("source"),
             )
         )
@@ -1469,6 +1555,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for index, text in enumerate(baseline_texts):
             self.baseline_combo.setItemText(index, text)
         self.legend_label.setText(t("legend"))
+        self.legend_settings_button.setText(t("legend_settings"))
         legend_texts = (
             t("legend_auto"),
             t("legend_upper_right"),
@@ -1482,10 +1569,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.integrate_button.setText(t("integrate"))
         self.edit_peak_button.setText(t("edit_peak"))
         self.split_peak_button.setText(t("split_peak"))
+        self.fraction_button.setText(t("fraction_mode"))
+        self.clear_fractions_button.setText(t("clear_fractions"))
         self.delete_peak_button.setText(t("delete_peak"))
         self.show_integration_checkbox.setText(t("show_integration"))
         self.show_retention_checkbox.setText(t("show_retention_labels"))
         self.show_gradient_checkbox.setText(t("show_gradient_b"))
+        self.show_grid_checkbox.setText(t("show_major_grid"))
+        self.gradient_legend_name_checkbox.setText(t("gradient_legend_include_name"))
         self.reset_view_button.setText(t("reset_view"))
         self.reset_x_view_button.setText(t("reset_x_view"))
         self.reset_y_view_button.setText(t("reset_y_view"))
@@ -1497,6 +1588,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode_label.setText(t("view_mode"))
         self.view_mode_combo.setItemText(0, t("view_single"))
         self.view_mode_combo.setItemText(1, t("view_overview_detail"))
+        self.view_mode_combo.setItemText(2, t("view_split_y_axes"))
         self.move_trace_button.setText(t("move_trace"))
         self.pointer_action.setText(t("pointer_line"))
         self.pointer_action.setToolTip(t("pointer_hint"))
@@ -1506,6 +1598,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.annotation_action.setText(t("add_text_annotation"))
         self.annotation_action.setToolTip(t("text_annotation_hint"))
         self.auto_detect_button.setText(t("auto_detect"))
+        self.fit_peak_button.setText(t("fit_peak"))
         self.select_all_peaks_button.setText(t("select_all_peaks"))
         self.peak_title.setText(t("peaks"))
         self._set_peak_headers()
@@ -1598,6 +1691,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dataset_table.setItem(row, DATASET_LABEL_COLUMN, label)
             self.dataset_table.setItem(
                 row,
+                DATASET_TIMESTAMP_COLUMN,
+                QtWidgets.QTableWidgetItem(dataset.measurement.acquisition_datetime),
+            )
+            self.dataset_table.setItem(
+                row,
                 DATASET_WAVELENGTH_COLUMN,
                 QtWidgets.QTableWidgetItem(_format(dataset.measurement.wavelength_nm)),
             )
@@ -1624,11 +1722,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 DATASET_OFFSET_COLUMN,
                 QtWidgets.QTableWidgetItem(_format(dataset.offset)),
             )
-            color_value = dataset.color or COLORS[row % len(COLORS)]
+            color_value = dataset_display_color(dataset, row)
             color_item = _read_only_item(color_value)
             color_item.setBackground(QtGui.QColor(color_value))
             color_item.setForeground(QtGui.QColor("#ffffff" if QtGui.QColor(color_value).lightness() < 128 else "#000000"))
             self.dataset_table.setItem(row, DATASET_COLOR_COLUMN, color_item)
+            self.dataset_table.setItem(
+                row,
+                DATASET_COLUMN_NAME_COLUMN,
+                QtWidgets.QTableWidgetItem(dataset.measurement.column_name),
+            )
             source_text = dataset.original_path or dataset.original_filename
             source = _read_only_item(source_text)
             source.setToolTip(dataset.original_path)
@@ -1640,6 +1743,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dataset_table.setItem(row, DATASET_SOURCE_COLUMN, source)
         self.dataset_table.resizeColumnsToContents()
         self.dataset_table.setColumnWidth(DATASET_RUN_ID_COLUMN, 160)
+        self.dataset_table.setColumnWidth(DATASET_TIMESTAMP_COLUMN, 150)
+        self.dataset_table.setColumnWidth(DATASET_COLUMN_NAME_COLUMN, 180)
         self.dataset_table.setColumnWidth(DATASET_SOURCE_COLUMN, 360)
         self.dataset_table.horizontalHeader().setStretchLastSection(True)
         self._updating_table = False
@@ -1738,6 +1843,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dataset = self.project.datasets[row]
         before = self._capture_analysis_state()
         label_changed = False
+        shared_run_changed = False
         try:
             if column == DATASET_VISIBLE_COLUMN:
                 dataset.visible = item.checkState() == CHECKED
@@ -1747,6 +1853,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 dataset.label = item.text().strip() or dataset.original_filename
                 if not dataset.short_label or dataset.short_label == old_label:
                     dataset.short_label = dataset.label
+            elif column == DATASET_TIMESTAMP_COLUMN:
+                dataset.measurement.acquisition_datetime = item.text().strip()
+                shared_run_changed = True
             elif column == DATASET_WAVELENGTH_COLUMN:
                 text = item.text().strip()
                 wavelength = float(text) if text else None
@@ -1772,6 +1881,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 recalculate_dataset_peaks(dataset)
             elif column == DATASET_OFFSET_COLUMN:
                 dataset.offset = float(item.text().strip() or "0")
+            elif column == DATASET_COLUMN_NAME_COLUMN:
+                dataset.measurement.column_name = item.text().strip()
+                shared_run_changed = True
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), str(exc))
             self._refresh_dataset_table(row)
@@ -1780,7 +1892,7 @@ class MainWindow(QtWidgets.QMainWindow):
             before, self._history_label("クロマトグラム設定", "Chromatogram settings")
         )
         self.project.dirty = True
-        if label_changed:
+        if label_changed or shared_run_changed:
             self._refresh_dataset_table(row)
         self._refresh_peak_table()
         self._plot()
@@ -1946,6 +2058,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_gradient_checkbox.blockSignals(True)
         self.show_gradient_checkbox.setChecked(self.project.method.show_gradient_b)
         self.show_gradient_checkbox.blockSignals(False)
+        self.show_grid_checkbox.blockSignals(True)
+        self.show_grid_checkbox.setChecked(self.project.method.show_major_grid)
+        self.show_grid_checkbox.blockSignals(False)
+        self.gradient_legend_name_checkbox.blockSignals(True)
+        self.gradient_legend_name_checkbox.setChecked(
+            self.project.method.gradient_legend_include_dataset_name
+        )
+        self.gradient_legend_name_checkbox.blockSignals(False)
         self.legend_combo.blockSignals(True)
         self.legend_combo.setCurrentIndex(max(0, self.legend_combo.findData(self.project.method.legend_location)))
         self.legend_combo.blockSignals(False)
@@ -1966,6 +2086,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method.show_integration_areas = self.show_integration_checkbox.isChecked()
         self.project.method.show_retention_labels = self.show_retention_checkbox.isChecked()
         self.project.method.show_gradient_b = self.show_gradient_checkbox.isChecked()
+        self.project.method.show_major_grid = self.show_grid_checkbox.isChecked()
+        self.project.method.gradient_legend_include_dataset_name = (
+            self.gradient_legend_name_checkbox.isChecked()
+        )
         self.project.method.legend_location = self.legend_combo.currentData()
         self.project.dirty = True
         self._plot()
@@ -2191,6 +2315,55 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._annotation_artists[annotation.id] = artist
 
+    def _marker_axis(self, marker: VerticalMarker):
+        if marker.y_axis == 2 and self.axes_right is not None:
+            return self.axes_right
+        return self.axes
+
+    def _draw_vertical_markers(self):
+        self._vertical_marker_artists = {}
+        marker_ids = {marker.id for marker in self.project.vertical_markers}
+        if self._selected_vertical_marker_id not in marker_ids:
+            self._selected_vertical_marker_id = ""
+        for marker in self.project.vertical_markers:
+            selected = marker.id == self._selected_vertical_marker_id
+            artist = self._marker_axis(marker).axvline(
+                marker.x_min,
+                color="#f59e0b" if selected else (marker.color or "#7c3aed"),
+                linewidth=2.0 if selected else 1.15,
+                linestyle="-",
+                alpha=0.95 if selected else 0.8,
+                zorder=25,
+            )
+            self._vertical_marker_artists[marker.id] = artist
+
+    def _draw_fraction_regions(self):
+        for region in self.project.fraction_regions:
+            start = min(region.start_min, region.end_min)
+            end = max(region.start_min, region.end_min)
+            interval = max(float(region.interval_min), 0.01)
+            self.axes.axvspan(start, end, color="#06b6d4", alpha=0.08, zorder=2)
+            count = min(int((end - start) / interval) + 1, 10000)
+            for index in range(count + 1):
+                value = start + index * interval
+                if value > end + 1.0e-9:
+                    break
+                self.axes.axvline(
+                    value,
+                    color="#0891b2",
+                    linewidth=0.8,
+                    linestyle="--",
+                    alpha=0.75,
+                    zorder=3,
+                )
+            self.axes.axvline(
+                end,
+                color="#0891b2",
+                linewidth=0.8,
+                linestyle="--",
+                alpha=0.75,
+            )
+
     def _plot(self, preserve_view: bool = True):
         if not hasattr(self, "axes"):
             return
@@ -2202,8 +2375,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interaction_cursor = None
         self._annotation_artists = {}
         self._annotation_drag = None
+        self._vertical_marker_artists = {}
         self._overview_view_patch = None
         self.figure.clear()
+        self._split_y_axes = self.project.method.view_mode == "split_y_axes"
+        split_axis = None
         if self.project.method.view_mode == "overview_detail":
             grid = self.figure.add_gridspec(2, 1, height_ratios=(1.0, 3.0))
             self.axes_overview = self.figure.add_subplot(grid[0, 0])
@@ -2216,10 +2392,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 color="#4b5563",
             )
             self.axes_overview.tick_params(axis="x", labelbottom=False)
+        elif self._split_y_axes:
+            self.axes_overview = None
+            grid = self.figure.add_gridspec(2, 1, hspace=0.08)
+            self.axes = self.figure.add_subplot(grid[0, 0])
+            split_axis = self.figure.add_subplot(
+                grid[1, 0], sharex=self.axes
+            )
+            self.axes.tick_params(axis="x", labelbottom=False)
         else:
             self.axes_overview = None
             self.axes = self.figure.add_subplot(111)
-        self.axes_right = None
+        self.axes_right = split_axis
         self.axes_gradient = None
         self.axes_overview_right = None
         self._dataset_lines = {}
@@ -2232,8 +2416,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.toolbar.update()
         unit = self.project.method.display_unit
         selected = self._selected_dataset()
+        selected_dataset_ids = {
+            self.project.datasets[row].id
+            for row in self._selected_dataset_rows()
+        }
+        if not selected_dataset_ids and selected is not None:
+            selected_dataset_ids.add(selected.id)
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
-        if any(dataset.y_axis == 2 for dataset in visible):
+        if not self._split_y_axes and any(
+            dataset.y_axis == 2 for dataset in visible
+        ):
             self.axes_right = self.axes.twinx()
             if self.axes_overview is not None:
                 self.axes_overview_right = self.axes_overview.twinx()
@@ -2244,8 +2436,13 @@ class MainWindow(QtWidgets.QMainWindow):
             and selected.visible
             and selected.measurement.gradient
         ):
-            self.axes_gradient = self.axes.twinx()
-            if self.axes_right is not None:
+            gradient_host = (
+                self.axes_right
+                if self._split_y_axes and selected.y_axis == 2
+                else self.axes
+            )
+            self.axes_gradient = gradient_host.twinx()
+            if self.axes_right is not None and not self._split_y_axes:
                 self.axes_gradient.spines["right"].set_position(("outward", 62))
 
         plotted = 0
@@ -2256,8 +2453,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 values = display_values(dataset, unit)
             except ValueError:
                 continue
-            color = dataset.color or COLORS[index % len(COLORS)]
-            label = dataset.legend_label()
+            color = dataset_display_color(dataset, index)
+            label = self.project.legend_label_for(dataset)
             target_axes = self.axes_right if dataset.y_axis == 2 and self.axes_right is not None else self.axes
             full_x = dataset.time_min + dataset.x_shift_min
             full_y = values + dataset.offset
@@ -2298,11 +2495,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 )[0]
                 self._overview_dataset_lines[dataset.id] = overview_line
             plotted += 1
-            if dataset is selected and (
+            if dataset.id in selected_dataset_ids and (
                 self.project.method.show_integration_areas
                 or self.project.method.show_retention_labels
+                or any(peak.fit_model for peak in dataset.peaks)
             ):
-                selected_peak_rows = set(self._selected_peak_rows())
+                selected_peak_rows = (
+                    set(self._selected_peak_rows())
+                    if dataset is selected
+                    else set()
+                )
                 for peak_index, peak in enumerate(dataset.peaks):
                     is_selected_peak = peak_index in selected_peak_rows
                     peak_color = "#f59e0b" if is_selected_peak else color
@@ -2312,6 +2514,7 @@ class MainWindow(QtWidgets.QMainWindow):
                         "boundary_lines": [],
                         "retention_line": None,
                         "baseline_line": None,
+                        "fit_line": None,
                     }
                     if self.project.method.show_integration_areas:
                         overlay["patch"] = target_axes.axvspan(
@@ -2348,6 +2551,40 @@ class MainWindow(QtWidgets.QMainWindow):
                                 alpha=0.95 if is_selected_peak else 0.55,
                                 antialiased=not self._is_lightweight_rendering(),
                             )[0]
+                    if peak.fit_model and peak.fit_parameters:
+                        fit_mask = (
+                            (dataset.time_min >= peak.start_min)
+                            & (dataset.time_min <= peak.end_min)
+                        )
+                        fit_time = dataset.time_min[fit_mask]
+                        if fit_time.size >= 3:
+                            fit_result = PeakFitResult(
+                                model=peak.fit_model,
+                                parameters=dict(peak.fit_parameters),
+                                retention_time_min=float(
+                                    peak.fit_retention_time_min or fit_time[0]
+                                ),
+                                rmse_uv=float(peak.fit_rmse_uv or 0.0),
+                                r_squared=float(peak.fit_r_squared or 0.0),
+                                aic=float(peak.fit_aic or 0.0),
+                                point_count=int(fit_time.size),
+                            )
+                            fitted_uv = evaluate_fit_profile(fit_time, fit_result)
+                            baseline_time, baseline_uv = baseline_trace(dataset, peak)
+                            if baseline_time.size == fit_time.size:
+                                fitted_uv = fitted_uv + baseline_uv
+                            fitted_values = reference_values_for_display(
+                                dataset, fitted_uv, unit
+                            )
+                            overlay["fit_line"] = target_axes.plot(
+                                fit_time + dataset.x_shift_min,
+                                fitted_values + dataset.offset,
+                                color="#c026d3",
+                                linewidth=max(1.2, self.project.method.line_width),
+                                linestyle=":",
+                                alpha=0.95,
+                                zorder=18,
+                            )[0]
                     if self.project.method.show_retention_labels and peak.retention_time_min is not None:
                         retention = float(peak.retention_time_min)
                         label_y = float(np.interp(retention, dataset.time_min, values)) + dataset.offset
@@ -2374,7 +2611,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self.axes_gradient is not None and selected is not None:
             ordered_gradient = sorted(selected.measurement.gradient, key=lambda point: point.time_min)
-            gradient_label = "%%B (%s)" % selected.legend_label()
+            gradient_label = "%B"
+            if self.project.method.gradient_legend_include_dataset_name:
+                gradient_label = "%B ({})".format(
+                    self.project.legend_label_for(selected)
+                )
             gradient_x = np.asarray(
                 [point.time_min for point in ordered_gradient], dtype=float
             )
@@ -2401,12 +2642,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.project.method.gradient_axis_label.strip() or "Mobile phase B (%)"
             )
 
+        self._draw_vertical_markers()
+        self._draw_fraction_regions()
         self._draw_text_annotations()
 
         x_label, y_label = self._axis_labels()
         axis_1_label = "Y axis 1"
         axis_2_label = "Y axis 2"
-        self.axes.set_xlabel(self.project.method.x_axis_label.strip() or x_label)
+        x_axis = self.axes_right if self._split_y_axes else self.axes
+        x_axis.set_xlabel(self.project.method.x_axis_label.strip() or x_label)
         self.axes.set_ylabel(
             self.project.method.y_axis_1_label.strip() or "%s — %s" % (y_label, axis_1_label)
         )
@@ -2414,7 +2658,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self.axes_right.set_ylabel(
                 self.project.method.y_axis_2_label.strip() or "%s — %s" % (y_label, axis_2_label)
             )
-        self.axes.grid(False)
+        self.axes.grid(
+            self.project.method.show_major_grid,
+            which="major",
+            color="#d1d5db",
+            linewidth=0.6,
+            alpha=0.75,
+        )
+        if self.axes_overview is not None:
+            self.axes_overview.grid(
+                self.project.method.show_major_grid,
+                which="major",
+                color="#d1d5db",
+                linewidth=0.5,
+                alpha=0.6,
+            )
 
         times = [float(dataset.time_min[-1] + dataset.x_shift_min) for dataset in visible if dataset.time_min.size]
         times.extend(
@@ -2428,6 +2686,8 @@ class MainWindow(QtWidgets.QMainWindow):
             full_bounds = self._full_x_bounds()
             self.axes.set_xlim(*full_bounds)
             self.axes.margins(x=0)
+            if self._split_y_axes and self.axes_right is not None:
+                self.axes_right.margins(x=0)
             if self.axes_overview is not None:
                 self.axes_overview.set_xlim(*full_bounds)
                 self.axes_overview.margins(x=0)
@@ -2457,7 +2717,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if dataset.visible and dataset.id in self._dataset_lines
             ]
             labels = [
-                dataset.legend_label()
+                self.project.legend_label_for(dataset)
                 for dataset in self.project.datasets
                 if dataset.visible and dataset.id in self._dataset_lines
             ]
@@ -2502,21 +2762,37 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("integrate")
         elif self.edit_peak_button.isChecked():
             self._install_span_selector("edit")
+        elif self.fraction_button.isChecked():
+            self._install_span_selector("fraction")
         if (
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
+            or self.fraction_button.isChecked()
             or self.pointer_button.isChecked()
         ):
             self._ensure_interaction_cursor()
 
     def _install_span_selector(self, mode: str = "integrate"):
-        callback = (
-            self._on_edit_span_selected if mode == "edit" else self._on_span_selected
+        selected = self._selected_dataset()
+        selector_axis = (
+            self.axes_right
+            if selected is not None
+            and selected.y_axis == 2
+            and self.axes_right is not None
+            else self.axes
         )
-        color = "#f59e0b" if mode == "edit" else "#2563eb"
+        if mode == "edit":
+            callback = self._on_edit_span_selected
+            color = "#f59e0b"
+        elif mode == "fraction":
+            callback = self._on_fraction_span_selected
+            color = "#06b6d4"
+        else:
+            callback = self._on_span_selected
+            color = "#2563eb"
         self._span_selector = SpanSelector(
-            self.axes,
+            selector_axis,
             callback,
             "horizontal",
             useblit=True,
@@ -2558,6 +2834,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._deactivate_toolbar_navigation()
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
@@ -2591,6 +2868,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
@@ -2622,6 +2900,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
@@ -2641,6 +2920,44 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 self._hide_interaction_cursor()
 
+    def _toggle_fraction_mode(self, enabled: bool):
+        if enabled:
+            if self._selected_dataset() is None:
+                QtWidgets.QMessageBox.information(
+                    self, APP_NAME, self.translator("no_dataset")
+                )
+                self.fraction_button.setChecked(False)
+                return
+            self._deactivate_toolbar_navigation()
+            self.integrate_button.setChecked(False)
+            self.edit_peak_button.setChecked(False)
+            self.split_peak_button.setChecked(False)
+            self.move_trace_button.setChecked(False)
+            self.pointer_button.setChecked(False)
+            self.annotation_action.setChecked(False)
+            self.statusBar().showMessage(self.translator("fraction_hint"))
+            self._install_span_selector("fraction")
+            self._ensure_interaction_cursor()
+        else:
+            if self._span_selector is not None and self._span_selector_mode == "fraction":
+                self._span_selector.set_active(False)
+                self._span_selector = None
+                self._span_selector_mode = None
+            self.statusBar().clearMessage()
+            self._hide_interaction_cursor()
+
+    def clear_fraction_regions(self):
+        if not self.project.fraction_regions:
+            return
+        before = self._capture_analysis_state()
+        self.project.fraction_regions = []
+        self._push_undo_snapshot(
+            before, self._history_label("フラクション範囲をクリア", "Clear fraction ranges")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+
     def _toggle_move_mode(self, enabled: bool):
         if enabled:
             if self._selected_dataset() is None:
@@ -2651,6 +2968,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
             self.statusBar().showMessage(self.translator("move_hint"))
@@ -2660,6 +2978,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.integrate_button.isChecked()
                 or self.edit_peak_button.isChecked()
                 or self.split_peak_button.isChecked()
+                or self.fraction_button.isChecked()
             ):
                 self.statusBar().clearMessage()
 
@@ -2669,6 +2988,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.annotation_action.setChecked(False)
             self.statusBar().showMessage(self.translator("pointer_hint"))
@@ -2678,6 +2998,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.integrate_button.isChecked()
                 or self.edit_peak_button.isChecked()
                 or self.split_peak_button.isChecked()
+                or self.fraction_button.isChecked()
             ):
                 self.statusBar().clearMessage()
                 self._hide_interaction_cursor()
@@ -2694,6 +3015,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.statusBar().showMessage(self.translator("text_annotation_hint"))
@@ -2744,6 +3066,88 @@ class MainWindow(QtWidgets.QMainWindow):
             if bounds.contains(float(event.x), float(event.y)):
                 return annotation
         return None
+
+    def _vertical_marker_at_event(self, event):
+        if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+            return None
+        for marker in reversed(self.project.vertical_markers):
+            artist = self._vertical_marker_artists.get(marker.id)
+            if artist is None or not artist.get_visible():
+                continue
+            axis = self._marker_axis(marker)
+            if not axis.bbox.contains(float(event.x), float(event.y)):
+                continue
+            marker_x = axis.transData.transform((marker.x_min, 0.0))[0]
+            if abs(float(event.x) - float(marker_x)) <= 6.0:
+                return marker
+        return None
+
+    def _select_vertical_marker(self, marker):
+        self._selected_vertical_marker_id = marker.id if marker is not None else ""
+        for marker_id, artist in self._vertical_marker_artists.items():
+            selected = marker_id == self._selected_vertical_marker_id
+            model = next(
+                (
+                    item
+                    for item in self.project.vertical_markers
+                    if item.id == marker_id
+                ),
+                None,
+            )
+            artist.set_color(
+                "#f59e0b" if selected else ((model.color if model else "") or "#7c3aed")
+            )
+            artist.set_linewidth(2.0 if selected else 1.15)
+            artist.set_alpha(0.95 if selected else 0.8)
+        self._request_canvas_draw(force=True)
+
+    def _place_vertical_marker(self, event):
+        selected = self._selected_dataset()
+        y_axis = 2 if getattr(event, "inaxes", None) is self.axes_right else (
+            selected.y_axis if selected is not None else 1
+        )
+        before = self._capture_analysis_state()
+        marker = VerticalMarker(x_min=float(event.xdata), y_axis=y_axis)
+        self.project.vertical_markers.append(marker)
+        self._selected_vertical_marker_id = marker.id
+        self._push_undo_snapshot(
+            before, self._history_label("縦線を追加", "Add vertical marker")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+
+    def delete_selected_vertical_marker(self):
+        marker_id = self._selected_vertical_marker_id
+        if not marker_id:
+            return False
+        before = self._capture_analysis_state()
+        retained = [
+            marker
+            for marker in self.project.vertical_markers
+            if marker.id != marker_id
+        ]
+        if len(retained) == len(self.project.vertical_markers):
+            self._selected_vertical_marker_id = ""
+            return False
+        self.project.vertical_markers = retained
+        self._selected_vertical_marker_id = ""
+        self._push_undo_snapshot(
+            before, self._history_label("縦線を削除", "Delete vertical marker")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+        return True
+
+    def keyPressEvent(self, event):
+        delete_key = (
+            QtCore.Qt.Key.Key_Delete if QT_API == 6 else QtCore.Qt.Key_Delete
+        )
+        if event.key() == delete_key and self.delete_selected_vertical_marker():
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _edit_text_annotation(self, annotation: TextAnnotation):
         before = self._capture_analysis_state()
@@ -2812,6 +3216,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if str(getattr(self.toolbar, "mode", "")):
             return
+        marker = self._vertical_marker_at_event(event)
+        if marker is not None:
+            self._select_vertical_marker(marker)
+            return
         annotation = self._annotation_at_event(event)
         if annotation is not None:
             if getattr(event, "dblclick", False):
@@ -2837,6 +3245,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.annotation_action.isChecked():
             self._place_text_annotation(event)
             return
+        if self.pointer_button.isChecked():
+            self._place_vertical_marker(event)
+            return
+        if self._selected_vertical_marker_id:
+            self._select_vertical_marker(None)
         if self.axes_overview is not None and getattr(event, "inaxes", None) in (
             self.axes_overview,
             self.axes_overview_right,
@@ -2847,6 +3260,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
+            or self.fraction_button.isChecked()
             or self.move_trace_button.isChecked()
         ):
             self._back_to_previous_view()
@@ -2891,6 +3305,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
+            or self.fraction_button.isChecked()
             or self.pointer_button.isChecked()
         ):
             detail_axes = tuple(
@@ -3108,6 +3523,26 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 return "x"
 
+        if getattr(self, "_split_y_axes", False) and self.axes_right is not None:
+            edge = 5.0
+            for axis, y_target, plot_target in (
+                (self.axes, "y1", "plot_y1"),
+                (self.axes_right, "y2", "plot_y2"),
+            ):
+                bbox = axis.bbox
+                if (
+                    bbox.x0 - edge <= x_value <= bbox.x1 + edge
+                    and bbox.y0 - edge <= y_value <= bbox.y0 + edge
+                ):
+                    return "x"
+                if (
+                    bbox.y0 <= y_value <= bbox.y1
+                    and bbox.x0 - edge <= x_value <= bbox.x0 + edge
+                ):
+                    return y_target
+                if self._display_point_in_bbox(x_value, y_value, bbox):
+                    return plot_target
+
         plot_bbox = self.axes.bbox
         edge = 5.0
         if (
@@ -3217,6 +3652,20 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
 
+        if target in ("plot_y1", "plot_y2"):
+            target_axis = self.axes if target == "plot_y1" else self.axes_right
+            _axis_x, center_y = self._event_center_for_axis(event, target_axis)
+            self._zoom_view(
+                factor,
+                center_x,
+                source_axis=target_axis,
+                center_y=center_y,
+                zoom_mode="both",
+                y_axes=[target_axis],
+                y_centers={target_axis: center_y},
+            )
+            return
+
         y_targets = [self.axes]
         if self.axes_right is not None:
             y_targets.append(self.axes_right)
@@ -3256,6 +3705,24 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.project.dirty = True
         self._refresh_peak_table([integrated.id])
+        self._plot()
+        self._update_title()
+
+    def _on_fraction_span_selected(self, minimum: float, maximum: float):
+        if abs(maximum - minimum) <= 0:
+            return
+        before = self._capture_analysis_state()
+        region = FractionRegion(
+            start_min=float(min(minimum, maximum)),
+            end_min=float(max(minimum, maximum)),
+            interval_min=float(self.fraction_interval_spin.value()),
+        )
+        self.project.fraction_regions.append(region)
+        self._push_undo_snapshot(
+            before,
+            self._history_label("フラクション範囲を追加", "Add fraction range"),
+        )
+        self.project.dirty = True
         self._plot()
         self._update_title()
 
@@ -3403,6 +3870,62 @@ class MainWindow(QtWidgets.QMainWindow):
             self.translator("auto_detected", count=len(added)), 7000
         )
 
+    def fit_selected_peak(self):
+        dataset = self._selected_dataset()
+        row = self.peak_table.currentRow()
+        if dataset is None or not (0 <= row < len(dataset.peaks)):
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("select_peak")
+            )
+            return
+        labels = (
+            ("自動選択", "auto"),
+            ("Gaussian", "gaussian"),
+            ("EMG（テーリング）", "emg"),
+        ) if self._application_language == "ja" else (
+            ("Automatic", "auto"),
+            ("Gaussian", "gaussian"),
+            ("EMG (tailing)", "emg"),
+        )
+        display_items = [label for label, _value in labels]
+        selected_label, accepted = QtWidgets.QInputDialog.getItem(
+            self,
+            self.translator("fit_peak"),
+            "モデル" if self._application_language == "ja" else "Model",
+            display_items,
+            0,
+            False,
+        )
+        if not accepted:
+            return
+        model = dict(labels).get(selected_label, "auto")
+        before = self._capture_analysis_state()
+        peak = dataset.peaks[row]
+        try:
+            result = fit_peak(dataset, peak, model)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(
+                self, self.translator("warning"), str(exc)
+            )
+            return
+        peak.fit_model = result.model
+        peak.fit_parameters = dict(result.parameters)
+        peak.fit_retention_time_min = result.retention_time_min
+        peak.fit_rmse_uv = result.rmse_uv
+        peak.fit_r_squared = result.r_squared
+        peak.fit_aic = result.aic
+        self._push_undo_snapshot(
+            before, self._history_label("ピークフィット", "Fit peak")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+        self.statusBar().showMessage(
+            "%s: R²=%.5f, RMSE=%.4g µV"
+            % (result.model.upper(), result.r_squared, result.rmse_uv),
+            7000,
+        )
+
     def _reset_view(self):
         self._push_view_history()
         self._view_initialized = False
@@ -3431,7 +3954,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.canvas.draw_idle()
 
     def _import_chromatogram_paths(
-        self, paths, group_label="", show_progress=False
+        self, paths, group_label="", show_progress=False, group_labels=None
     ) -> int:
         paths = [str(path) for path in paths]
         if not paths:
@@ -3463,10 +3986,22 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
             try:
                 dataset = load_chromatogram_file(path)
-                normalized_group = str(group_label).strip()
+                normalized_group = str(
+                    group_labels[index] if group_labels is not None else group_label
+                ).strip()
                 if normalized_group:
                     dataset.measurement.group = normalized_group
-                dataset.color = COLORS[len(self.project.datasets) % len(COLORS)]
+                wavelength = dataset.measurement.wavelength_nm
+                same_wavelength_count = sum(
+                    1
+                    for existing in self.project.datasets
+                    if existing.measurement.wavelength_nm is not None
+                    and wavelength is not None
+                    and abs(existing.measurement.wavelength_nm - wavelength) <= 0.5
+                )
+                dataset.color = default_trace_color(
+                    wavelength, same_wavelength_count
+                ) or COLORS[len(self.project.datasets) % len(COLORS)]
                 self.project.add_dataset(dataset)
                 imported += 1
             except Exception as exc:
@@ -3541,6 +4076,71 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._settings.set(LAST_IMPORT_DIRECTORY, str(directory), sync=True)
         return imported
+
+    def edit_work_directories(self):
+        before_state = self._capture_analysis_state()
+        before = deepcopy(self.project.work_directories)
+        dialog = WorkDirectoriesDialog(
+            before, self._application_language, self
+        )
+        if not dialog_exec(dialog):
+            return False
+        if dialog.directories == before:
+            return False
+        self.project.work_directories = dialog.directories
+        self._push_undo_snapshot(
+            before_state,
+            self._history_label("作業ディレクトリ", "Work directories"),
+        )
+        self.project.dirty = True
+        self._update_title()
+        return True
+
+    def _work_directory_reload_candidates(self):
+        return discover_reload_candidates(
+            self.project.work_directories, self.project.datasets
+        )
+
+    def reload_work_directories(self):
+        if not self.project.work_directories:
+            QtWidgets.QMessageBox.information(
+                self,
+                APP_NAME,
+                self.translator("no_work_directories"),
+            )
+            self.edit_work_directories()
+            return 0
+        candidates, duplicate_count, changed, errors = self._work_directory_reload_candidates()
+        lines = [
+            self.translator(
+                "work_directory_reload_summary",
+                new=len(candidates),
+                duplicate=duplicate_count,
+                changed=len(changed),
+                errors=len(errors),
+            )
+        ]
+        if changed:
+            lines.append(self.translator("changed_files_held"))
+            lines.extend("- " + path for path in changed[:10])
+        if errors:
+            lines.append(self.translator("reload_errors"))
+            lines.extend("- " + value for value in errors[:10])
+        if not candidates:
+            QtWidgets.QMessageBox.information(self, APP_NAME, "\n".join(lines))
+            return 0
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            APP_NAME,
+            "\n".join(lines + [self.translator("import_new_files_question")]),
+        )
+        if answer != QtWidgets.QMessageBox.Yes:
+            return 0
+        return self._import_chromatogram_paths(
+            [path for path, _label in candidates],
+            show_progress=True,
+            group_labels=[label for _path, label in candidates],
+        )
 
     @staticmethod
     def _classify_dropped_urls(urls):
@@ -3723,7 +4323,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if dataset is None:
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
-        initial = QtGui.QColor(dataset.color or COLORS[self.dataset_table.currentRow() % len(COLORS)])
+        initial = QtGui.QColor(
+            dataset_display_color(dataset, self.dataset_table.currentRow())
+        )
         color = QtWidgets.QColorDialog.getColor(initial, self, self.translator("change_color"))
         if not color.isValid():
             return
@@ -3746,6 +4348,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._push_undo_snapshot(
             before,
             self._history_label("軸・ラベル設定", "Axes and label styles"),
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+
+    def edit_legend_composer(self):
+        before = self._capture_analysis_state()
+        dialog = LegendComposerDialog(
+            self.project.method, self._application_language, self
+        )
+        if not dialog_exec(dialog):
+            return
+        dialog.apply_to_method(self.project.method)
+        self._push_undo_snapshot(
+            before,
+            self._history_label("凡例設定", "Legend composer"),
         )
         self.project.dirty = True
         self._plot()
@@ -3990,6 +4608,79 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._request_canvas_draw(force=True)
 
+    def _current_view_pixmap(self):
+        self.canvas.draw()
+        return self.canvas.grab()
+
+    def copy_view_to_clipboard(self):
+        pixmap = self._current_view_pixmap()
+        QtWidgets.QApplication.clipboard().setPixmap(pixmap)
+        self.statusBar().showMessage(
+            "現在の表示画面をクリップボードへコピーしました。"
+            if self._application_language == "ja"
+            else "The current view was copied to the clipboard.",
+            5000,
+        )
+
+    @staticmethod
+    def _draw_view_pixmap_to_printer(printer, pixmap):
+        painter = QtGui.QPainter()
+        if not painter.begin(printer):
+            raise RuntimeError("Could not initialize the selected printer")
+        try:
+            unit = (
+                QtPrintSupport.QPrinter.Unit.DevicePixel
+                if QT_API == 6
+                else QtPrintSupport.QPrinter.DevicePixel
+            )
+            page_rect = printer.pageRect(unit)
+            keep_aspect = (
+                QtCore.Qt.AspectRatioMode.KeepAspectRatio
+                if QT_API == 6
+                else QtCore.Qt.KeepAspectRatio
+            )
+            smooth = (
+                QtCore.Qt.TransformationMode.SmoothTransformation
+                if QT_API == 6
+                else QtCore.Qt.SmoothTransformation
+            )
+            target_size = pixmap.size()
+            target_size.scale(
+                int(page_rect.width()), int(page_rect.height()), keep_aspect
+            )
+            scaled = pixmap.scaled(target_size, keep_aspect, smooth)
+            x = page_rect.x() + (page_rect.width() - scaled.width()) / 2.0
+            y = page_rect.y() + (page_rect.height() - scaled.height()) / 2.0
+            painter.drawPixmap(QtCore.QPointF(x, y), scaled)
+        finally:
+            painter.end()
+
+    def print_current_view(self):
+        mode = (
+            QtPrintSupport.QPrinter.PrinterMode.HighResolution
+            if QT_API == 6
+            else QtPrintSupport.QPrinter.HighResolution
+        )
+        printer = QtPrintSupport.QPrinter(mode)
+        dialog = QtPrintSupport.QPrintDialog(printer, self)
+        dialog.setWindowTitle(self.translator("print_view"))
+        if not dialog_exec(dialog):
+            return
+        try:
+            self._draw_view_pixmap_to_printer(
+                printer, self._current_view_pixmap()
+            )
+            self.statusBar().showMessage(
+                "表示画面の印刷ジョブを送信しました。"
+                if self._application_language == "ja"
+                else "The current-view print job was sent.",
+                7000,
+            )
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self, self.translator("error"), str(exc)
+            )
+
     def export_peaks(self):
         if not any(dataset.peaks for dataset in self.project.datasets):
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("peaks"))
@@ -4083,14 +4774,43 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
 
-    def _report_datasets(self):
+    def _choose_report_datasets(self):
+        if not self.project.datasets:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("no_dataset")
+            )
+            return None
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
-        return visible or list(self.project.datasets)
+        selected = [
+            self.project.datasets[row] for row in self._selected_dataset_rows()
+        ]
+        dialog = ReportScopeDialog(
+            len(self.project.datasets),
+            len(visible),
+            len(selected),
+            self._application_language,
+            self,
+        )
+        if not dialog_exec(dialog):
+            return None
+        if dialog.scope() == "selected":
+            return selected
+        if dialog.scope() == "visible":
+            return visible
+        return list(self.project.datasets)
+
+    def _choose_report_options(self):
+        dialog = ReportOptionsDialog(self._application_language, self)
+        if not dialog_exec(dialog):
+            return None
+        return ReportOptions(**dialog.option_values())
 
     def export_report(self):
-        datasets = self._report_datasets()
-        if not datasets:
-            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
+        datasets = self._choose_report_datasets()
+        if datasets is None:
+            return
+        options = self._choose_report_options()
+        if options is None:
             return
         path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -4102,7 +4822,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             actual = export_analysis_report_pdf(
-                path, self.project, datasets, self._application_language
+                path,
+                self.project,
+                datasets,
+                self._application_language,
+                options,
             )
             self._remember_save_path(actual)
             self.statusBar().showMessage(self.translator("saved", path=actual), 7000)
@@ -4149,9 +4873,11 @@ class MainWindow(QtWidgets.QMainWindow):
             painter.end()
 
     def print_report(self):
-        datasets = self._report_datasets()
-        if not datasets:
-            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
+        datasets = self._choose_report_datasets()
+        if datasets is None:
+            return
+        options = self._choose_report_options()
+        if options is None:
             return
         mode = (
             QtPrintSupport.QPrinter.PrinterMode.HighResolution
@@ -4170,7 +4896,11 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             with tempfile.TemporaryDirectory(prefix="hplc_report_") as directory:
                 pages = render_analysis_report_pages(
-                    directory, self.project, datasets, self._application_language
+                    directory,
+                    self.project,
+                    datasets,
+                    self._application_language,
+                    options,
                 )
                 self._draw_report_pages_to_printer(printer, pages)
             self.statusBar().showMessage(

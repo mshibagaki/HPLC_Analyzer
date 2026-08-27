@@ -21,32 +21,42 @@ from hplc_app.dialogs import (
     DirectoryImportDialog,
     GradientDialog,
     LabDatabaseDialog,
+    LegendComposerDialog,
     MetadataDialog,
     PresetPreviewDialog,
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
+    ReportOptionsDialog,
+    ReportScopeDialog,
     TextAnnotationDialog,
+    WorkDirectoriesDialog,
 )
 from hplc_app.gui import (
     DATASET_LABEL_COLUMN,
+    DATASET_COLUMN_NAME_COLUMN,
     DATASET_RUN_ID_COLUMN,
     DATASET_SOURCE_COLUMN,
+    DATASET_TIMESTAMP_COLUMN,
     DATASET_WAVELENGTH_COLUMN,
     DATASET_X_SHIFT_COLUMN,
     MainWindow,
 )
-from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation
+from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation, WorkDirectory
 from hplc_app.parser import load_ascii_file
+from hplc_app.peak_fitting import PeakFitResult
 from hplc_app.preset_store import (
     load_preset_store,
     load_preset_store_with_metadata,
     preset_store_path,
 )
 from hplc_app.qt_compat import (
+    CHECKED,
     ITEM_IS_EDITABLE,
     QT_API,
     STANDARD_SAVE_SHORTCUT,
+    UNCHECKED,
+    USER_ROLE,
     QtCore,
     QtGui,
     QtPrintSupport,
@@ -252,6 +262,42 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_split_y_axis_mode_routes_traces_and_shares_x_navigation(self):
+        window = self.make_window()
+        window.project.method.view_mode = "split_y_axes"
+        window._plot(preserve_view=False)
+        first, second = window.project.datasets
+        self.assertTrue(window._split_y_axes)
+        self.assertIs(window._dataset_lines[first.id].axes, window.axes)
+        self.assertIs(window._dataset_lines[second.id].axes, window.axes_right)
+        self.assertTrue(
+            window.axes.get_shared_x_axes().joined(window.axes, window.axes_right)
+        )
+        window.axes_right.set_xlim(4.0, 12.0)
+        self.assertEqual(window.axes.get_xlim(), (4.0, 12.0))
+
+        window.canvas.draw()
+        bbox = window.axes_right.bbox
+        event = SimpleNamespace(
+            button="up",
+            x=float((bbox.x0 + bbox.x1) / 2.0),
+            y=float((bbox.y0 + bbox.y1) / 2.0),
+            xdata=8.0,
+            ydata=0.0,
+            inaxes=window.axes_right,
+        )
+        self.assertEqual(window._scroll_target(event), "plot_y2")
+        y1_before = window.axes.get_ylim()
+        y2_before = window.axes_right.get_ylim()
+        window._on_scroll(event)
+        self.assertEqual(window.axes.get_ylim(), y1_before)
+        self.assertLess(
+            window.axes_right.get_ylim()[1] - window.axes_right.get_ylim()[0],
+            y2_before[1] - y2_before[0],
+        )
+        window.project.dirty = False
+        window.close()
+
     def test_render_quality_preference_is_app_only_and_user_switchable(self):
         window = self.make_lightweight_window()
         project_dirty = window.project.dirty
@@ -448,6 +494,45 @@ class GuiTests(unittest.TestCase):
                 & ITEM_IS_EDITABLE
             )
         )
+
+        window.project.dirty = False
+        window.close()
+
+    def test_timestamp_and_column_columns_edit_shared_run_and_support_undo(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        shared_run.timestamp = "2026-08-27T10:00:00"
+        shared_run.column_name = "C4"
+        window._refresh_dataset_table(0)
+
+        self.assertEqual(DATASET_COLUMN_NAME_COLUMN + 1, DATASET_SOURCE_COLUMN)
+        self.assertEqual(
+            window.dataset_table.item(1, DATASET_TIMESTAMP_COLUMN).text(),
+            "2026-08-27T10:00:00",
+        )
+        window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).setText(
+            "2026-08-27T11:30:00"
+        )
+        self.assertEqual(shared_run.timestamp, "2026-08-27T11:30:00")
+        self.assertEqual(
+            window.dataset_table.item(1, DATASET_TIMESTAMP_COLUMN).text(),
+            "2026-08-27T11:30:00",
+        )
+        window.dataset_table.item(0, DATASET_COLUMN_NAME_COLUMN).setText("C18")
+        self.assertEqual(shared_run.column_name, "C18")
+        self.assertEqual(
+            window.dataset_table.item(1, DATASET_COLUMN_NAME_COLUMN).text(), "C18"
+        )
+
+        window.undo()
+        self.assertEqual(window.project.runs[0].column_name, "C4")
+        window.undo()
+        self.assertEqual(window.project.runs[0].timestamp, "2026-08-27T10:00:00")
+        window.redo()
+        self.assertEqual(window.project.runs[0].timestamp, "2026-08-27T11:30:00")
 
         window.project.dirty = False
         window.close()
@@ -853,6 +938,44 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_legend_composer_dialog_applies_order_separator_and_is_undoable(self):
+        window = self.make_window()
+        dialog = LegendComposerDialog(window.project.method, "en")
+        for row in range(dialog.list_widget.count()):
+            item = dialog.list_widget.item(row)
+            item.setCheckState(
+                CHECKED
+                if item.data(USER_ROLE) in ("run_id", "label", "timestamp")
+                else UNCHECKED
+            )
+        dialog.separator_edit.setText(" / ")
+        dialog.apply_to_method(window.project.method)
+        self.assertEqual(
+            window.project.method.legend_components,
+            ["run_id", "label", "timestamp"],
+        )
+        self.assertEqual(window.project.method.legend_separator, " / ")
+        dialog.close()
+
+        fake = LegendComposerDialog(window.project.method, "en")
+        for row in range(fake.list_widget.count()):
+            item = fake.list_widget.item(row)
+            item.setCheckState(CHECKED if item.data(USER_ROLE) == "label" else UNCHECKED)
+        fake.separator_edit.setText("-")
+        with patch("hplc_app.gui.LegendComposerDialog", return_value=fake), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ):
+            window.edit_legend_composer()
+        self.assertEqual(window.project.method.legend_components, ["label"])
+        self.assertTrue(window.project.dirty)
+        window.undo()
+        self.assertEqual(
+            window.project.method.legend_components,
+            ["run_id", "label", "timestamp"],
+        )
+        window.project.dirty = False
+        window.close()
+
     def test_inline_label_change_updates_every_dataset_in_the_same_run(self):
         window = self.make_window()
         shared_run = window.project.run_for(window.project.datasets[0])
@@ -971,6 +1094,17 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(artist.get_text(), "LL-37 peak")
         self.assertIsNotNone(artist.get_bbox_patch())
         extent = artist.get_window_extent(renderer=window.canvas.get_renderer())
+        original_size = (extent.width, extent.height)
+        window.axes.set_xlim(5.0, 10.0)
+        window.axes.set_ylim(500.0, 2500.0)
+        window.canvas.draw()
+        zoomed_extent = artist.get_window_extent(
+            renderer=window.canvas.get_renderer()
+        )
+        self.assertAlmostEqual(zoomed_extent.width, original_size[0], delta=0.5)
+        self.assertAlmostEqual(zoomed_extent.height, original_size[1], delta=0.5)
+        self.assertAlmostEqual(artist.get_fontsize(), 13.5, places=6)
+        extent = zoomed_extent
         start_x = (extent.x0 + extent.x1) / 2.0
         start_y = (extent.y0 + extent.y1) / 2.0
         xdata, ydata = window.axes.transData.inverted().transform((start_x, start_y))
@@ -993,6 +1127,76 @@ class GuiTests(unittest.TestCase):
         moved_x = window.project.annotations[0].x_min
         window.undo()
         self.assertNotAlmostEqual(window.project.annotations[0].x_min, moved_x, places=6)
+        window.project.dirty = False
+        window.close()
+
+    def test_vertical_pointer_click_persists_selects_deletes_and_undoes(self):
+        window = self.make_window()
+        window.pointer_action.setChecked(True)
+        window.canvas.draw()
+        x_pixel, y_pixel = window.axes.transData.transform((7.25, 0.0))
+        click = SimpleNamespace(
+            button=1,
+            x=float(x_pixel),
+            y=float(y_pixel),
+            xdata=7.25,
+            ydata=0.0,
+            inaxes=window.axes,
+            dblclick=False,
+        )
+        window._on_canvas_press(click)
+        self.assertEqual(len(window.project.vertical_markers), 1)
+        marker = window.project.vertical_markers[0]
+        self.assertAlmostEqual(marker.x_min, 7.25)
+        self.assertEqual(window._selected_vertical_marker_id, marker.id)
+        self.assertIn(marker.id, window._vertical_marker_artists)
+
+        window._on_canvas_press(click)
+        self.assertEqual(len(window.project.vertical_markers), 1)
+        delete_key = (
+            QtCore.Qt.Key.Key_Delete if QT_API == 6 else QtCore.Qt.Key_Delete
+        )
+        key_press = (
+            QtCore.QEvent.Type.KeyPress if QT_API == 6 else QtCore.QEvent.KeyPress
+        )
+        no_modifier = (
+            QtCore.Qt.KeyboardModifier.NoModifier
+            if QT_API == 6
+            else QtCore.Qt.NoModifier
+        )
+        window.keyPressEvent(QtGui.QKeyEvent(key_press, delete_key, no_modifier))
+        self.assertEqual(window.project.vertical_markers, [])
+        window.undo()
+        self.assertEqual(len(window.project.vertical_markers), 1)
+        self.assertAlmostEqual(window.project.vertical_markers[0].x_min, 7.25)
+        window.project.dirty = False
+        window.close()
+
+    def test_fraction_collector_range_draws_interval_lines_and_undoes(self):
+        window = self.make_window()
+        original_peaks = deepcopy(window.project.datasets[0].peaks)
+        window.fraction_interval_spin.setValue(1.5)
+        window.fraction_button.setChecked(True)
+        self.assertEqual(window._span_selector_mode, "fraction")
+        window._on_fraction_span_selected(2.0, 8.0)
+        self.assertEqual(len(window.project.fraction_regions), 1)
+        region = window.project.fraction_regions[0]
+        self.assertEqual((region.start_min, region.end_min), (2.0, 8.0))
+        self.assertEqual(region.interval_min, 1.5)
+        cyan_lines = [
+            line
+            for line in window.axes.lines
+            if line.get_color() == "#0891b2"
+        ]
+        positions = sorted(
+            {round(float(line.get_xdata()[0]), 6) for line in cyan_lines}
+        )
+        self.assertEqual(positions, [2.0, 3.5, 5.0, 6.5, 8.0])
+        self.assertEqual(window.project.datasets[0].peaks, original_peaks)
+        window.clear_fraction_regions()
+        self.assertEqual(window.project.fraction_regions, [])
+        window.undo()
+        self.assertEqual(len(window.project.fraction_regions), 1)
         window.project.dirty = False
         window.close()
 
@@ -1042,6 +1246,11 @@ class GuiTests(unittest.TestCase):
         window.show_integration_checkbox.setChecked(False)
         self.app.processEvents()
         self.assertEqual(len(window.axes.patches), 0)
+        self.assertFalse(any(line.get_visible() for line in window.axes.get_xgridlines()))
+        window.show_grid_checkbox.setChecked(True)
+        self.app.processEvents()
+        self.assertTrue(any(line.get_visible() for line in window.axes.get_xgridlines()))
+        self.assertTrue(window.project.method.show_major_grid)
         with tempfile.TemporaryDirectory() as directory:
             for suffix in ("png", "svg", "pdf"):
                 path = Path(directory) / ("figure." + suffix)
@@ -1510,6 +1719,23 @@ class GuiTests(unittest.TestCase):
         self.assertIn("60", help_text)
         self.assertNotIn("mAU·min", help_text)
         help_dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_analyte_snapshot_fields_are_saved_from_metadata_dialog(self):
+        window = self.make_window()
+        dialog = MetadataDialog(window.project.datasets[0], "en")
+        dialog.fields["analyte"].setText("LL-37")
+        dialog.fields["analyte_id"].setText("analyte-ll37")
+        dialog.fields["analyte_aliases"].setText("CAP18, hCAP-18")
+        dialog.fields["analyte_source"].setText("UniProt P49913")
+        dialog.fields["epsilon_unit"].setText("M^-1 cm^-1")
+        dialog._accept()
+        metadata = window.project.datasets[0].measurement
+        self.assertEqual(metadata.analyte_id, "analyte-ll37")
+        self.assertEqual(metadata.analyte_aliases, ["CAP18", "hCAP-18"])
+        self.assertEqual(metadata.analyte_source, "UniProt P49913")
+        self.assertEqual(metadata.extinction_coefficient_unit, "M^-1 cm^-1")
         window.project.dirty = False
         window.close()
 
@@ -2555,6 +2781,83 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_retention_labels_are_drawn_for_every_selected_chromatogram(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        second.peaks = [PeakRegion(start_min=5.0, end_min=10.0)]
+        recalculate_dataset_peaks(second)
+        window.dataset_table.clearSelection()
+        window.dataset_table.setCurrentCell(0, 0)
+        for row in (0, 1):
+            selection = QtWidgets.QTableWidgetSelectionRange(
+                row, 0, row, window.dataset_table.columnCount() - 1
+            )
+            window.dataset_table.setRangeSelected(selection, True)
+        window.project.method.show_retention_labels = True
+        window._plot()
+
+        first_label = "%.2f" % first.peaks[0].retention_time_min
+        second_label = "%.2f" % second.peaks[0].retention_time_min
+        self.assertIn(first_label, [text.get_text() for text in window.axes.texts])
+        self.assertIn(
+            second_label,
+            [text.get_text() for text in window.axes_right.texts],
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1])
+        window.project.dirty = False
+        window.close()
+
+    def test_gradient_legend_can_hide_or_show_chromatogram_name(self):
+        window = self.make_window()
+        self.assertFalse(window.project.method.gradient_legend_include_dataset_name)
+        labels = window.axes_gradient.get_legend_handles_labels()[1]
+        self.assertEqual(labels, ["%B"])
+
+        window.gradient_legend_name_checkbox.setChecked(True)
+        self.app.processEvents()
+        labels = window.axes_gradient.get_legend_handles_labels()[1]
+        self.assertEqual(
+            labels, ["%B ({})".format(window.project.datasets[0].legend_label())]
+        )
+        self.assertTrue(window.project.method.gradient_legend_include_dataset_name)
+        window.project.dirty = False
+        window.close()
+
+    def test_peak_fit_result_is_saved_plotted_and_undoable(self):
+        window = self.make_window()
+        window.peak_table.selectRow(0)
+        result = PeakFitResult(
+            model="gaussian",
+            parameters={
+                "amplitude_uv": 1000.0,
+                "center_min": 7.0,
+                "sigma_min": 0.5,
+            },
+            retention_time_min=7.0,
+            rmse_uv=2.5,
+            r_squared=0.999,
+            aic=12.0,
+            point_count=50,
+        )
+        with patch.object(
+            QtWidgets.QInputDialog,
+            "getItem",
+            return_value=("Automatic", True),
+        ), patch("hplc_app.gui.fit_peak", return_value=result):
+            window._application_language = "en"
+            window.fit_selected_peak()
+        peak = window.project.datasets[0].peaks[0]
+        self.assertEqual(peak.fit_model, "gaussian")
+        self.assertEqual(peak.fit_parameters["sigma_min"], 0.5)
+        self.assertAlmostEqual(peak.fit_r_squared, 0.999)
+        self.assertIsNotNone(
+            window._peak_overlay_artists[peak.id]["fit_line"]
+        )
+        window.undo()
+        self.assertEqual(window.project.datasets[0].peaks[0].fit_model, "")
+        window.project.dirty = False
+        window.close()
+
     def test_presets_are_remembered_across_projects(self):
         first = MainWindow()
         first.project.condition_presets = {
@@ -2885,6 +3188,74 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_work_directory_reload_finds_only_new_files_and_holds_changed_paths(self):
+        window = self.make_window()
+        window.project = Project()
+        with tempfile.TemporaryDirectory() as first_directory, tempfile.TemporaryDirectory() as second_directory:
+            first = Path(first_directory) / "first.TXT"
+            second = Path(second_directory) / "second.TXT"
+            first.write_bytes((SAMPLES / "210601.TXT").read_bytes())
+            second.write_bytes((SAMPLES / "225120.TXT").read_bytes())
+            window.project.work_directories = [
+                WorkDirectory(path=first_directory, label="pac1"),
+                WorkDirectory(path=second_directory, label="pac2"),
+            ]
+
+            candidates, duplicates, changed, errors = (
+                window._work_directory_reload_candidates()
+            )
+            self.assertEqual(
+                candidates,
+                [(str(first), "pac1"), (str(second), "pac2")],
+            )
+            self.assertEqual((duplicates, changed, errors), (0, [], []))
+
+            imported = window._import_chromatogram_paths(
+                [path for path, _label in candidates],
+                group_labels=[label for _path, label in candidates],
+            )
+            self.assertEqual(imported, 2)
+            self.assertEqual(
+                [item.measurement.group for item in window.project.datasets],
+                ["pac1", "pac2"],
+            )
+            candidates, duplicates, changed, errors = (
+                window._work_directory_reload_candidates()
+            )
+            self.assertEqual(candidates, [])
+            self.assertEqual(duplicates, 2)
+            self.assertEqual((changed, errors), ([], []))
+
+            first.write_bytes((SAMPLES / "191720.TXT").read_bytes())
+            candidates, duplicates, changed, errors = (
+                window._work_directory_reload_candidates()
+            )
+            self.assertEqual(candidates, [])
+            self.assertEqual(duplicates, 1)
+            self.assertEqual(changed, [str(first)])
+            self.assertEqual(errors, [])
+        window.project.dirty = False
+        window.close()
+
+    def test_work_directory_dialog_edits_flags_and_order(self):
+        dialog = WorkDirectoriesDialog(
+            [
+                WorkDirectory(path="C:/HPLC/pac1", label="pac1"),
+                WorkDirectory(path="C:/HPLC/pac2", label="pac2"),
+            ],
+            "en",
+        )
+        dialog.table.item(0, 1).setText("first revised")
+        dialog.table.item(0, 3).setCheckState(CHECKED)
+        dialog.table.selectRow(0)
+        dialog._move(1)
+        dialog._accept()
+        self.assertEqual(
+            [entry.label for entry in dialog.directories],
+            ["pac2", "first revised"],
+        )
+        self.assertTrue(dialog.directories[1].recursive)
+
     def test_directory_import_cancel_keeps_completed_files_and_skips_remaining(self):
         window = self.make_window()
         paths = [
@@ -3118,6 +3489,8 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(hasattr(window, "figure_format_combo"))
         self.assertFalse(hasattr(window, "export_figure_button"))
         self.assertIn(window.export_figure_action, window.file_menu.actions())
+        self.assertIn(window.copy_view_action, window.file_menu.actions())
+        self.assertIn(window.print_view_action, window.file_menu.actions())
         self.assertEqual(window._figure_export_format, "png")
         with tempfile.TemporaryDirectory() as directory:
             window._save_directory = directory
@@ -3140,12 +3513,84 @@ class GuiTests(unittest.TestCase):
                 QtWidgets.QFileDialog,
                 "getSaveFileName",
                 return_value=("", ""),
-            ) as report_chooser:
+            ) as report_chooser, patch(
+                "hplc_app.gui.dialog_exec", return_value=True
+            ):
                 window.export_report()
             self.assertEqual(
                 report_chooser.call_args.args[2],
                 str(Path(directory) / "analysis_report.pdf"),
             )
+        window.project.dirty = False
+        window.close()
+
+    def test_report_scope_dialog_and_selection_cover_all_visible_and_selected(self):
+        window = self.make_window()
+        window.project.datasets[1].visible = False
+        selected_rows = [1]
+        expected = {
+            "all": window.project.datasets,
+            "visible": [window.project.datasets[0]],
+            "selected": [window.project.datasets[1]],
+        }
+        for scope, datasets in expected.items():
+            fake = Mock()
+            fake.scope.return_value = scope
+            with self.subTest(scope=scope), patch.object(
+                window, "_selected_dataset_rows", return_value=selected_rows
+            ), patch("hplc_app.gui.ReportScopeDialog", return_value=fake), patch(
+                "hplc_app.gui.dialog_exec", return_value=True
+            ):
+                self.assertEqual(window._choose_report_datasets(), datasets)
+
+        dialog = ReportScopeDialog(2, 1, 0, "en")
+        self.assertTrue(dialog.visible_radio.isChecked())
+        self.assertFalse(dialog.selected_radio.isEnabled())
+        dialog.all_radio.setChecked(True)
+        self.assertEqual(dialog.scope(), "all")
+        dialog.close()
+
+        options_dialog = ReportOptionsDialog("en")
+        options_dialog.checkboxes["baseline"].setChecked(False)
+        values = options_dialog.option_values()
+        self.assertFalse(values["baseline"])
+        self.assertTrue(values["retention_time"])
+        with patch("hplc_app.gui.ReportOptionsDialog", return_value=options_dialog), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ):
+            options = window._choose_report_options()
+        self.assertFalse(options.baseline)
+        self.assertTrue(options.retention_time)
+        options_dialog.close()
+        window.project.dirty = False
+        window.close()
+
+    def test_current_view_can_be_copied_and_printed_as_screen_snapshot(self):
+        window = self.make_window()
+        window.copy_view_to_clipboard()
+        clipboard_pixmap = QtWidgets.QApplication.clipboard().pixmap()
+        self.assertFalse(clipboard_pixmap.isNull())
+        self.assertGreater(clipboard_pixmap.width(), 0)
+
+        mode = (
+            QtPrintSupport.QPrinter.PrinterMode.HighResolution
+            if QT_API == 6
+            else QtPrintSupport.QPrinter.HighResolution
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            printer = QtPrintSupport.QPrinter(mode)
+            pdf_format = (
+                QtPrintSupport.QPrinter.OutputFormat.PdfFormat
+                if QT_API == 6
+                else QtPrintSupport.QPrinter.PdfFormat
+            )
+            output = str(Path(directory) / "current-view.pdf")
+            printer.setOutputFormat(pdf_format)
+            printer.setOutputFileName(output)
+            window._draw_view_pixmap_to_printer(
+                printer, window._current_view_pixmap()
+            )
+            self.assertTrue(Path(output).read_bytes().startswith(b"%PDF"))
         window.project.dirty = False
         window.close()
 

@@ -297,6 +297,15 @@ def migrate_103_to_104(manifest: Manifest) -> Manifest:
     return migrated
 
 
+def migrate_104_to_105(manifest: Manifest) -> Manifest:
+    """Add the project-owned work-directory collection."""
+    migrated = _with_schema(manifest, 105)
+    migrated.setdefault("work_directories", [])
+    if not isinstance(migrated["work_directories"], list):
+        raise ProjectMigrationError("Project work directories must be an array")
+    return migrated
+
+
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -313,6 +322,7 @@ V1_MIGRATIONS: Dict[int, Migration] = {
     101: migrate_101_to_102,
     102: migrate_102_to_103,
     103: migrate_103_to_104,
+    104: migrate_104_to_105,
 }
 
 

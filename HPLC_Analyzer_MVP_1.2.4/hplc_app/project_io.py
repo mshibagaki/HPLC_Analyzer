@@ -15,6 +15,7 @@ from .models import (
     Dataset,
     GradientPoint,
     LEGEND_COMPONENTS,
+    FractionRegion,
     MeasurementMetadata,
     PeakRegion,
     Project,
@@ -200,6 +201,9 @@ def save_project(path: str, project: Project) -> None:
         "vertical_markers": [
             asdict(marker) for marker in project.vertical_markers
         ],
+        "fraction_regions": [
+            asdict(region) for region in project.fraction_regions
+        ],
         "datasets": [],
     }
     used_names = set()
@@ -305,6 +309,17 @@ def load_project(path: str) -> Project:
                         )
                         for marker in (manifest.get("vertical_markers", []) or [])
                         if isinstance(marker, dict)
+                    ],
+                    fraction_regions=[
+                        FractionRegion(
+                            **{
+                                key: value
+                                for key, value in region.items()
+                                if key in FractionRegion.__dataclass_fields__
+                            }
+                        )
+                        for region in (manifest.get("fraction_regions", []) or [])
+                        if isinstance(region, dict)
                     ],
                     project_path=source,
                 )

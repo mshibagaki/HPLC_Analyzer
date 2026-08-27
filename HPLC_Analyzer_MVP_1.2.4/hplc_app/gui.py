@@ -55,6 +55,7 @@ from .i18n import Translator
 from .import_batch import discover_chromatogram_files, discover_reload_candidates
 from .models import (
     Dataset,
+    FractionRegion,
     PeakRegion,
     Project,
     TextAnnotation,
@@ -1036,6 +1037,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.edit_peak_button.setCheckable(True)
         self.split_peak_button = QtWidgets.QPushButton()
         self.split_peak_button.setCheckable(True)
+        self.fraction_button = QtWidgets.QPushButton()
+        self.fraction_button.setCheckable(True)
+        self.fraction_interval_spin = QtWidgets.QDoubleSpinBox()
+        self.fraction_interval_spin.setRange(0.01, 1000.0)
+        self.fraction_interval_spin.setDecimals(2)
+        self.fraction_interval_spin.setValue(1.0)
+        self.fraction_interval_spin.setSuffix(" min")
+        self.clear_fractions_button = QtWidgets.QPushButton()
         self.auto_detect_button = QtWidgets.QPushButton()
         self.select_all_peaks_button = QtWidgets.QPushButton()
         self.delete_peak_button = QtWidgets.QPushButton()
@@ -1047,7 +1056,10 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.auto_detect_button, 2, 0, 1, 3)
         integration_controls.addWidget(self.select_all_peaks_button, 3, 0, 1, 2)
         integration_controls.addWidget(self.delete_peak_button, 3, 2)
-        integration_controls.setRowStretch(4, 1)
+        integration_controls.addWidget(self.fraction_button, 4, 0)
+        integration_controls.addWidget(self.fraction_interval_spin, 4, 1)
+        integration_controls.addWidget(self.clear_fractions_button, 4, 2)
+        integration_controls.setRowStretch(5, 1)
 
         controls.addWidget(self.display_group, 4)
         controls.addWidget(self.navigation_group, 2)
@@ -1094,6 +1106,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
         self.integrate_button.toggled.connect(self._toggle_integration)
         self.split_peak_button.toggled.connect(self._toggle_split_mode)
+        self.fraction_button.toggled.connect(self._toggle_fraction_mode)
+        self.clear_fractions_button.clicked.connect(self.clear_fraction_regions)
         self.edit_peak_button.toggled.connect(self._toggle_edit_range_mode)
         self.delete_peak_button.clicked.connect(self.delete_peak)
         self.auto_detect_button.clicked.connect(self.auto_detect_peaks)
@@ -1122,6 +1136,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button,
             self.edit_peak_button,
             self.split_peak_button,
+            self.fraction_button,
             self.move_trace_button,
             self.pointer_action,
             self.annotation_action,
@@ -1192,6 +1207,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "annotations": deepcopy(self.project.annotations),
             "work_directories": deepcopy(self.project.work_directories),
             "vertical_markers": deepcopy(self.project.vertical_markers),
+            "fraction_regions": deepcopy(self.project.fraction_regions),
             "condition_presets": deepcopy(self.project.condition_presets),
             "gradient_presets": deepcopy(self.project.gradient_presets),
             "dataset_order": [dataset.id for dataset in self.project.datasets],
@@ -1210,6 +1226,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.work_directories = deepcopy(state.get("work_directories", []))
         self.project.vertical_markers = deepcopy(
             state.get("vertical_markers", [])
+        )
+        self.project.fraction_regions = deepcopy(
+            state.get("fraction_regions", [])
         )
         self.project.condition_presets = deepcopy(state["condition_presets"])
         self.project.gradient_presets = deepcopy(state["gradient_presets"])
@@ -1543,6 +1562,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.integrate_button.setText(t("integrate"))
         self.edit_peak_button.setText(t("edit_peak"))
         self.split_peak_button.setText(t("split_peak"))
+        self.fraction_button.setText(t("fraction_mode"))
+        self.clear_fractions_button.setText(t("clear_fractions"))
         self.delete_peak_button.setText(t("delete_peak"))
         self.show_integration_checkbox.setText(t("show_integration"))
         self.show_retention_checkbox.setText(t("show_retention_labels"))
@@ -2299,6 +2320,33 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._vertical_marker_artists[marker.id] = artist
 
+    def _draw_fraction_regions(self):
+        for region in self.project.fraction_regions:
+            start = min(region.start_min, region.end_min)
+            end = max(region.start_min, region.end_min)
+            interval = max(float(region.interval_min), 0.01)
+            self.axes.axvspan(start, end, color="#06b6d4", alpha=0.08, zorder=2)
+            count = min(int((end - start) / interval) + 1, 10000)
+            for index in range(count + 1):
+                value = start + index * interval
+                if value > end + 1.0e-9:
+                    break
+                self.axes.axvline(
+                    value,
+                    color="#0891b2",
+                    linewidth=0.8,
+                    linestyle="--",
+                    alpha=0.75,
+                    zorder=3,
+                )
+            self.axes.axvline(
+                end,
+                color="#0891b2",
+                linewidth=0.8,
+                linestyle="--",
+                alpha=0.75,
+            )
+
     def _plot(self, preserve_view: bool = True):
         if not hasattr(self, "axes"):
             return
@@ -2528,6 +2576,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
 
         self._draw_vertical_markers()
+        self._draw_fraction_regions()
         self._draw_text_annotations()
 
         x_label, y_label = self._axis_labels()
@@ -2646,19 +2695,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("integrate")
         elif self.edit_peak_button.isChecked():
             self._install_span_selector("edit")
+        elif self.fraction_button.isChecked():
+            self._install_span_selector("fraction")
         if (
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
+            or self.fraction_button.isChecked()
             or self.pointer_button.isChecked()
         ):
             self._ensure_interaction_cursor()
 
     def _install_span_selector(self, mode: str = "integrate"):
-        callback = (
-            self._on_edit_span_selected if mode == "edit" else self._on_span_selected
-        )
-        color = "#f59e0b" if mode == "edit" else "#2563eb"
         selected = self._selected_dataset()
         selector_axis = (
             self.axes_right
@@ -2667,6 +2715,15 @@ class MainWindow(QtWidgets.QMainWindow):
             and self.axes_right is not None
             else self.axes
         )
+        if mode == "edit":
+            callback = self._on_edit_span_selected
+            color = "#f59e0b"
+        elif mode == "fraction":
+            callback = self._on_fraction_span_selected
+            color = "#06b6d4"
+        else:
+            callback = self._on_span_selected
+            color = "#2563eb"
         self._span_selector = SpanSelector(
             selector_axis,
             callback,
@@ -2710,6 +2767,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._deactivate_toolbar_navigation()
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
@@ -2743,6 +2801,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
@@ -2774,6 +2833,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
@@ -2793,6 +2853,44 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 self._hide_interaction_cursor()
 
+    def _toggle_fraction_mode(self, enabled: bool):
+        if enabled:
+            if self._selected_dataset() is None:
+                QtWidgets.QMessageBox.information(
+                    self, APP_NAME, self.translator("no_dataset")
+                )
+                self.fraction_button.setChecked(False)
+                return
+            self._deactivate_toolbar_navigation()
+            self.integrate_button.setChecked(False)
+            self.edit_peak_button.setChecked(False)
+            self.split_peak_button.setChecked(False)
+            self.move_trace_button.setChecked(False)
+            self.pointer_button.setChecked(False)
+            self.annotation_action.setChecked(False)
+            self.statusBar().showMessage(self.translator("fraction_hint"))
+            self._install_span_selector("fraction")
+            self._ensure_interaction_cursor()
+        else:
+            if self._span_selector is not None and self._span_selector_mode == "fraction":
+                self._span_selector.set_active(False)
+                self._span_selector = None
+                self._span_selector_mode = None
+            self.statusBar().clearMessage()
+            self._hide_interaction_cursor()
+
+    def clear_fraction_regions(self):
+        if not self.project.fraction_regions:
+            return
+        before = self._capture_analysis_state()
+        self.project.fraction_regions = []
+        self._push_undo_snapshot(
+            before, self._history_label("フラクション範囲をクリア", "Clear fraction ranges")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+
     def _toggle_move_mode(self, enabled: bool):
         if enabled:
             if self._selected_dataset() is None:
@@ -2803,6 +2901,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.annotation_action.setChecked(False)
             self.statusBar().showMessage(self.translator("move_hint"))
@@ -2812,6 +2911,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.integrate_button.isChecked()
                 or self.edit_peak_button.isChecked()
                 or self.split_peak_button.isChecked()
+                or self.fraction_button.isChecked()
             ):
                 self.statusBar().clearMessage()
 
@@ -2821,6 +2921,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.annotation_action.setChecked(False)
             self.statusBar().showMessage(self.translator("pointer_hint"))
@@ -2830,6 +2931,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.integrate_button.isChecked()
                 or self.edit_peak_button.isChecked()
                 or self.split_peak_button.isChecked()
+                or self.fraction_button.isChecked()
             ):
                 self.statusBar().clearMessage()
                 self._hide_interaction_cursor()
@@ -2846,6 +2948,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
+            self.fraction_button.setChecked(False)
             self.move_trace_button.setChecked(False)
             self.pointer_button.setChecked(False)
             self.statusBar().showMessage(self.translator("text_annotation_hint"))
@@ -3090,6 +3193,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
+            or self.fraction_button.isChecked()
             or self.move_trace_button.isChecked()
         ):
             self._back_to_previous_view()
@@ -3134,6 +3238,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
+            or self.fraction_button.isChecked()
             or self.pointer_button.isChecked()
         ):
             detail_axes = tuple(
@@ -3533,6 +3638,24 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.project.dirty = True
         self._refresh_peak_table([integrated.id])
+        self._plot()
+        self._update_title()
+
+    def _on_fraction_span_selected(self, minimum: float, maximum: float):
+        if abs(maximum - minimum) <= 0:
+            return
+        before = self._capture_analysis_state()
+        region = FractionRegion(
+            start_min=float(min(minimum, maximum)),
+            end_min=float(max(minimum, maximum)),
+            interval_min=float(self.fraction_interval_spin.value()),
+        )
+        self.project.fraction_regions.append(region)
+        self._push_undo_snapshot(
+            before,
+            self._history_label("フラクション範囲を追加", "Add fraction range"),
+        )
+        self.project.dirty = True
         self._plot()
         self._update_title()
 

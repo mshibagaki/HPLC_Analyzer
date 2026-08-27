@@ -35,7 +35,7 @@ These results reduce implementation risk but do not replace the physical gates a
 
 ## Work that can continue without these blockers
 
-- Release asset discovery and signer-policy configuration while installer launch remains disabled.
+- Release asset discoveryとfail-closed signer-policy基盤は実装済み。production signer thumbprintの設定はidentity取得後に継続し、installer launchはそれまで無効のまま維持する。
 - Updater download progress/cancel/error UI against unsigned or synthetic fixtures, without offering execution.
 - PyQtGraph production adapter behind an opt-in Windows 11 setting with Matplotlib fallback; changing defaults still requires compatibility evidence.
 - Application-level features, tests, documentation, and project migrations that preserve the pinned Windows 7 dependency set.

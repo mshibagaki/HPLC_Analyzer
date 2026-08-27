@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Iterable, Optional
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -18,6 +18,7 @@ from .update_check import DEFAULT_REPOSITORY
 MAX_INSTALLER_BYTES = 256 * 1024 * 1024
 MAX_MANIFEST_BYTES = 256 * 1024
 _SHA256_LINE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+[*]?(.+?)$")
+_CERTIFICATE_THUMBPRINT = re.compile(r"^[0-9A-F]{40}$")
 
 
 def official_release_asset_url(url: str, repository: str = DEFAULT_REPOSITORY) -> bool:
@@ -33,6 +34,63 @@ def official_release_asset_url(url: str, repository: str = DEFAULT_REPOSITORY) -
         and not parsed.query
         and not parsed.fragment
     )
+
+
+def select_canonical_release_assets(release, version: str, repository: str = DEFAULT_REPOSITORY):
+    """Select one exact Win11 installer and checksum manifest, failing closed."""
+
+    installer_name = "HPLC_Analyzer_Setup_%s_Windows11_x64.exe" % str(version)
+    expected = (installer_name, "SHA256SUMS.txt")
+    if not isinstance(release, dict) or not isinstance(release.get("assets"), list):
+        raise ValueError("Release assets are missing")
+    selected = {}
+    for asset in release["assets"]:
+        if not isinstance(asset, dict) or asset.get("name") not in expected:
+            continue
+        name = asset["name"]
+        if name in selected:
+            raise ValueError("Release contains duplicate canonical asset: %s" % name)
+        url = asset.get("browser_download_url", "")
+        size = asset.get("size")
+        if not official_release_asset_url(url, repository):
+            raise ValueError("Canonical asset URL is not trusted: %s" % name)
+        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+            raise ValueError("Canonical asset size is invalid: %s" % name)
+        limit = MAX_INSTALLER_BYTES if name == installer_name else MAX_MANIFEST_BYTES
+        if size > limit:
+            raise ValueError("Canonical asset exceeds the size limit: %s" % name)
+        selected[name] = {"name": name, "url": url, "size": size}
+    missing = [name for name in expected if name not in selected]
+    if missing:
+        raise ValueError("Release is missing canonical asset: %s" % ", ".join(missing))
+    return {"installer": selected[installer_name], "manifest": selected["SHA256SUMS.txt"]}
+
+
+def normalize_signer_thumbprints(values: Iterable[str]):
+    """Validate explicit SHA-1 certificate thumbprints without inventing defaults."""
+
+    normalized = []
+    for value in values:
+        thumbprint = re.sub(r"[ :\-]", "", str(value)).upper()
+        if not _CERTIFICATE_THUMBPRINT.fullmatch(thumbprint):
+            raise ValueError("Signer thumbprint must be 40 hexadecimal characters")
+        if thumbprint not in normalized:
+            normalized.append(thumbprint)
+    return tuple(normalized)
+
+
+def signer_policy_result(authenticode, allowed_thumbprints=()):
+    """Authorize only a Valid signature whose configured identity matches."""
+
+    allowed = normalize_signer_thumbprints(allowed_thumbprints)
+    if not allowed:
+        return {"launch_allowed": False, "reason": "No approved signer identity is configured"}
+    if not isinstance(authenticode, dict) or authenticode.get("status") != "valid":
+        return {"launch_allowed": False, "reason": "Authenticode signature is not valid"}
+    actual = re.sub(r"[ :\-]", "", str(authenticode.get("thumbprint", ""))).upper()
+    if actual not in allowed:
+        return {"launch_allowed": False, "reason": "Signer identity is not approved"}
+    return {"launch_allowed": True, "reason": ""}
 
 
 def parse_sha256_manifest(payload: bytes, filename: str) -> str:

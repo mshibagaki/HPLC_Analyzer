@@ -436,6 +436,8 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 
 installer更新用の非実行型検証基盤では、公式repositoryのRelease asset URL、download上限、専用一時directory、安全なfilename、SHA-256 manifestとの一致、Windows Authenticode状態と署名者thumbprintを検証できます。正式な署名identityが設定されていない現段階ではApplication UIからdownloadせず、この検証に成功してもinstaller起動許可は常にfalseです。
 
+Release assetはversionから決まるWindows 11 installer名と`SHA256SUMS.txt`が各1件だけ存在する場合に限って選択します。重複、欠落、別host、query付きURL、上限超過は曖昧な候補として拒否します。署名者policyは明示された40桁certificate thumbprintだけを受け付け、未設定、署名無効、identity不一致では将来の起動許可を返しません。production thumbprintは証明書契約・本人確認完了後に別途設定します。
+
 Windows 7版とWindows 11版は同じアプリケーションバージョンを使用します。依存パッケージやビルド環境は異なりますが、OSごとに別のアプリケーションバージョン番号は付けません。`.hplcproj`互換性を壊す可能性がある変更は、バージョン番号だけで判断せず、移行・後方読込処理と両OS間の互換性確認を伴う必要があります。
 
 Pull Requestと`main`更新では[Level 2 CI](../.github/CI_POLICY.md)がsource契約とWindows offscreen testを検証します。CI成功は、Windows 11の正式installer実機確認やWindows 7 SP1 32-bit/Core 2での完全offline build・実機確認の代替にはなりません。

@@ -53,6 +53,7 @@ from .models import (
     PeakRegion,
     Project,
     TextAnnotation,
+    VerticalMarker,
     sanitize_condition_presets,
 )
 from .naming import (
@@ -434,6 +435,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interaction_cursor = None
         self._annotation_artists = {}
         self._annotation_drag = None
+        self._vertical_marker_artists = {}
+        self._selected_vertical_marker_id = ""
         self._edit_range_peak_id = None
         self._overview_view_patch = None
         self.axes_overview = None
@@ -1150,6 +1153,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "method": deepcopy(self.project.method),
             "runs": deepcopy(self.project.runs),
             "annotations": deepcopy(self.project.annotations),
+            "vertical_markers": deepcopy(self.project.vertical_markers),
             "condition_presets": deepcopy(self.project.condition_presets),
             "gradient_presets": deepcopy(self.project.gradient_presets),
             "dataset_order": [dataset.id for dataset in self.project.datasets],
@@ -1165,6 +1169,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method = deepcopy(state["method"])
         self.project.runs = deepcopy(state.get("runs", self.project.runs))
         self.project.annotations = deepcopy(state.get("annotations", []))
+        self.project.vertical_markers = deepcopy(
+            state.get("vertical_markers", [])
+        )
         self.project.condition_presets = deepcopy(state["condition_presets"])
         self.project.gradient_presets = deepcopy(state["gradient_presets"])
         order = state.get("dataset_order", [])
@@ -2191,6 +2198,28 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._annotation_artists[annotation.id] = artist
 
+    def _marker_axis(self, marker: VerticalMarker):
+        if marker.y_axis == 2 and self.axes_right is not None:
+            return self.axes_right
+        return self.axes
+
+    def _draw_vertical_markers(self):
+        self._vertical_marker_artists = {}
+        marker_ids = {marker.id for marker in self.project.vertical_markers}
+        if self._selected_vertical_marker_id not in marker_ids:
+            self._selected_vertical_marker_id = ""
+        for marker in self.project.vertical_markers:
+            selected = marker.id == self._selected_vertical_marker_id
+            artist = self._marker_axis(marker).axvline(
+                marker.x_min,
+                color="#f59e0b" if selected else (marker.color or "#7c3aed"),
+                linewidth=2.0 if selected else 1.15,
+                linestyle="-",
+                alpha=0.95 if selected else 0.8,
+                zorder=25,
+            )
+            self._vertical_marker_artists[marker.id] = artist
+
     def _plot(self, preserve_view: bool = True):
         if not hasattr(self, "axes"):
             return
@@ -2202,6 +2231,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interaction_cursor = None
         self._annotation_artists = {}
         self._annotation_drag = None
+        self._vertical_marker_artists = {}
         self._overview_view_patch = None
         self.figure.clear()
         if self.project.method.view_mode == "overview_detail":
@@ -2401,6 +2431,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.project.method.gradient_axis_label.strip() or "Mobile phase B (%)"
             )
 
+        self._draw_vertical_markers()
         self._draw_text_annotations()
 
         x_label, y_label = self._axis_labels()
@@ -2745,6 +2776,88 @@ class MainWindow(QtWidgets.QMainWindow):
                 return annotation
         return None
 
+    def _vertical_marker_at_event(self, event):
+        if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+            return None
+        for marker in reversed(self.project.vertical_markers):
+            artist = self._vertical_marker_artists.get(marker.id)
+            if artist is None or not artist.get_visible():
+                continue
+            axis = self._marker_axis(marker)
+            if not axis.bbox.contains(float(event.x), float(event.y)):
+                continue
+            marker_x = axis.transData.transform((marker.x_min, 0.0))[0]
+            if abs(float(event.x) - float(marker_x)) <= 6.0:
+                return marker
+        return None
+
+    def _select_vertical_marker(self, marker):
+        self._selected_vertical_marker_id = marker.id if marker is not None else ""
+        for marker_id, artist in self._vertical_marker_artists.items():
+            selected = marker_id == self._selected_vertical_marker_id
+            model = next(
+                (
+                    item
+                    for item in self.project.vertical_markers
+                    if item.id == marker_id
+                ),
+                None,
+            )
+            artist.set_color(
+                "#f59e0b" if selected else ((model.color if model else "") or "#7c3aed")
+            )
+            artist.set_linewidth(2.0 if selected else 1.15)
+            artist.set_alpha(0.95 if selected else 0.8)
+        self._request_canvas_draw(force=True)
+
+    def _place_vertical_marker(self, event):
+        selected = self._selected_dataset()
+        y_axis = 2 if getattr(event, "inaxes", None) is self.axes_right else (
+            selected.y_axis if selected is not None else 1
+        )
+        before = self._capture_analysis_state()
+        marker = VerticalMarker(x_min=float(event.xdata), y_axis=y_axis)
+        self.project.vertical_markers.append(marker)
+        self._selected_vertical_marker_id = marker.id
+        self._push_undo_snapshot(
+            before, self._history_label("縦線を追加", "Add vertical marker")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+
+    def delete_selected_vertical_marker(self):
+        marker_id = self._selected_vertical_marker_id
+        if not marker_id:
+            return False
+        before = self._capture_analysis_state()
+        retained = [
+            marker
+            for marker in self.project.vertical_markers
+            if marker.id != marker_id
+        ]
+        if len(retained) == len(self.project.vertical_markers):
+            self._selected_vertical_marker_id = ""
+            return False
+        self.project.vertical_markers = retained
+        self._selected_vertical_marker_id = ""
+        self._push_undo_snapshot(
+            before, self._history_label("縦線を削除", "Delete vertical marker")
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+        return True
+
+    def keyPressEvent(self, event):
+        delete_key = (
+            QtCore.Qt.Key.Key_Delete if QT_API == 6 else QtCore.Qt.Key_Delete
+        )
+        if event.key() == delete_key and self.delete_selected_vertical_marker():
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def _edit_text_annotation(self, annotation: TextAnnotation):
         before = self._capture_analysis_state()
         dialog = TextAnnotationDialog(
@@ -2812,6 +2925,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if str(getattr(self.toolbar, "mode", "")):
             return
+        marker = self._vertical_marker_at_event(event)
+        if marker is not None:
+            self._select_vertical_marker(marker)
+            return
         annotation = self._annotation_at_event(event)
         if annotation is not None:
             if getattr(event, "dblclick", False):
@@ -2837,6 +2954,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.annotation_action.isChecked():
             self._place_text_annotation(event)
             return
+        if self.pointer_button.isChecked():
+            self._place_vertical_marker(event)
+            return
+        if self._selected_vertical_marker_id:
+            self._select_vertical_marker(None)
         if self.axes_overview is not None and getattr(event, "inaxes", None) in (
             self.axes_overview,
             self.axes_overview_right,

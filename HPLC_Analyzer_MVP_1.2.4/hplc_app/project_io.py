@@ -20,6 +20,7 @@ from .models import (
     Run,
     Solvent,
     TextAnnotation,
+    VerticalMarker,
     sanitize_condition_presets,
 )
 from .parser import dataset_from_bytes
@@ -151,6 +152,9 @@ def save_project(path: str, project: Project) -> None:
         "condition_presets": sanitize_condition_presets(project.condition_presets),
         "gradient_presets": project.gradient_presets,
         "annotations": [asdict(annotation) for annotation in project.annotations],
+        "vertical_markers": [
+            asdict(marker) for marker in project.vertical_markers
+        ],
         "datasets": [],
     }
     used_names = set()
@@ -242,6 +246,17 @@ def load_project(path: str) -> Project:
                         )
                         for annotation in (manifest.get("annotations", []) or [])
                         if isinstance(annotation, dict)
+                    ],
+                    vertical_markers=[
+                        VerticalMarker(
+                            **{
+                                key: value
+                                for key, value in marker.items()
+                                if key in VerticalMarker.__dataclass_fields__
+                            }
+                        )
+                        for marker in (manifest.get("vertical_markers", []) or [])
+                        if isinstance(marker, dict)
                     ],
                     project_path=source,
                 )

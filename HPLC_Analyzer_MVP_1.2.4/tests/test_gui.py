@@ -324,6 +324,14 @@ class GuiTests(unittest.TestCase):
             len(window._dataset_lines[window.project.datasets[0].id].get_xdata()),
             window.project.datasets[0].time_min.size,
         )
+        self.assertEqual(
+            window.screen_render_surface.capabilities.backend_id,
+            "matplotlib_qt",
+        )
+        self.assertTrue(
+            window.screen_render_surface.capabilities.supports_native_snapshot
+        )
+        self.assertIs(window.screen_render_surface.widget, window.canvas)
         window.project.dirty = False
         window.close()
 

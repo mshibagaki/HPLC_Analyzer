@@ -11,7 +11,6 @@ import numpy as np
 from matplotlib.backends import backend_pdf as _backend_pdf  # bundled for frozen SVG/PDF export
 from matplotlib.backends import backend_svg as _backend_svg
 from matplotlib.backend_bases import MouseButton
-from matplotlib.figure import Figure
 from matplotlib import font_manager
 from matplotlib.ticker import MultipleLocator
 from matplotlib.widgets import SpanSelector
@@ -109,6 +108,7 @@ from .settings_store import (
     SAVE_DIRECTORY,
     UI_LANGUAGE,
 )
+from .screen_renderer import create_screen_render_surface
 from .qt_compat import (
     QAction,
     QActionGroup,
@@ -126,10 +126,8 @@ from .qt_compat import (
 )
 
 if QT_API == 6:
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
     from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 else:
-    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
     from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 
 
@@ -804,12 +802,13 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _build_ui(self):
-        self.figure = Figure(
+        self.screen_render_surface = create_screen_render_surface(
             figsize=(8, 5),
             constrained_layout=not self._is_lightweight_rendering(),
         )
+        self.figure = self.screen_render_surface.figure
         self.axes = self.figure.add_subplot(111)
-        self.canvas = FigureCanvas(self.figure)
+        self.canvas = self.screen_render_surface.widget
         self._draw_timer = QtCore.QTimer(self)
         self._draw_timer.setSingleShot(True)
         self._draw_timer.timeout.connect(self._flush_canvas_draw)
@@ -1126,10 +1125,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reset_x_view_button.clicked.connect(self._reset_x_view)
         self.reset_y_view_button.clicked.connect(self._reset_y_view)
         self.peak_table.itemDoubleClicked.connect(self._peak_item_double_clicked)
-        self.canvas.mpl_connect("scroll_event", self._on_scroll)
-        self.canvas.mpl_connect("button_press_event", self._on_canvas_press)
-        self.canvas.mpl_connect("motion_notify_event", self._on_canvas_motion)
-        self.canvas.mpl_connect("button_release_event", self._on_canvas_release)
+        self.screen_render_surface.connect_event("scroll_event", self._on_scroll)
+        self.screen_render_surface.connect_event(
+            "button_press_event", self._on_canvas_press
+        )
+        self.screen_render_surface.connect_event(
+            "motion_notify_event", self._on_canvas_motion
+        )
+        self.screen_render_surface.connect_event(
+            "button_release_event", self._on_canvas_release
+        )
 
     def _wire_toolbar_navigation_actions(self):
         toolbar_actions = getattr(self.toolbar, "_actions", {}) or {}
@@ -4609,8 +4614,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._request_canvas_draw(force=True)
 
     def _current_view_pixmap(self):
-        self.canvas.draw()
-        return self.canvas.grab()
+        return self.screen_render_surface.snapshot()
 
     def copy_view_to_clipboard(self):
         pixmap = self._current_view_pixmap()

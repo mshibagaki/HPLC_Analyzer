@@ -134,6 +134,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 - Y軸1を上段、Y軸2を下段へ分けた共有X軸の2パネル表示へ切替
 - グラフ部分と操作・ピーク表部分の境界をドラッグして表示高さを変更
 - 描画品質を「高品質／軽量」から選択。Windows 7は軽量、Windows 11は高品質が既定
+- 画面用Figure/Canvasはscreen surface interface経由で生成し、解析・Project保存・A4レポート描画から分離
 - 軽量描画は画面だけをpixel幅に応じてmin/max間引きし、非表示データを描画対象から除外
 - パン／連続ズーム中は再描画を抑制し、操作終了時に現在の表示範囲を正式再描画
 
@@ -502,6 +503,7 @@ hplc_app/exporters.py     CSV出力
 hplc_app/report.py        A4解析レポートPDF・印刷ページ生成
 hplc_app/gui.py           操作画面、Undo/Redo、プリンター出力
 hplc_app/rendering.py     Win7軽量描画用の表示専用min/max間引き
+hplc_app/screen_renderer.py 画面用レンダラーsurface interfaceとMatplotlib実装
 tests/test_core.py        実データ・数式・保存・レポートのテスト
 tests/test_gui.py         表示・操作・Undo/Redo・印刷のGUIテスト
 sample_data/              提供された3つのASCII

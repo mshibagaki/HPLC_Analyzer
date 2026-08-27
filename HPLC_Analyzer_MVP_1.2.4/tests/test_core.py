@@ -80,6 +80,7 @@ from hplc_app.report import (
 from hplc_app.rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
+    ScreenRendererCapabilities,
     default_render_quality,
     default_trace_color,
     minmax_decimate,
@@ -487,6 +488,17 @@ class AnalysisTests(unittest.TestCase):
         )
         self.assertTrue(np.array_equal(full_x, values))
         self.assertTrue(np.array_equal(full_y, values * 2.0))
+
+    def test_screen_renderer_capabilities_are_backend_neutral_and_immutable(self):
+        capabilities = ScreenRendererCapabilities(
+            backend_id="prototype",
+            supports_native_snapshot=True,
+        )
+        self.assertEqual(capabilities.backend_id, "prototype")
+        self.assertTrue(capabilities.supports_native_snapshot)
+        self.assertFalse(capabilities.supports_matplotlib_artists)
+        with self.assertRaises((AttributeError, TypeError)):
+            capabilities.backend_id = "changed"
 
     def test_default_trace_colors_follow_wavelength_families(self):
         self.assertEqual(default_trace_color(280.0, 0), "#1f77b4")

@@ -26,6 +26,7 @@ from hplc_app.dialogs import (
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
+    ReportOptionsDialog,
     ReportScopeDialog,
     TextAnnotationDialog,
 )
@@ -3177,6 +3178,19 @@ class GuiTests(unittest.TestCase):
         dialog.all_radio.setChecked(True)
         self.assertEqual(dialog.scope(), "all")
         dialog.close()
+
+        options_dialog = ReportOptionsDialog("en")
+        options_dialog.checkboxes["baseline"].setChecked(False)
+        values = options_dialog.option_values()
+        self.assertFalse(values["baseline"])
+        self.assertTrue(values["retention_time"])
+        with patch("hplc_app.gui.ReportOptionsDialog", return_value=options_dialog), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ):
+            options = window._choose_report_options()
+        self.assertFalse(options.baseline)
+        self.assertTrue(options.retention_time)
+        options_dialog.close()
         window.project.dirty = False
         window.close()
 

@@ -37,6 +37,7 @@ from .dialogs import (
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
+    ReportOptionsDialog,
     ReportScopeDialog,
     TextAnnotationDialog,
     dialog_exec,
@@ -74,7 +75,11 @@ from .project_io import (
     load_project,
     save_project,
 )
-from .report import export_analysis_report_pdf, render_analysis_report_pages
+from .report import (
+    ReportOptions,
+    export_analysis_report_pdf,
+    render_analysis_report_pages,
+)
 from .rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
@@ -4109,9 +4114,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return visible
         return list(self.project.datasets)
 
+    def _choose_report_options(self):
+        dialog = ReportOptionsDialog(self._application_language, self)
+        if not dialog_exec(dialog):
+            return None
+        return ReportOptions(**dialog.option_values())
+
     def export_report(self):
         datasets = self._choose_report_datasets()
         if datasets is None:
+            return
+        options = self._choose_report_options()
+        if options is None:
             return
         path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -4123,7 +4137,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             actual = export_analysis_report_pdf(
-                path, self.project, datasets, self._application_language
+                path,
+                self.project,
+                datasets,
+                self._application_language,
+                options,
             )
             self._remember_save_path(actual)
             self.statusBar().showMessage(self.translator("saved", path=actual), 7000)
@@ -4173,6 +4191,9 @@ class MainWindow(QtWidgets.QMainWindow):
         datasets = self._choose_report_datasets()
         if datasets is None:
             return
+        options = self._choose_report_options()
+        if options is None:
+            return
         mode = (
             QtPrintSupport.QPrinter.PrinterMode.HighResolution
             if QT_API == 6
@@ -4190,7 +4211,11 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             with tempfile.TemporaryDirectory(prefix="hplc_report_") as directory:
                 pages = render_analysis_report_pages(
-                    directory, self.project, datasets, self._application_language
+                    directory,
+                    self.project,
+                    datasets,
+                    self._application_language,
+                    options,
                 )
                 self._draw_report_pages_to_printer(printer, pages)
             self.statusBar().showMessage(

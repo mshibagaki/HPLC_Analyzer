@@ -64,6 +64,54 @@ def _populate_preset_sort_combo(combo, language: str):
         combo.addItem(japanese if language == "ja" else english, key)
 
 
+class ReportOptionsDialog(QtWidgets.QDialog):
+    """Select session-only details included in the next report operation."""
+
+    OPTION_LABELS = (
+        ("integration_range", "積分範囲", "Integration ranges"),
+        ("baseline", "ベースライン／積分方法", "Baselines / integration method"),
+        ("retention_time", "保持時間", "Retention times"),
+        ("gradient_b", "B %", "B %"),
+        ("gradient_conditions", "グラジエント曲線", "Gradient curve"),
+        ("quantitation", "定量値", "Quantitation values"),
+    )
+
+    def __init__(self, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.setWindowTitle(
+            "レポート出力項目" if language == "ja" else "Report contents"
+        )
+        root = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel(
+            "今回のレポートに含める項目を選択してください。この設定は解析値を変更しません。"
+            if language == "ja"
+            else "Choose content for this report. These choices do not change analysis values."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        self.checkboxes = {}
+        for key, japanese, english in self.OPTION_LABELS:
+            checkbox = QtWidgets.QCheckBox(
+                japanese if language == "ja" else english
+            )
+            checkbox.setChecked(True)
+            root.addWidget(checkbox)
+            self.checkboxes[key] = checkbox
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def option_values(self):
+        return {
+            key: checkbox.isChecked()
+            for key, checkbox in self.checkboxes.items()
+        }
+
+
 class ReportScopeDialog(QtWidgets.QDialog):
     """Choose which chromatograms are included in a report operation."""
 

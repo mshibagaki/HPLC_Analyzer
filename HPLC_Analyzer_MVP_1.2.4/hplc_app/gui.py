@@ -2399,6 +2399,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.toolbar.update()
         unit = self.project.method.display_unit
         selected = self._selected_dataset()
+        selected_dataset_ids = {
+            self.project.datasets[row].id
+            for row in self._selected_dataset_rows()
+        }
+        if not selected_dataset_ids and selected is not None:
+            selected_dataset_ids.add(selected.id)
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
         if not self._split_y_axes and any(
             dataset.y_axis == 2 for dataset in visible
@@ -2472,11 +2478,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 )[0]
                 self._overview_dataset_lines[dataset.id] = overview_line
             plotted += 1
-            if dataset is selected and (
+            if dataset.id in selected_dataset_ids and (
                 self.project.method.show_integration_areas
                 or self.project.method.show_retention_labels
             ):
-                selected_peak_rows = set(self._selected_peak_rows())
+                selected_peak_rows = (
+                    set(self._selected_peak_rows())
+                    if dataset is selected
+                    else set()
+                )
                 for peak_index, peak in enumerate(dataset.peaks):
                     is_selected_peak = peak_index in selected_peak_rows
                     peak_color = "#f59e0b" if is_selected_peak else color

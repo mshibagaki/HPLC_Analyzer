@@ -1336,6 +1336,14 @@ class ProjectTests(unittest.TestCase):
         dataset.gradient_preset_name = "RP-C4"
         project.method.show_gradient_b = True
         project.method.legend_location = "upper left"
+        project.method.legend_components = [
+            "run_id",
+            "label",
+            "timestamp",
+            "wavelength",
+            "column",
+        ]
+        project.method.legend_separator = " | "
         project.method.gradient_axis_label = "ACN (%)"
         project.method.show_retention_labels = True
         project.method.zoom_axis = "x"
@@ -1357,6 +1365,11 @@ class ProjectTests(unittest.TestCase):
             self.assertIn("RP-C4", loaded.gradient_presets)
             self.assertTrue(loaded.method.show_gradient_b)
             self.assertEqual(loaded.method.legend_location, "upper left")
+            self.assertEqual(
+                loaded.method.legend_components,
+                ["run_id", "label", "timestamp", "wavelength", "column"],
+            )
+            self.assertEqual(loaded.method.legend_separator, " | ")
             self.assertEqual(loaded.method.gradient_axis_label, "ACN (%)")
             self.assertTrue(loaded.method.show_retention_labels)
             self.assertEqual(loaded.method.zoom_axis, "x")
@@ -1425,6 +1438,46 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(second.measurement.column_name, "C18")
         self.assertEqual(first.measurement.wavelength_nm, 220.0)
         self.assertEqual(second.measurement.wavelength_nm, 280.0)
+
+    def test_legend_composer_uses_order_skips_empty_values_and_preserves_authority(self):
+        run = Run(
+            id="run-42",
+            label="Sample A",
+            timestamp="2026-08-27T12:00:00",
+            column_name="C4",
+        )
+        dataset = Dataset(
+            run_id=run.id,
+            label="Sample A",
+            measurement=MeasurementMetadata(wavelength_nm=280.0),
+        )
+        project = Project(runs=[run], datasets=[dataset])
+        project.method.legend_components = [
+            "run_id",
+            "label",
+            "analyte_name",
+            "timestamp",
+            "wavelength",
+            "column",
+        ]
+        project.method.legend_separator = "*"
+        before = deepcopy(run)
+
+        self.assertEqual(
+            project.legend_label_for(dataset),
+            "run-42*Sample A*2026-08-27T12:00:00*280 nm*C4",
+        )
+        self.assertEqual(run, before)
+        dataset.label = "Sample A 280 nm"
+        dataset.short_label = "Sample A 280 nm"
+        self.assertEqual(
+            project.legend_label_for(dataset),
+            "run-42*Sample A 280 nm*2026-08-27T12:00:00*C4",
+        )
+
+        project.method.legend_components = ["run_id", "column"]
+        project.method.legend_separator = ""
+        self.assertEqual(project.legend_label_for(dataset), "run-42C4")
 
     def test_shared_run_round_trip_preserves_sources_peaks_and_channel_values(self):
         first = load_ascii_file(str(SAMPLES / "210601.TXT"))

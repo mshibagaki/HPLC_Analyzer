@@ -14,6 +14,7 @@ from .models import (
     AnalysisMethod,
     Dataset,
     GradientPoint,
+    LEGEND_COMPONENTS,
     MeasurementMetadata,
     PeakRegion,
     Project,
@@ -111,6 +112,17 @@ def _work_directories_from_value(value):
 def _method_from_dict(data: Dict[str, Any], schema_version: int = PROJECT_SCHEMA_VERSION) -> AnalysisMethod:
     allowed = set(AnalysisMethod.__dataclass_fields__)
     values = {key: value for key, value in data.items() if key in allowed}
+    components = values.get("legend_components")
+    if components is not None:
+        if not isinstance(components, list) or not all(
+            isinstance(item, str) and item in LEGEND_COMPONENTS
+            for item in components
+        ):
+            raise ProjectError("Legend components must be a valid string array")
+        values["legend_components"] = list(dict.fromkeys(components))
+    separator = values.get("legend_separator")
+    if separator is not None and not isinstance(separator, str):
+        raise ProjectError("Legend separator must be text")
     # v0.7.0 replaces the old fixed wheel-zoom default with cursor-sensitive
     # zoom.  Existing projects therefore receive the new behaviour once, while
     # v0.7.0 projects can still persist an explicitly selected fixed mode.

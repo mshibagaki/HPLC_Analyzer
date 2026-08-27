@@ -37,6 +37,16 @@ RUN_MEASUREMENT_FIELD_MAP = {
     "gradient": "gradient",
 }
 DATASET_MEASUREMENT_FIELDS = frozenset(("wavelength_nm", "aux_range_au_per_v"))
+LEGEND_COMPONENTS = (
+    "run_id",
+    "label",
+    "timestamp",
+    "wavelength",
+    "column",
+    "sample_name",
+    "analyte_name",
+    "group",
+)
 
 
 def sanitize_condition_presets(
@@ -394,6 +404,10 @@ class AnalysisMethod:
     legend_font_family: str = "Arial"
     legend_font_size: float = 9.0
     legend_font_color: str = "#000000"
+    legend_components: List[str] = field(
+        default_factory=lambda: ["label", "wavelength"]
+    )
+    legend_separator: str = "_"
     x_tick_mode: str = "auto"
     x_major_tick_min: float = 5.0
     x_minor_tick_min: float = 1.0
@@ -482,6 +496,46 @@ class Project:
         if run is None:
             raise ValueError("Dataset references a missing Run: %s" % dataset.run_id)
         return run
+
+    def legend_label_for(self, dataset: Dataset) -> str:
+        """Build a derived legend without changing any authoritative field."""
+        run = self.run_for(dataset)
+        components = self.method.legend_components
+        if not isinstance(components, list):
+            components = ["label", "wavelength"]
+        ordered = [name for name in components if name in LEGEND_COMPONENTS]
+        if not ordered:
+            ordered = ["label", "wavelength"]
+        label = (
+            dataset.short_label
+            or run.label
+            or dataset.label
+            or dataset.original_filename
+        )
+        values = {
+            "run_id": run.id,
+            "label": label,
+            "timestamp": run.timestamp,
+            "wavelength": dataset.wavelength_text(),
+            "column": run.column_name,
+            "sample_name": run.sample_name,
+            "analyte_name": run.analyte_name,
+            "group": run.group,
+        }
+        result = []
+        for name in ordered:
+            value = str(values.get(name, "") or "").strip()
+            if not value:
+                continue
+            if name == "wavelength" and any(
+                value.casefold() in existing.casefold() for existing in result
+            ):
+                continue
+            result.append(value)
+        separator = self.method.legend_separator
+        if not isinstance(separator, str):
+            separator = "_"
+        return separator.join(result) or dataset.legend_label()
 
     def add_dataset(self, dataset: Dataset, run: Optional[Run] = None) -> Run:
         index = self.__dict__.get("_run_index", {})

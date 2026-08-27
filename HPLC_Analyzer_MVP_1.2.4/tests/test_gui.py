@@ -21,6 +21,7 @@ from hplc_app.dialogs import (
     DirectoryImportDialog,
     GradientDialog,
     LabDatabaseDialog,
+    LegendComposerDialog,
     MetadataDialog,
     PresetPreviewDialog,
     PreferencesDialog,
@@ -51,6 +52,8 @@ from hplc_app.qt_compat import (
     ITEM_IS_EDITABLE,
     QT_API,
     STANDARD_SAVE_SHORTCUT,
+    UNCHECKED,
+    USER_ROLE,
     QtCore,
     QtGui,
     QtPrintSupport,
@@ -893,6 +896,44 @@ class GuiTests(unittest.TestCase):
         labels = window.axes.get_legend_handles_labels()[1]
         self.assertIn("Updated label_280 nm", labels)
         self.assertEqual(window.project.datasets[0].short_label, "Updated label")
+        window.project.dirty = False
+        window.close()
+
+    def test_legend_composer_dialog_applies_order_separator_and_is_undoable(self):
+        window = self.make_window()
+        dialog = LegendComposerDialog(window.project.method, "en")
+        for row in range(dialog.list_widget.count()):
+            item = dialog.list_widget.item(row)
+            item.setCheckState(
+                CHECKED
+                if item.data(USER_ROLE) in ("run_id", "label", "timestamp")
+                else UNCHECKED
+            )
+        dialog.separator_edit.setText(" / ")
+        dialog.apply_to_method(window.project.method)
+        self.assertEqual(
+            window.project.method.legend_components,
+            ["run_id", "label", "timestamp"],
+        )
+        self.assertEqual(window.project.method.legend_separator, " / ")
+        dialog.close()
+
+        fake = LegendComposerDialog(window.project.method, "en")
+        for row in range(fake.list_widget.count()):
+            item = fake.list_widget.item(row)
+            item.setCheckState(CHECKED if item.data(USER_ROLE) == "label" else UNCHECKED)
+        fake.separator_edit.setText("-")
+        with patch("hplc_app.gui.LegendComposerDialog", return_value=fake), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ):
+            window.edit_legend_composer()
+        self.assertEqual(window.project.method.legend_components, ["label"])
+        self.assertTrue(window.project.dirty)
+        window.undo()
+        self.assertEqual(
+            window.project.method.legend_components,
+            ["run_id", "label", "timestamp"],
+        )
         window.project.dirty = False
         window.close()
 

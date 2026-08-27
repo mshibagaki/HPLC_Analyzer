@@ -142,9 +142,12 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 
 ```text
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json
+python scripts\probe_pyqtgraph_parity.py
 ```
 
 結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
+
+Win11の隔離probeでは、primary trace、Y2軸、split panel、zoom/pan、integration region、retention/fixed-size text、vertical marker、curve picking、snapshotを再現できました。gradient自体は描画可能ですが、Y2と同時に第三の独立scaleとして重ねるにはcustom AxisItem layoutが必要です。これは採用不能ではなく追加実装が必要な`adaptable`項目として扱います。
 
 ### 移動・ズーム
 

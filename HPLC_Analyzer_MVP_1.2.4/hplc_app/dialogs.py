@@ -28,6 +28,7 @@ from .models import (
 )
 from .naming import build_project_filename, normalize_analysis_date
 from .preset_store import (
+    apply_preset_operation,
     filter_preset_names,
     normalize_preset_metadata,
     record_preset_deleted,
@@ -54,6 +55,121 @@ def _preset_display(value) -> str:
     if isinstance(value, float):
         return "%g" % value
     return str(value)
+
+
+class PresetManagerDialog(QtWidgets.QDialog):
+    """Manage application-level condition and gradient preset names."""
+
+    def __init__(self, conditions, gradients, metadata, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.conditions = deepcopy(conditions)
+        self.gradients = deepcopy(gradients)
+        self.metadata = deepcopy(metadata)
+        self.setWindowTitle("プリセット管理" if language == "ja" else "Preset manager")
+        self.resize(620, 480)
+        root = QtWidgets.QVBoxLayout(self)
+        self.tabs = QtWidgets.QTabWidget()
+        self.condition_list = QtWidgets.QListWidget()
+        self.gradient_list = QtWidgets.QListWidget()
+        self.tabs.addTab(self.condition_list, "条件" if language == "ja" else "Conditions")
+        self.tabs.addTab(self.gradient_list, "グラジエント" if language == "ja" else "Gradients")
+        root.addWidget(self.tabs, 1)
+        actions = QtWidgets.QHBoxLayout()
+        self.rename_button = QtWidgets.QPushButton("名前変更…" if language == "ja" else "Rename…")
+        self.duplicate_button = QtWidgets.QPushButton("複製…" if language == "ja" else "Duplicate…")
+        self.delete_button = QtWidgets.QPushButton("削除" if language == "ja" else "Delete")
+        for button in (self.rename_button, self.duplicate_button, self.delete_button):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        root.addLayout(actions)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
+        )
+        root.addWidget(buttons)
+        self.rename_button.clicked.connect(lambda: self._rename_or_duplicate("rename"))
+        self.duplicate_button.clicked.connect(lambda: self._rename_or_duplicate("duplicate"))
+        self.delete_button.clicked.connect(self._delete)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.tabs.currentChanged.connect(lambda _index: self._update_buttons())
+        self.condition_list.currentRowChanged.connect(lambda _row: self._update_buttons())
+        self.gradient_list.currentRowChanged.connect(lambda _row: self._update_buttons())
+        self._refresh()
+
+    def _current(self):
+        if self.tabs.currentIndex() == 0:
+            return "conditions", self.conditions, self.condition_list
+        return "gradients", self.gradients, self.gradient_list
+
+    def _refresh(self, selected=""):
+        for presets, widget in (
+            (self.conditions, self.condition_list),
+            (self.gradients, self.gradient_list),
+        ):
+            widget.clear()
+            for name in sorted(presets, key=lambda value: (value.casefold(), value)):
+                widget.addItem(name)
+                if name == selected:
+                    widget.setCurrentRow(widget.count() - 1)
+        self._update_buttons()
+
+    def _update_buttons(self):
+        _kind, _presets, widget = self._current()
+        enabled = widget.currentItem() is not None
+        self.rename_button.setEnabled(enabled)
+        self.duplicate_button.setEnabled(enabled)
+        self.delete_button.setEnabled(enabled)
+
+    def _rename_or_duplicate(self, action):
+        kind, presets, widget = self._current()
+        item = widget.currentItem()
+        if item is None:
+            return
+        source = item.text()
+        initial = source if action == "rename" else source + " copy"
+        target, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            "プリセット名" if self.language == "ja" else "Preset name",
+            "新しい名前" if self.language == "ja" else "New name",
+            text=initial,
+        )
+        if not accepted:
+            return
+        try:
+            updated, self.metadata = apply_preset_operation(
+                presets, self.metadata, kind, action, source, target
+            )
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(exc))
+            return
+        if kind == "conditions":
+            self.conditions = updated
+        else:
+            self.gradients = updated
+        self._refresh(str(target).strip())
+
+    def _delete(self):
+        kind, presets, widget = self._current()
+        item = widget.currentItem()
+        if item is None:
+            return
+        source = item.text()
+        message = (
+            "「%s」を削除しますか？" % source
+            if self.language == "ja"
+            else "Delete '%s'?" % source
+        )
+        if QtWidgets.QMessageBox.question(self, self.windowTitle(), message) != QtWidgets.QMessageBox.Yes:
+            return
+        updated, self.metadata = apply_preset_operation(
+            presets, self.metadata, kind, "delete", source
+        )
+        if kind == "conditions":
+            self.conditions = updated
+        else:
+            self.gradients = updated
+        self._refresh()
 
 
 def _populate_preset_sort_combo(combo, language: str):

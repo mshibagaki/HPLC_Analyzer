@@ -110,6 +110,39 @@ def record_preset_deleted(metadata, kind: str, name: str) -> None:
     metadata.setdefault(kind, {}).pop(name, None)
 
 
+def apply_preset_operation(presets, metadata, kind, action, name, new_name=""):
+    """Apply one manager operation atomically to copied preset state."""
+
+    if kind not in PRESET_KINDS:
+        raise ValueError("unknown preset kind: {0}".format(kind))
+    if action not in ("rename", "duplicate", "delete"):
+        raise ValueError("unknown preset operation: {0}".format(action))
+    source = str(name or "").strip()
+    target = str(new_name or "").strip()
+    if source not in presets:
+        raise ValueError("Preset does not exist: {0}".format(source))
+    if action != "delete":
+        if not target:
+            raise ValueError("Preset name must not be blank")
+        if target in presets and (action == "duplicate" or target != source):
+            raise ValueError("Preset already exists: {0}".format(target))
+
+    updated_presets = deepcopy(presets)
+    updated_metadata = deepcopy(metadata)
+    if action == "delete":
+        updated_presets.pop(source)
+        record_preset_deleted(updated_metadata, kind, source)
+    elif action == "rename":
+        if target != source:
+            payload = updated_presets.pop(source)
+            updated_presets[target] = payload
+            record_preset_saved(updated_metadata, kind, source, target)
+    else:
+        updated_presets[target] = deepcopy(updated_presets[source])
+        record_preset_saved(updated_metadata, kind, "", target)
+    return updated_presets, updated_metadata
+
+
 def stable_preset_names(names, metadata, kind: str, sort_by: str = "created"):
     """Sort deterministically while keeping unknown legacy dates honest."""
     records = metadata.get(kind, {}) if isinstance(metadata, dict) else {}

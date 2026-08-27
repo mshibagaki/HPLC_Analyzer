@@ -58,6 +58,7 @@ from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_stream
 from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
 from hplc_app.peak_fitting import emg_profile, fit_peak, gaussian_profile
 from hplc_app.preset_store import (
+    apply_preset_operation,
     filter_preset_names,
     load_preset_store,
     load_preset_store_with_metadata,
@@ -1080,6 +1081,47 @@ class ProjectTests(unittest.TestCase):
             self.assertTrue(condition_metadata["id"])
             self.assertTrue(condition_metadata["created_at"])
             self.assertEqual(condition_metadata["last_used_at"], "")
+
+    def test_preset_manager_operations_are_atomic_and_preserve_identity(self):
+        presets = {"original": {"column_name": "C18"}}
+        metadata = {
+            "conditions": {
+                "original": {
+                    "id": "stable-id",
+                    "created_at": "2026-01-01T00:00:00",
+                    "updated_at": "2026-01-01T00:00:00",
+                    "last_used_at": "",
+                }
+            },
+            "gradients": {},
+        }
+        renamed, renamed_metadata = apply_preset_operation(
+            presets, metadata, "conditions", "rename", "original", "renamed"
+        )
+        self.assertEqual(renamed["renamed"], presets["original"])
+        self.assertEqual(
+            renamed_metadata["conditions"]["renamed"]["id"], "stable-id"
+        )
+        duplicated, duplicate_metadata = apply_preset_operation(
+            renamed, renamed_metadata, "conditions", "duplicate", "renamed", "copy"
+        )
+        self.assertNotEqual(
+            duplicate_metadata["conditions"]["copy"]["id"], "stable-id"
+        )
+        deleted, deleted_metadata = apply_preset_operation(
+            duplicated, duplicate_metadata, "conditions", "delete", "copy"
+        )
+        self.assertNotIn("copy", deleted)
+        self.assertNotIn("copy", deleted_metadata["conditions"])
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            apply_preset_operation(
+                duplicated, duplicate_metadata, "conditions", "rename", "copy", "renamed"
+            )
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            apply_preset_operation(
+                renamed, renamed_metadata, "conditions", "duplicate", "renamed", "renamed"
+            )
+        self.assertEqual(presets, {"original": {"column_name": "C18"}})
 
     def test_format1_preset_metadata_migration_rename_and_usage_are_stable(self):
         with tempfile.TemporaryDirectory() as directory:

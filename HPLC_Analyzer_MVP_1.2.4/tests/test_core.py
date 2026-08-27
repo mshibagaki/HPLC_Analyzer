@@ -49,6 +49,7 @@ from hplc_app.models import (
     Solvent,
     TextAnnotation,
     WorkDirectory,
+    VerticalMarker,
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
@@ -1699,6 +1700,9 @@ class ProjectTests(unittest.TestCase):
                 color="#123456",
             )
         ]
+        project.vertical_markers = [
+            VerticalMarker(x_min=7.25, y_axis=2, color="#123456")
+        ]
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "new_fields.hplcproj")
             save_project(path, project)
@@ -1718,6 +1722,10 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.annotations[0].text, "LL-37")
             self.assertEqual(loaded.annotations[0].dataset_id, dataset.id)
             self.assertEqual(loaded.annotations[0].font_family, "Arial")
+            self.assertEqual(len(loaded.vertical_markers), 1)
+            self.assertAlmostEqual(loaded.vertical_markers[0].x_min, 7.25)
+            self.assertEqual(loaded.vertical_markers[0].y_axis, 2)
+            self.assertEqual(loaded.vertical_markers[0].color, "#123456")
 
     def test_peak_area_seconds_round_trip_and_v113_migration(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))

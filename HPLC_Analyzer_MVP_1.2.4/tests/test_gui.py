@@ -1129,6 +1129,48 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_vertical_pointer_click_persists_selects_deletes_and_undoes(self):
+        window = self.make_window()
+        window.pointer_action.setChecked(True)
+        window.canvas.draw()
+        x_pixel, y_pixel = window.axes.transData.transform((7.25, 0.0))
+        click = SimpleNamespace(
+            button=1,
+            x=float(x_pixel),
+            y=float(y_pixel),
+            xdata=7.25,
+            ydata=0.0,
+            inaxes=window.axes,
+            dblclick=False,
+        )
+        window._on_canvas_press(click)
+        self.assertEqual(len(window.project.vertical_markers), 1)
+        marker = window.project.vertical_markers[0]
+        self.assertAlmostEqual(marker.x_min, 7.25)
+        self.assertEqual(window._selected_vertical_marker_id, marker.id)
+        self.assertIn(marker.id, window._vertical_marker_artists)
+
+        window._on_canvas_press(click)
+        self.assertEqual(len(window.project.vertical_markers), 1)
+        delete_key = (
+            QtCore.Qt.Key.Key_Delete if QT_API == 6 else QtCore.Qt.Key_Delete
+        )
+        key_press = (
+            QtCore.QEvent.Type.KeyPress if QT_API == 6 else QtCore.QEvent.KeyPress
+        )
+        no_modifier = (
+            QtCore.Qt.KeyboardModifier.NoModifier
+            if QT_API == 6
+            else QtCore.Qt.NoModifier
+        )
+        window.keyPressEvent(QtGui.QKeyEvent(key_press, delete_key, no_modifier))
+        self.assertEqual(window.project.vertical_markers, [])
+        window.undo()
+        self.assertEqual(len(window.project.vertical_markers), 1)
+        self.assertAlmostEqual(window.project.vertical_markers[0].x_min, 7.25)
+        window.project.dirty = False
+        window.close()
+
     def test_numeric_auv_and_independent_time_shift(self):
         window = self.make_window()
         dataset = window.project.datasets[0]

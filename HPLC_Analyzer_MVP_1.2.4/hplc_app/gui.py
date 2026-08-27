@@ -37,6 +37,7 @@ from .dialogs import (
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
+    ReportScopeDialog,
     TextAnnotationDialog,
     dialog_exec,
 )
@@ -4083,14 +4084,34 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
 
-    def _report_datasets(self):
+    def _choose_report_datasets(self):
+        if not self.project.datasets:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("no_dataset")
+            )
+            return None
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
-        return visible or list(self.project.datasets)
+        selected = [
+            self.project.datasets[row] for row in self._selected_dataset_rows()
+        ]
+        dialog = ReportScopeDialog(
+            len(self.project.datasets),
+            len(visible),
+            len(selected),
+            self._application_language,
+            self,
+        )
+        if not dialog_exec(dialog):
+            return None
+        if dialog.scope() == "selected":
+            return selected
+        if dialog.scope() == "visible":
+            return visible
+        return list(self.project.datasets)
 
     def export_report(self):
-        datasets = self._report_datasets()
-        if not datasets:
-            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
+        datasets = self._choose_report_datasets()
+        if datasets is None:
             return
         path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -4149,9 +4170,8 @@ class MainWindow(QtWidgets.QMainWindow):
             painter.end()
 
     def print_report(self):
-        datasets = self._report_datasets()
-        if not datasets:
-            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
+        datasets = self._choose_report_datasets()
+        if datasets is None:
             return
         mode = (
             QtPrintSupport.QPrinter.PrinterMode.HighResolution

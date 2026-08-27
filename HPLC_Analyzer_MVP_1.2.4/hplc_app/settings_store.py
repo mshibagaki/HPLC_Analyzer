@@ -23,6 +23,7 @@ from .rendering import default_render_quality, normalize_render_quality
 ORGANIZATION_NAME = "Research Tools"
 
 UI_LANGUAGE = "ui/language"
+AUTOMATIC_UPDATE_CHECK = "updates/automatic_check"
 IMPORT_DIRECTORY = "paths/import_directory"
 SAVE_DIRECTORY = "paths/save_directory"
 LAST_IMPORT_DIRECTORY = "paths/last_import_directory"
@@ -69,6 +70,19 @@ def _render_quality(value: Any, fallback: str) -> str:
     return normalize_render_quality(value, fallback)
 
 
+def _boolean(value: Any, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    normalized = str(value).strip().lower()
+    if normalized in ("true", "1", "yes", "on"):
+        return True
+    if normalized in ("false", "0", "no", "off"):
+        return False
+    return fallback
+
+
 def _json_object(value: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(value, dict):
         return deepcopy(value)
@@ -91,6 +105,7 @@ def _text_spec(default: str = "") -> SettingSpec:
 
 SETTING_SPECS: Dict[str, SettingSpec] = {
     UI_LANGUAGE: SettingSpec(_constant("ja"), _language, str),
+    AUTOMATIC_UPDATE_CHECK: SettingSpec(_constant(True), _boolean, bool),
     IMPORT_DIRECTORY: _text_spec(),
     SAVE_DIRECTORY: _text_spec(),
     LAST_IMPORT_DIRECTORY: _text_spec(),

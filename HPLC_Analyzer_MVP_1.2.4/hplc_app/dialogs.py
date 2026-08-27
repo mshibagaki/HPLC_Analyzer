@@ -1751,6 +1751,7 @@ class PreferencesDialog(QtWidgets.QDialog):
         save_directory: str = "",
         database_path: str = "",
         render_quality: str = HIGH_QUALITY,
+        automatic_update_check: bool = True,
     ):
         super().__init__(parent)
         self.language = language
@@ -1833,6 +1834,26 @@ class PreferencesDialog(QtWidgets.QDialog):
         self.high_quality_radio.setChecked(selected_quality == HIGH_QUALITY)
         self.lightweight_radio.setChecked(selected_quality == LIGHTWEIGHT)
         root.addWidget(rendering_group)
+
+        update_group = QtWidgets.QGroupBox(
+            "ソフトウェア更新" if language == "ja" else "Software updates"
+        )
+        update_layout = QtWidgets.QVBoxLayout(update_group)
+        self.automatic_update_checkbox = QtWidgets.QCheckBox(
+            "起動後にStable版の更新を自動確認する"
+            if language == "ja"
+            else "Automatically check for Stable updates after startup"
+        )
+        self.automatic_update_checkbox.setChecked(bool(automatic_update_check))
+        update_layout.addWidget(self.automatic_update_checkbox)
+        update_note = QtWidgets.QLabel(
+            "公開GitHub Releasesの情報だけを確認します。ダウンロードやインストールは自動実行しません。"
+            if language == "ja"
+            else "Only public GitHub Release metadata is checked. Downloads and installation never start automatically."
+        )
+        update_note.setWordWrap(True)
+        update_layout.addWidget(update_note)
+        root.addWidget(update_group)
 
         detection_group = QtWidgets.QGroupBox(
             "自動ピーク検出" if language == "ja" else "Automatic peak detection"
@@ -1920,6 +1941,7 @@ class PreferencesDialog(QtWidgets.QDialog):
         self.save_directory_value = save_directory
         self.database_path_value = database_path
         self.render_quality_value = selected_quality
+        self.automatic_update_check_value = bool(automatic_update_check)
         self.detection_values = {}
 
     def _browse_import(self):
@@ -2008,6 +2030,7 @@ class PreferencesDialog(QtWidgets.QDialog):
         self.render_quality_value = (
             LIGHTWEIGHT if self.lightweight_radio.isChecked() else HIGH_QUALITY
         )
+        self.automatic_update_check_value = self.automatic_update_checkbox.isChecked()
         self.detection_values = {
             "auto_peak_snr_threshold": self.snr.value(),
             "auto_peak_min_prominence_uv": self.min_prominence.value(),

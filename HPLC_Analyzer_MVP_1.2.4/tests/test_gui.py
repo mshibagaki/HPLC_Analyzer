@@ -1007,6 +1007,10 @@ class GuiTests(unittest.TestCase):
                 if item.data(USER_ROLE) in ("run_id", "label", "timestamp")
                 else UNCHECKED
             )
+            if item.data(USER_ROLE) == "run_id":
+                dialog.list_widget.setCurrentRow(row)
+        dialog._move(-1)
+        dialog._move(-1)
         dialog.separator_edit.setText(" / ")
         dialog.apply_to_method(window.project.method)
         self.assertEqual(
@@ -1210,6 +1214,10 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window._selected_vertical_marker_id, marker.id)
         self.assertIn(marker.id, window._vertical_marker_artists)
 
+        window.canvas.draw()
+        x_pixel, y_pixel = window.axes.transData.transform((7.25, 0.0))
+        click.x = float(x_pixel)
+        click.y = float(y_pixel)
         window._on_canvas_press(click)
         self.assertEqual(len(window.project.vertical_markers), 1)
         delete_key = (
@@ -2599,7 +2607,7 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         third = load_ascii_file(str(SAMPLES / "191720.TXT"))
         third.label = third.short_label = "Ch3"
-        window.project.datasets.append(third)
+        window.project.add_dataset(third)
         window._refresh_all(0)
         extended_selection = (
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection

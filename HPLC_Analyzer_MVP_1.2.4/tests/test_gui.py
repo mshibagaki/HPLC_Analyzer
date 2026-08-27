@@ -27,6 +27,8 @@ from hplc_app.dialogs import (
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
+    ReportOptionsDialog,
+    ReportScopeDialog,
     TextAnnotationDialog,
     WorkDirectoriesDialog,
 )
@@ -3292,12 +3294,55 @@ class GuiTests(unittest.TestCase):
                 QtWidgets.QFileDialog,
                 "getSaveFileName",
                 return_value=("", ""),
-            ) as report_chooser:
+            ) as report_chooser, patch(
+                "hplc_app.gui.dialog_exec", return_value=True
+            ):
                 window.export_report()
             self.assertEqual(
                 report_chooser.call_args.args[2],
                 str(Path(directory) / "analysis_report.pdf"),
             )
+        window.project.dirty = False
+        window.close()
+
+    def test_report_scope_dialog_and_selection_cover_all_visible_and_selected(self):
+        window = self.make_window()
+        window.project.datasets[1].visible = False
+        selected_rows = [1]
+        expected = {
+            "all": window.project.datasets,
+            "visible": [window.project.datasets[0]],
+            "selected": [window.project.datasets[1]],
+        }
+        for scope, datasets in expected.items():
+            fake = Mock()
+            fake.scope.return_value = scope
+            with self.subTest(scope=scope), patch.object(
+                window, "_selected_dataset_rows", return_value=selected_rows
+            ), patch("hplc_app.gui.ReportScopeDialog", return_value=fake), patch(
+                "hplc_app.gui.dialog_exec", return_value=True
+            ):
+                self.assertEqual(window._choose_report_datasets(), datasets)
+
+        dialog = ReportScopeDialog(2, 1, 0, "en")
+        self.assertTrue(dialog.visible_radio.isChecked())
+        self.assertFalse(dialog.selected_radio.isEnabled())
+        dialog.all_radio.setChecked(True)
+        self.assertEqual(dialog.scope(), "all")
+        dialog.close()
+
+        options_dialog = ReportOptionsDialog("en")
+        options_dialog.checkboxes["baseline"].setChecked(False)
+        values = options_dialog.option_values()
+        self.assertFalse(values["baseline"])
+        self.assertTrue(values["retention_time"])
+        with patch("hplc_app.gui.ReportOptionsDialog", return_value=options_dialog), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ):
+            options = window._choose_report_options()
+        self.assertFalse(options.baseline)
+        self.assertTrue(options.retention_time)
+        options_dialog.close()
         window.project.dirty = False
         window.close()
 

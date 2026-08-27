@@ -38,6 +38,8 @@ from .dialogs import (
     PreferencesDialog,
     ProjectNamingDialog,
     QuantitationHelpDialog,
+    ReportOptionsDialog,
+    ReportScopeDialog,
     TextAnnotationDialog,
     WorkDirectoriesDialog,
     dialog_exec,
@@ -76,7 +78,11 @@ from .project_io import (
     load_project,
     save_project,
 )
-from .report import export_analysis_report_pdf, render_analysis_report_pages
+from .report import (
+    ReportOptions,
+    export_analysis_report_pdf,
+    render_analysis_report_pages,
+)
 from .rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
@@ -4204,14 +4210,43 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
 
-    def _report_datasets(self):
+    def _choose_report_datasets(self):
+        if not self.project.datasets:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("no_dataset")
+            )
+            return None
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
-        return visible or list(self.project.datasets)
+        selected = [
+            self.project.datasets[row] for row in self._selected_dataset_rows()
+        ]
+        dialog = ReportScopeDialog(
+            len(self.project.datasets),
+            len(visible),
+            len(selected),
+            self._application_language,
+            self,
+        )
+        if not dialog_exec(dialog):
+            return None
+        if dialog.scope() == "selected":
+            return selected
+        if dialog.scope() == "visible":
+            return visible
+        return list(self.project.datasets)
+
+    def _choose_report_options(self):
+        dialog = ReportOptionsDialog(self._application_language, self)
+        if not dialog_exec(dialog):
+            return None
+        return ReportOptions(**dialog.option_values())
 
     def export_report(self):
-        datasets = self._report_datasets()
-        if not datasets:
-            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
+        datasets = self._choose_report_datasets()
+        if datasets is None:
+            return
+        options = self._choose_report_options()
+        if options is None:
             return
         path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
@@ -4223,7 +4258,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             actual = export_analysis_report_pdf(
-                path, self.project, datasets, self._application_language
+                path,
+                self.project,
+                datasets,
+                self._application_language,
+                options,
             )
             self._remember_save_path(actual)
             self.statusBar().showMessage(self.translator("saved", path=actual), 7000)
@@ -4270,9 +4309,11 @@ class MainWindow(QtWidgets.QMainWindow):
             painter.end()
 
     def print_report(self):
-        datasets = self._report_datasets()
-        if not datasets:
-            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
+        datasets = self._choose_report_datasets()
+        if datasets is None:
+            return
+        options = self._choose_report_options()
+        if options is None:
             return
         mode = (
             QtPrintSupport.QPrinter.PrinterMode.HighResolution
@@ -4291,7 +4332,11 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             with tempfile.TemporaryDirectory(prefix="hplc_report_") as directory:
                 pages = render_analysis_report_pages(
-                    directory, self.project, datasets, self._application_language
+                    directory,
+                    self.project,
+                    datasets,
+                    self._application_language,
+                    options,
                 )
                 self._draw_report_pages_to_printer(printer, pages)
             self.statusBar().showMessage(

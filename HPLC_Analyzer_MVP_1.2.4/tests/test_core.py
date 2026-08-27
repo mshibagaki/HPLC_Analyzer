@@ -69,6 +69,7 @@ from hplc_app.project_migrations import (
     migrate_project_manifest,
 )
 from hplc_app.report import (
+    ReportOptions,
     analysis_report_figures,
     export_analysis_report_pdf,
     render_analysis_report_pages,
@@ -2481,6 +2482,45 @@ class ProjectTests(unittest.TestCase):
         ]
         self.assertIn("Area (mAU·sec)", report_cells)
         for figure in figures:
+            figure.clear()
+
+        compact_options = ReportOptions(
+            integration_range=False,
+            baseline=False,
+            retention_time=False,
+            gradient_b=False,
+            gradient_conditions=False,
+            quantitation=False,
+        )
+        compact = analysis_report_figures(
+            project, [dataset], "en", compact_options
+        )
+        compact_plot = next(
+            axis
+            for axis in compact[0].axes
+            if axis.get_title(loc="left") == "Chromatogram"
+        )
+        self.assertNotIn(
+            retention_label, [text.get_text() for text in compact_plot.texts]
+        )
+        self.assertFalse(
+            any(line.get_color() == "#9ca3af" for line in compact_plot.lines)
+        )
+        compact_cells = [
+            cell.get_text().get_text()
+            for axis in compact[0].axes
+            for table in axis.tables
+            for cell in table.get_celld().values()
+        ]
+        for omitted_header in (
+            "RT (min)",
+            "Range (min)",
+            "%B",
+            "Amount (µg)",
+            "Method",
+        ):
+            self.assertNotIn(omitted_header, compact_cells)
+        for figure in compact:
             figure.clear()
         with tempfile.TemporaryDirectory() as directory:
             pdf_path = export_analysis_report_pdf(

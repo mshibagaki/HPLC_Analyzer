@@ -30,6 +30,10 @@ RUN_MEASUREMENT_FIELD_MAP = {
     "injection_volume_ul": "injection_volume_ul",
     "cell_path_length_cm": "cell_path_length_cm",
     "analyte_name": "analyte_name",
+    "analyte_id": "analyte_id",
+    "analyte_aliases": "analyte_aliases",
+    "analyte_source": "analyte_source",
+    "extinction_coefficient_unit": "extinction_coefficient_unit",
     "molar_absorptivity_214": "molar_absorptivity_214",
     "molar_absorptivity_280": "molar_absorptivity_280",
     "molecular_weight_g_mol": "molecular_weight_g_mol",
@@ -104,6 +108,10 @@ class MeasurementMetadata:
     injection_volume_ul: Optional[float] = None
     cell_path_length_cm: Optional[float] = 1.0
     analyte_name: str = ""
+    analyte_id: str = ""
+    analyte_aliases: List[str] = field(default_factory=list)
+    analyte_source: str = ""
+    extinction_coefficient_unit: str = "M^-1 cm^-1"
     molar_absorptivity_214: Optional[float] = None
     molar_absorptivity_280: Optional[float] = None
     molecular_weight_g_mol: Optional[float] = None
@@ -181,6 +189,10 @@ class Run:
     injection_volume_ul: Optional[float] = None
     cell_path_length_cm: Optional[float] = 1.0
     analyte_name: str = ""
+    analyte_id: str = ""
+    analyte_aliases: List[str] = field(default_factory=list)
+    analyte_source: str = ""
+    extinction_coefficient_unit: str = "M^-1 cm^-1"
     molar_absorptivity_214: Optional[float] = None
     molar_absorptivity_280: Optional[float] = None
     molecular_weight_g_mol: Optional[float] = None

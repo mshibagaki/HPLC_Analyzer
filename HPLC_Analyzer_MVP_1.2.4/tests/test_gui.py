@@ -1721,6 +1721,23 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_analyte_snapshot_fields_are_saved_from_metadata_dialog(self):
+        window = self.make_window()
+        dialog = MetadataDialog(window.project.datasets[0], "en")
+        dialog.fields["analyte"].setText("LL-37")
+        dialog.fields["analyte_id"].setText("analyte-ll37")
+        dialog.fields["analyte_aliases"].setText("CAP18, hCAP-18")
+        dialog.fields["analyte_source"].setText("UniProt P49913")
+        dialog.fields["epsilon_unit"].setText("M^-1 cm^-1")
+        dialog._accept()
+        metadata = window.project.datasets[0].measurement
+        self.assertEqual(metadata.analyte_id, "analyte-ll37")
+        self.assertEqual(metadata.analyte_aliases, ["CAP18", "hCAP-18"])
+        self.assertEqual(metadata.analyte_source, "UniProt P49913")
+        self.assertEqual(metadata.extinction_coefficient_unit, "M^-1 cm^-1")
+        window.project.dirty = False
+        window.close()
+
     def test_batch_table_is_editable_and_empty_preset_values_do_not_erase(self):
         window = self.make_window()
         selected = window.project.datasets[0]

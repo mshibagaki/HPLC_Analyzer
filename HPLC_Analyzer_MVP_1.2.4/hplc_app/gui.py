@@ -139,15 +139,17 @@ AVAILABLE_PLOT_FONTS = {font.name for font in font_manager.fontManager.ttflist}
 DATASET_VISIBLE_COLUMN = 0
 DATASET_RUN_ID_COLUMN = 1
 DATASET_LABEL_COLUMN = 2
-DATASET_WAVELENGTH_COLUMN = 3
-DATASET_GROUP_COLUMN = 4
-DATASET_Y_AXIS_COLUMN = 5
-DATASET_AUV_COLUMN = 6
-DATASET_X_SHIFT_COLUMN = 7
-DATASET_OFFSET_COLUMN = 8
-DATASET_COLOR_COLUMN = 9
-DATASET_SOURCE_COLUMN = 10
-DATASET_COLUMN_COUNT = 11
+DATASET_TIMESTAMP_COLUMN = 3
+DATASET_WAVELENGTH_COLUMN = 4
+DATASET_GROUP_COLUMN = 5
+DATASET_Y_AXIS_COLUMN = 6
+DATASET_AUV_COLUMN = 7
+DATASET_X_SHIFT_COLUMN = 8
+DATASET_OFFSET_COLUMN = 9
+DATASET_COLOR_COLUMN = 10
+DATASET_COLUMN_NAME_COLUMN = 11
+DATASET_SOURCE_COLUMN = 12
+DATASET_COLUMN_COUNT = 13
 
 
 def _resolved_plot_font(family: str):
@@ -1432,6 +1434,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 t("visible"),
                 t("run_id"),
                 t("label"),
+                t("timestamp"),
                 t("wavelength"),
                 t("group"),
                 t("y_axis"),
@@ -1439,6 +1442,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 t("x_shift"),
                 t("offset"),
                 t("color"),
+                t("column"),
                 t("source"),
             )
         )
@@ -1598,6 +1602,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dataset_table.setItem(row, DATASET_LABEL_COLUMN, label)
             self.dataset_table.setItem(
                 row,
+                DATASET_TIMESTAMP_COLUMN,
+                QtWidgets.QTableWidgetItem(dataset.measurement.acquisition_datetime),
+            )
+            self.dataset_table.setItem(
+                row,
                 DATASET_WAVELENGTH_COLUMN,
                 QtWidgets.QTableWidgetItem(_format(dataset.measurement.wavelength_nm)),
             )
@@ -1629,6 +1638,11 @@ class MainWindow(QtWidgets.QMainWindow):
             color_item.setBackground(QtGui.QColor(color_value))
             color_item.setForeground(QtGui.QColor("#ffffff" if QtGui.QColor(color_value).lightness() < 128 else "#000000"))
             self.dataset_table.setItem(row, DATASET_COLOR_COLUMN, color_item)
+            self.dataset_table.setItem(
+                row,
+                DATASET_COLUMN_NAME_COLUMN,
+                QtWidgets.QTableWidgetItem(dataset.measurement.column_name),
+            )
             source_text = dataset.original_path or dataset.original_filename
             source = _read_only_item(source_text)
             source.setToolTip(dataset.original_path)
@@ -1640,6 +1654,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dataset_table.setItem(row, DATASET_SOURCE_COLUMN, source)
         self.dataset_table.resizeColumnsToContents()
         self.dataset_table.setColumnWidth(DATASET_RUN_ID_COLUMN, 160)
+        self.dataset_table.setColumnWidth(DATASET_TIMESTAMP_COLUMN, 150)
+        self.dataset_table.setColumnWidth(DATASET_COLUMN_NAME_COLUMN, 180)
         self.dataset_table.setColumnWidth(DATASET_SOURCE_COLUMN, 360)
         self.dataset_table.horizontalHeader().setStretchLastSection(True)
         self._updating_table = False
@@ -1738,6 +1754,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dataset = self.project.datasets[row]
         before = self._capture_analysis_state()
         label_changed = False
+        shared_run_changed = False
         try:
             if column == DATASET_VISIBLE_COLUMN:
                 dataset.visible = item.checkState() == CHECKED
@@ -1747,6 +1764,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 dataset.label = item.text().strip() or dataset.original_filename
                 if not dataset.short_label or dataset.short_label == old_label:
                     dataset.short_label = dataset.label
+            elif column == DATASET_TIMESTAMP_COLUMN:
+                dataset.measurement.acquisition_datetime = item.text().strip()
+                shared_run_changed = True
             elif column == DATASET_WAVELENGTH_COLUMN:
                 text = item.text().strip()
                 wavelength = float(text) if text else None
@@ -1772,6 +1792,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 recalculate_dataset_peaks(dataset)
             elif column == DATASET_OFFSET_COLUMN:
                 dataset.offset = float(item.text().strip() or "0")
+            elif column == DATASET_COLUMN_NAME_COLUMN:
+                dataset.measurement.column_name = item.text().strip()
+                shared_run_changed = True
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), str(exc))
             self._refresh_dataset_table(row)
@@ -1780,7 +1803,7 @@ class MainWindow(QtWidgets.QMainWindow):
             before, self._history_label("クロマトグラム設定", "Chromatogram settings")
         )
         self.project.dirty = True
-        if label_changed:
+        if label_changed or shared_run_changed:
             self._refresh_dataset_table(row)
         self._refresh_peak_table()
         self._plot()

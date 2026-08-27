@@ -30,8 +30,10 @@ from hplc_app.dialogs import (
 )
 from hplc_app.gui import (
     DATASET_LABEL_COLUMN,
+    DATASET_COLUMN_NAME_COLUMN,
     DATASET_RUN_ID_COLUMN,
     DATASET_SOURCE_COLUMN,
+    DATASET_TIMESTAMP_COLUMN,
     DATASET_WAVELENGTH_COLUMN,
     DATASET_X_SHIFT_COLUMN,
     MainWindow,
@@ -448,6 +450,45 @@ class GuiTests(unittest.TestCase):
                 & ITEM_IS_EDITABLE
             )
         )
+
+        window.project.dirty = False
+        window.close()
+
+    def test_timestamp_and_column_columns_edit_shared_run_and_support_undo(self):
+        window = self.make_window()
+        shared_run = window.project.run_for(window.project.datasets[0])
+        window.project.datasets[1].bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        shared_run.timestamp = "2026-08-27T10:00:00"
+        shared_run.column_name = "C4"
+        window._refresh_dataset_table(0)
+
+        self.assertEqual(DATASET_COLUMN_NAME_COLUMN + 1, DATASET_SOURCE_COLUMN)
+        self.assertEqual(
+            window.dataset_table.item(1, DATASET_TIMESTAMP_COLUMN).text(),
+            "2026-08-27T10:00:00",
+        )
+        window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).setText(
+            "2026-08-27T11:30:00"
+        )
+        self.assertEqual(shared_run.timestamp, "2026-08-27T11:30:00")
+        self.assertEqual(
+            window.dataset_table.item(1, DATASET_TIMESTAMP_COLUMN).text(),
+            "2026-08-27T11:30:00",
+        )
+        window.dataset_table.item(0, DATASET_COLUMN_NAME_COLUMN).setText("C18")
+        self.assertEqual(shared_run.column_name, "C18")
+        self.assertEqual(
+            window.dataset_table.item(1, DATASET_COLUMN_NAME_COLUMN).text(), "C18"
+        )
+
+        window.undo()
+        self.assertEqual(window.project.runs[0].column_name, "C4")
+        window.undo()
+        self.assertEqual(window.project.runs[0].timestamp, "2026-08-27T10:00:00")
+        window.redo()
+        self.assertEqual(window.project.runs[0].timestamp, "2026-08-27T11:30:00")
 
         window.project.dirty = False
         window.close()

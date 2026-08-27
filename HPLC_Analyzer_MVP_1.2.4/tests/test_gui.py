@@ -1093,6 +1093,17 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(artist.get_text(), "LL-37 peak")
         self.assertIsNotNone(artist.get_bbox_patch())
         extent = artist.get_window_extent(renderer=window.canvas.get_renderer())
+        original_size = (extent.width, extent.height)
+        window.axes.set_xlim(5.0, 10.0)
+        window.axes.set_ylim(500.0, 2500.0)
+        window.canvas.draw()
+        zoomed_extent = artist.get_window_extent(
+            renderer=window.canvas.get_renderer()
+        )
+        self.assertAlmostEqual(zoomed_extent.width, original_size[0], delta=0.5)
+        self.assertAlmostEqual(zoomed_extent.height, original_size[1], delta=0.5)
+        self.assertAlmostEqual(artist.get_fontsize(), 13.5, places=6)
+        extent = zoomed_extent
         start_x = (extent.x0 + extent.x1) / 2.0
         start_y = (extent.y0 + extent.y1) / 2.0
         xdata, ydata = window.axes.transData.inverted().transform((start_x, start_y))

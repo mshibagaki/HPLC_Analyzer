@@ -57,10 +57,51 @@ class ScreenPeakOverlaySpec:
 
 
 @dataclass(frozen=True)
+class ScreenVerticalMarkerSpec:
+    marker_id: str
+    axis_id: str
+    x_value: float
+    selected: bool
+    color: str
+    line_width: float
+    alpha: float
+
+
+@dataclass(frozen=True)
+class ScreenFractionRegionSpec:
+    region_id: str
+    start_x: float
+    end_x: float
+    boundary_values: Tuple[float, ...]
+    fill_color: str = "#06b6d4"
+    fill_alpha: float = 0.08
+    line_color: str = "#0891b2"
+    line_width: float = 0.8
+    line_alpha: float = 0.75
+
+
+@dataclass(frozen=True)
+class ScreenTextAnnotationSpec:
+    annotation_id: str
+    axis_id: str
+    x_value: float
+    y_value: float
+    text: str
+    font_family: str
+    font_size: float
+    color: str
+    background_color: str
+    border_color: str
+
+
+@dataclass(frozen=True)
 class BaseScreenScene:
     traces: Tuple[ScreenTraceSpec, ...]
     gradient: Optional[ScreenGradientSpec]
     peak_overlays: Tuple[ScreenPeakOverlaySpec, ...]
+    vertical_markers: Tuple[ScreenVerticalMarkerSpec, ...]
+    fraction_regions: Tuple[ScreenFractionRegionSpec, ...]
+    text_annotations: Tuple[ScreenTextAnnotationSpec, ...]
     time_candidates: Tuple[float, ...]
 
 
@@ -75,6 +116,7 @@ def compose_base_screen_scene(
     selected_dataset_id: str = "",
     selected_dataset_ids: Sequence[str] = (),
     selected_peak_ids: Sequence[str] = (),
+    selected_vertical_marker_id: str = "",
     color_resolver: Optional[Callable[[Dataset, int], str]] = None,
 ) -> BaseScreenScene:
     """Compose visible base traces and B% data without creating GUI artists."""
@@ -235,9 +277,73 @@ def compose_base_screen_scene(
                 or "Mobile phase B (%)"
             ),
         )
+
+    vertical_markers = tuple(
+        ScreenVerticalMarkerSpec(
+            marker_id=marker.id,
+            axis_id="y2" if marker.y_axis == 2 else "y1",
+            x_value=float(marker.x_min),
+            selected=marker.id == selected_vertical_marker_id,
+            color=(
+                "#f59e0b"
+                if marker.id == selected_vertical_marker_id
+                else (marker.color or "#7c3aed")
+            ),
+            line_width=2.0 if marker.id == selected_vertical_marker_id else 1.15,
+            alpha=0.95 if marker.id == selected_vertical_marker_id else 0.8,
+        )
+        for marker in project.vertical_markers
+    )
+
+    fraction_regions = []
+    for region in project.fraction_regions:
+        start = min(float(region.start_min), float(region.end_min))
+        end = max(float(region.start_min), float(region.end_min))
+        interval = max(float(region.interval_min), 0.01)
+        count = min(int((end - start) / interval) + 1, 10000)
+        boundaries = []
+        for index in range(count + 1):
+            value = start + index * interval
+            if value > end + 1.0e-9:
+                break
+            boundaries.append(value)
+        fraction_regions.append(
+            ScreenFractionRegionSpec(
+                region_id=region.id,
+                start_x=start,
+                end_x=end,
+                boundary_values=tuple(boundaries),
+            )
+        )
+
+    datasets = {dataset.id: dataset for dataset in project.datasets}
+    text_annotations = []
+    for annotation in project.annotations:
+        if not annotation.text.strip():
+            continue
+        dataset = datasets.get(annotation.dataset_id)
+        if dataset is not None and not dataset.visible:
+            continue
+        text_annotations.append(
+            ScreenTextAnnotationSpec(
+                annotation_id=annotation.id,
+                axis_id="y2" if annotation.y_axis == 2 else "y1",
+                x_value=float(annotation.x_min),
+                y_value=float(annotation.y_value),
+                text=annotation.text,
+                font_family=annotation.font_family or "Arial",
+                font_size=float(annotation.font_size),
+                color=annotation.color or "#000000",
+                background_color=annotation.background_color or "#ffffff",
+                border_color=annotation.border_color or "#6b7280",
+            )
+        )
     return BaseScreenScene(
         traces=tuple(traces),
         gradient=gradient,
         peak_overlays=tuple(peak_overlays),
+        vertical_markers=vertical_markers,
+        fraction_regions=tuple(fraction_regions),
+        text_annotations=tuple(text_annotations),
         time_candidates=tuple(time_candidates),
     )

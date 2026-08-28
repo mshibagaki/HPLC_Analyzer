@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-28 (Issue #106 delivery)
+Updated: 2026-08-28 (Issue #108 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -26,7 +26,7 @@ This tracked file is the source of truth for the original product requests. Upda
 | Priority | Requirement | Current boundary | Next coherent delivery |
 |---|---|---|---|
 | High | Spectrum-domain selection and retention labels | Chromatogram multi-selection/labels are complete, but there is no separate spectrum data model, importer, view, or shared chromatogram/spectrum selection contract | Specify supported spectrum source format and semantics, then add the persisted model/import/view before enabling common labels |
-| High | Replace the interactive Matplotlib screen renderer | Production-used scene now covers trace/Y-axis/legend/B%, integration ranges, baselines, fit curves, and retention labels; vertical markers, fraction regions, free text, picking, and navigation still create or depend on Matplotlib objects | Extract the remaining interaction scene commands, then add an opt-in Windows 11 PyQtGraph consumer with automatic Matplotlib fallback; do not change the default until physical compatibility evidence exists |
+| High | Replace the interactive Matplotlib screen renderer | Production-used scene now covers traces, axes/legend/B%, peak overlays, vertical markers, fraction regions, and free text; event normalization, picking/drag hit-testing, toolbar navigation, and overview-window updates still depend on Matplotlib | Extract the remaining interaction/event contract, then add an opt-in Windows 11 PyQtGraph consumer with automatic Matplotlib fallback; do not change the default until physical compatibility evidence exists |
 | Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
 
 The following are useful extensions, but are not gaps in the original requested minimum: a shared analyte master library beyond the persisted Run snapshot, multi-peak deconvolution/curved baseline fitting beyond Gaussian/EMG single-peak fitting, and the long-term TraceLab platform split.

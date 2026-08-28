@@ -2317,36 +2317,35 @@ class MainWindow(QtWidgets.QMainWindow):
             return self.axes_right
         return self.axes
 
+    def _scene_axis(self, axis_id):
+        if axis_id == "y2" and self.axes_right is not None:
+            return self.axes_right
+        return self.axes
+
     def _draw_text_annotations(self):
         self._annotation_artists = {}
-        datasets = {dataset.id: dataset for dataset in self.project.datasets}
-        for annotation in self.project.annotations:
-            if not annotation.text.strip():
-                continue
-            dataset = datasets.get(annotation.dataset_id)
-            if dataset is not None and not dataset.visible:
-                continue
-            axis = self._annotation_axis(annotation)
+        for annotation in self._screen_scene.text_annotations:
+            axis = self._scene_axis(annotation.axis_id)
             artist = axis.text(
-                annotation.x_min,
+                annotation.x_value,
                 annotation.y_value,
                 annotation.text,
                 ha="left",
                 va="bottom",
-                fontfamily=_resolved_plot_font(annotation.font_family or "Arial"),
+                fontfamily=_resolved_plot_font(annotation.font_family),
                 fontsize=annotation.font_size,
-                color=annotation.color or "#000000",
+                color=annotation.color,
                 bbox={
                     "boxstyle": "round,pad=0.28",
-                    "facecolor": annotation.background_color or "#ffffff",
-                    "edgecolor": annotation.border_color or "#6b7280",
+                    "facecolor": annotation.background_color,
+                    "edgecolor": annotation.border_color,
                     "linewidth": 0.8,
                     "alpha": 0.9,
                 },
                 zorder=30,
                 picker=True,
             )
-            self._annotation_artists[annotation.id] = artist
+            self._annotation_artists[annotation.annotation_id] = artist
 
     def _marker_axis(self, marker: VerticalMarker):
         if marker.y_axis == 2 and self.axes_right is not None:
@@ -2355,46 +2354,41 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _draw_vertical_markers(self):
         self._vertical_marker_artists = {}
-        marker_ids = {marker.id for marker in self.project.vertical_markers}
-        if self._selected_vertical_marker_id not in marker_ids:
-            self._selected_vertical_marker_id = ""
-        for marker in self.project.vertical_markers:
-            selected = marker.id == self._selected_vertical_marker_id
-            artist = self._marker_axis(marker).axvline(
-                marker.x_min,
-                color="#f59e0b" if selected else (marker.color or "#7c3aed"),
-                linewidth=2.0 if selected else 1.15,
+        for marker in self._screen_scene.vertical_markers:
+            artist = self._scene_axis(marker.axis_id).axvline(
+                marker.x_value,
+                color=marker.color,
+                linewidth=marker.line_width,
                 linestyle="-",
-                alpha=0.95 if selected else 0.8,
+                alpha=marker.alpha,
                 zorder=25,
             )
-            self._vertical_marker_artists[marker.id] = artist
+            self._vertical_marker_artists[marker.marker_id] = artist
 
     def _draw_fraction_regions(self):
-        for region in self.project.fraction_regions:
-            start = min(region.start_min, region.end_min)
-            end = max(region.start_min, region.end_min)
-            interval = max(float(region.interval_min), 0.01)
-            self.axes.axvspan(start, end, color="#06b6d4", alpha=0.08, zorder=2)
-            count = min(int((end - start) / interval) + 1, 10000)
-            for index in range(count + 1):
-                value = start + index * interval
-                if value > end + 1.0e-9:
-                    break
+        for region in self._screen_scene.fraction_regions:
+            self.axes.axvspan(
+                region.start_x,
+                region.end_x,
+                color=region.fill_color,
+                alpha=region.fill_alpha,
+                zorder=2,
+            )
+            for value in region.boundary_values:
                 self.axes.axvline(
                     value,
-                    color="#0891b2",
-                    linewidth=0.8,
+                    color=region.line_color,
+                    linewidth=region.line_width,
                     linestyle="--",
-                    alpha=0.75,
+                    alpha=region.line_alpha,
                     zorder=3,
                 )
             self.axes.axvline(
-                end,
-                color="#0891b2",
-                linewidth=0.8,
+                region.end_x,
+                color=region.line_color,
+                linewidth=region.line_width,
                 linestyle="--",
-                alpha=0.75,
+                alpha=region.line_alpha,
             )
 
     def _plot(self, preserve_view: bool = True):
@@ -2460,14 +2454,19 @@ class MainWindow(QtWidgets.QMainWindow):
             for row in self._selected_peak_rows():
                 if 0 <= row < len(selected.peaks):
                     selected_peak_ids.add(selected.peaks[row].id)
+        marker_ids = {marker.id for marker in self.project.vertical_markers}
+        if self._selected_vertical_marker_id not in marker_ids:
+            self._selected_vertical_marker_id = ""
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
         base_scene = compose_base_screen_scene(
             self.project,
             selected_dataset_id=selected.id if selected is not None else "",
             selected_dataset_ids=selected_dataset_ids,
             selected_peak_ids=selected_peak_ids,
+            selected_vertical_marker_id=self._selected_vertical_marker_id,
             color_resolver=dataset_display_color,
         )
+        self._screen_scene = base_scene
         trace_by_id = {trace.dataset_id: trace for trace in base_scene.traces}
         overlays_by_dataset = {}
         for overlay_spec in base_scene.peak_overlays:

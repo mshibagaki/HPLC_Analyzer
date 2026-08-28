@@ -115,6 +115,15 @@ class PyQtGraphSceneConsumer:
         self.primary.addItem(self.pointer_cursor, ignoreBounds=True)
         self._cursor_view = self.primary.vb
         self.pointer_cursor.hide()
+        self.fraction_selection = self.pg.LinearRegionItem(
+            values=(0.0, 0.0), movable=False,
+            brush=self._brush("#06b6d4", 0.25),
+            pen=self.pg.mkPen("#0891b2", width=1.0),
+        )
+        self.fraction_selection.setZValue(25)
+        self.primary.addItem(self.fraction_selection, ignoreBounds=True)
+        self._fraction_view = self.primary.vb
+        self.fraction_selection.hide()
         self.last_evidence = {}
         self._connections = {}
         self._next_connection_id = 1
@@ -366,6 +375,19 @@ class PyQtGraphSceneConsumer:
             self.pointer_cursor.setPos(float(x_value))
             self.pointer_cursor.show()
 
+    def set_fraction_selection(self, start=None, end=None, axis_id="y1"):
+        """Transient drag feedback, excluded from the model and autorange."""
+        if start is None or end is None:
+            self.fraction_selection.hide()
+            return
+        view = self.secondary if self.split_y_axes and axis_id == "y2" else self.primary.vb
+        if view is not self._fraction_view:
+            self._fraction_view.removeItem(self.fraction_selection)
+            view.addItem(self.fraction_selection, ignoreBounds=True)
+            self._fraction_view = view
+        self.fraction_selection.setRegion(sorted((float(start), float(end))))
+        self.fraction_selection.show()
+
     def _add(self, item, axis_id="y1"):
         self._view(axis_id).addItem(item)
         self.items.append(item)
@@ -386,6 +408,7 @@ class PyQtGraphSceneConsumer:
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
         self.set_pointer_cursor()
+        self.set_fraction_selection()
         for view, axis, _host in self.gradient_layers:
             view.setVisible(scene.gradient is not None)
             axis.setVisible(scene.gradient is not None)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
+from dataclasses import replace
 import math
 from pathlib import Path
 import tempfile
@@ -501,6 +502,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._automatic_update_scheduled = False
         self.axes_right = None
         self.axes_gradient = None
+        self.axes_gradient_secondary = None
         self._overview_dataset_lines = {}
         self._plot_source_cache = {}
         self._peak_overlay_artists = {}
@@ -1759,6 +1761,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_integration_checkbox.setText(t("show_integration"))
         self.show_retention_checkbox.setText(t("show_retention_labels"))
         self.show_gradient_checkbox.setText(t("show_gradient_b"))
+        self.show_gradient_checkbox.setToolTip(self._history_label(
+            "上下2画面では、選択中のクロマトグラムのB%曲線を両方に表示／非表示にします。",
+            "In split view, show or hide the selected chromatogram's B% curve on both panels.",
+        ))
         self.show_grid_checkbox.setText(t("show_major_grid"))
         self.gradient_legend_name_checkbox.setText(t("gradient_legend_include_name"))
         self.reset_view_button.setText(t("reset_view"))
@@ -2327,7 +2333,7 @@ class MainWindow(QtWidgets.QMainWindow):
         method = self.project.method
         axis_color = method.axis_label_color or "#000000"
         tick_color = method.tick_label_color or "#000000"
-        for axis in (self.axes, self.axes_right, self.axes_gradient):
+        for axis in (self.axes, self.axes_right, self.axes_gradient, self.axes_gradient_secondary):
             if axis is None:
                 continue
             self._set_text_font(
@@ -2600,6 +2606,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.axes = self.figure.add_subplot(111)
         self.axes_right = split_axis
         self.axes_gradient = None
+        self.axes_gradient_secondary = None
         self.axes_overview_right = None
         self._dataset_lines = {}
         self._overview_dataset_lines = {}
@@ -2649,12 +2656,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.axes_overview_right = self.axes_overview.twinx()
                 self.axes_overview_right.set_navigate(False)
         if base_scene.gradient is not None and selected is not None:
-            gradient_host = (
-                self.axes_right
-                if self._split_y_axes and selected.y_axis == 2
-                else self.axes
-            )
-            self.axes_gradient = gradient_host.twinx()
+            self.axes_gradient = self.axes.twinx()
+            if self._split_y_axes:
+                self.axes_gradient_secondary = self.axes_right.twinx()
+                # Both panels show the same selected gradient and B% scale.
+                self.axes_gradient_secondary.sharey(self.axes_gradient)
             if self.axes_right is not None and not self._split_y_axes:
                 self.axes_gradient.spines["right"].set_position(("outward", 62))
 
@@ -2779,15 +2785,17 @@ class MainWindow(QtWidgets.QMainWindow):
                     )
                 self._peak_overlay_artists[overlay_spec.peak_id] = overlay
 
-        if self.axes_gradient is not None and base_scene.gradient is not None:
+        for gradient_axis in (self.axes_gradient, self.axes_gradient_secondary):
+            if gradient_axis is None or base_scene.gradient is None:
+                continue
             gradient_spec = base_scene.gradient
             gradient_screen_x, gradient_screen_y = self._screen_data(
                 gradient_spec.x_values,
                 gradient_spec.y_values,
-                self.axes_gradient,
+                gradient_axis,
                 overview=True,
             )
-            self.axes_gradient.plot(
+            gradient_axis.plot(
                 gradient_screen_x,
                 gradient_screen_y,
                 color="#111827",
@@ -2796,8 +2804,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 label=gradient_spec.label,
                 antialiased=not self._is_lightweight_rendering(),
             )
-            self.axes_gradient.set_ylim(0.0, 100.0)
-            self.axes_gradient.set_ylabel(
+            gradient_axis.set_ylim(0.0, 100.0)
+            gradient_axis.set_ylabel(
                 gradient_spec.axis_label
             )
 
@@ -3798,7 +3806,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return self._scroll_target(event)
 
     def _normalized_pointer_event(self, event, hit_region=""):
-        return normalize_pointer_event(
+        normalized = normalize_pointer_event(
             event,
             {
                 "y1": self.axes,
@@ -3809,6 +3817,15 @@ class MainWindow(QtWidgets.QMainWindow):
             },
             hit_region=hit_region,
         )
+        if self._split_y_axes:
+            # A twinx B% overlay receives the Matplotlib mouse event. Editing
+            # still belongs to its intensity panel, not the selected trace.
+            source = getattr(event, "inaxes", None)
+            if source is not None and source is self.axes_gradient:
+                return replace(normalized, axis_role="y1")
+            if source is not None and source is self.axes_gradient_secondary:
+                return replace(normalized, axis_role="y2")
+        return normalized
 
     def _on_scroll(self, event):
         if not isinstance(event, ScreenPointerEvent):

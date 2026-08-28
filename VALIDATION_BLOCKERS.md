@@ -1,6 +1,6 @@
 # External blockers and deferred physical validation
 
-Updated: 2026-08-28
+Updated: 2026-08-29
 
 This file records work that source changes and automated CI cannot complete alone. An unavailable physical or external gate is `BLOCKED — evidence required`; it is never treated as passed or silently marked not applicable. Release execution remains governed by `.github/RELEASE_PROCESS.md` and `.github/RELEASE_CHECKLIST.md`.
 
@@ -30,6 +30,7 @@ Version context: latest published Stable is `1.2.4`; current main development li
 
 These results reduce implementation risk but do not replace the physical gates above.
 
+- Issue #140 passed 128 Windows/PySide6 offscreen GUI tests and 124 non-GUI tests. Both renderers now test B% on/off for both split panels together, selected-gradient changes/missing data, shared B% scale, one legend entry, save/reload, SVG output, raw-array invariance and Matplotlib overlay pointer ownership. Syntax compilation and `scripts/ci_validate.py --offline-assets required` passed. A Meiryo offscreen capture confirmed B% curves/scales on both panels with aligned time axes. Physical desktop/printing and the existing lower-control sizing gate remain open.
 - The non-GUI suite passed 124 tests for the Issue #138 candidate from the repository root, including B% range preservation during shared axis pan, the root-layout and workflow contracts, normalized backend-neutral overview full/detail-window state, bounded home/back/forward history, axis-pan state/calculations, immutable pointer coordinates and hit targets, optional-renderer isolation/pinning, backend-neutral scene contracts, update metadata, project migrations, numerical invariance, import, presets, and release-source contracts.
 - The Windows/PySide6 offscreen GUI suite passed 126 tests for Issue #138. New split-panel coverage exercises native Y2 wheel/drag with Y1 and B% ranges preserved, aligned shared X, B% host migration, pane-specific vertical-marker hover/place/hit testing, Undo/Redo, raw-array invariance, layout switching/history, font changes, repeated refresh/resize, hidden traces and renderer replacement failure cleanup. Prior native-marker save/reload, MainWindow snapshot/export, fallback and default-Matplotlib regressions also pass. This is not physical mouse/device validation.
 - Issue #138 passed syntax compilation and `scripts/ci_validate.py --offline-assets required`, including the locally supplied Windows 7 manifest/wheelhouse. A split-view MainWindow PNG with B% on Y2 was visually inspected with local Meiryo explicitly registered; a deferred-layout axis-width mismatch was corrected and the aligned result rechecked. Native desktop fonts/DPI, lower-control sizing and physical printing remain open as recorded above. No installer or physical OS/device validation was performed.
@@ -41,7 +42,7 @@ These results reduce implementation risk but do not replace the physical gates a
 
 - Release asset discoveryとfail-closed signer-policy基盤は実装済み。production signer thumbprintの設定はidentity取得後に継続し、installer launchはそれまで無効のまま維持する。
 - Updater download progress/cancel/error presentation is implemented with a background Qt worker and synthetic fixtures, without offering execution. Connecting it to the end-user action remains blocked on the approved signer identity and signed release fixture.
-- The experimental PyQtGraph MainWindow view has shared navigation/snapshots, native vertical-marker editing and, since Issue #138, split Y1/Y2 panels with shared X, independent Y navigation and B% on the selected trace's pane. Other unsupported editing/plot configuration and renderer failures still return to Matplotlib. Next source work is the remaining editing, exact legend/font/tick presentation, removal of hidden Matplotlib screen construction, and integrated performance measurement. Default changes still require physical compatibility evidence.
+- The experimental PyQtGraph MainWindow view has shared navigation/snapshots, native vertical-marker editing and split Y1/Y2 panels with shared X and independent Y navigation. Issue #140 changes B% to both-panels-or-neither visibility in both renderers. Other unsupported editing/plot configuration and renderer failures still return to Matplotlib. Next source work is the remaining editing, exact legend/font/tick presentation, removal of hidden Matplotlib screen construction, and integrated performance measurement. Default changes still require physical compatibility evidence.
 - Application-level features, tests, documentation, and project migrations that preserve the pinned Windows 7 dependency set.
 - Release checklist dry runs that create no tag or public Release; `scripts/release_evidence_preflight.py` now distinguishes malformed records from explicit dry-run blockers and rejects both for Stable publication.
 

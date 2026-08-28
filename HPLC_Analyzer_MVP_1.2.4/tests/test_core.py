@@ -104,6 +104,11 @@ from hplc_app.renderer_parity import (
     three_axis_ranges_are_independent,
     unavailable_parity_report,
 )
+from hplc_app.pyqtgraph_scene import (
+    OptionalRendererUnavailable,
+    PyQtGraphSceneConsumer,
+    pyqtgraph_scene_available,
+)
 from hplc_app.screen_scene import compose_base_screen_scene
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import (
@@ -694,6 +699,21 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertIn("optional dependency unavailable", result["reason"])
         self.assertEqual(result["durations_seconds"], [])
+
+    def test_pyqtgraph_scene_consumer_is_optional_and_separately_pinned(self):
+        with patch(
+            "hplc_app.pyqtgraph_scene.importlib.import_module",
+            side_effect=ImportError("missing optional renderer"),
+        ):
+            self.assertFalse(pyqtgraph_scene_available())
+            with self.assertRaises(OptionalRendererUnavailable):
+                PyQtGraphSceneConsumer()
+        optional = (ROOT / "requirements-win11-pyqtgraph.txt").read_text(
+            encoding="utf-8"
+        )
+        normal = (ROOT / "requirements-win11.txt").read_text(encoding="utf-8")
+        self.assertIn("pyqtgraph==0.13.7", optional)
+        self.assertNotIn("pyqtgraph", normal.casefold())
 
     def test_renderer_benchmark_suite_schema_and_validation(self):
         with self.assertRaises(ValueError):

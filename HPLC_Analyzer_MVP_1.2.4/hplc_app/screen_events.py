@@ -14,7 +14,9 @@ class ScreenPointerEvent:
     hit_region: str = ""
     canvas_x: Optional[float] = None
     canvas_y: Optional[float] = None
-    data_coordinates: Tuple[Tuple[str, float, float], ...] = ()
+    data_coordinates: Tuple[
+        Tuple[str, Optional[float], Optional[float]], ...
+    ] = ()
     double_click: bool = False
     key: str = ""
 
@@ -25,12 +27,21 @@ class ScreenPointerEvent:
         return None, None
 
 
+def _finite_value(value):
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
 def _finite_pair(values):
     try:
-        x_value, y_value = float(values[0]), float(values[1])
-    except (IndexError, TypeError, ValueError):
+        x_value = _finite_value(values[0])
+        y_value = _finite_value(values[1])
+    except (IndexError, TypeError):
         return None
-    if not math.isfinite(x_value) or not math.isfinite(y_value):
+    if x_value is None and y_value is None:
         return None
     return x_value, y_value
 

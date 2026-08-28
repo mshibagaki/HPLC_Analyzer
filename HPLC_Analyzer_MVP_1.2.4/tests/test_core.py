@@ -575,6 +575,11 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(event.data_for("y1"), (21.0, 29.0))
         self.assertEqual(event.data_for("y2"), (30.0, 20.0))
         self.assertEqual(event.data_for("outside"), (None, None))
+        partial = normalize_pointer_event(
+            SimpleNamespace(button=1, xdata=8.5, ydata=None),
+            {"y1": y1},
+        )
+        self.assertEqual(partial.data_for("y1"), (8.5, None))
         with self.assertRaises((AttributeError, TypeError)):
             event.axis_role = "changed"
         source = (ROOT / "hplc_app" / "screen_events.py").read_text(

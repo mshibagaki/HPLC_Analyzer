@@ -29,8 +29,8 @@ Version context: latest published Stable is `1.2.4`; current main development li
 
 These results reduce implementation risk but do not replace the physical gates above.
 
-- The non-GUI suite passed 114 tests after PR #99, including update metadata, bounded/progress-aware downloads, cancellation cleanup, SHA-256, Authenticode probe seams, project migrations, numerical invariance, import, presets, and release-source contracts.
-- The Windows/PySide6 offscreen GUI suite passed 110 tests on merged `main` after PR #99.
+- The non-GUI suite passed 115 tests for the Issue #102 candidate, including update metadata, bounded/progress-aware downloads, cancellation cleanup, SHA-256, Authenticode probe seams, project migrations, numerical invariance, import, presets, and release-source contracts.
+- The Windows/PySide6 offscreen GUI suite passed 112 tests for the Issue #102 candidate, including the background worker and progress/cancel/error dialog.
 - The Win11 isolated renderer benchmark measured about 2.25x improvement for the high-density PyQtGraph case; the parity probe reported all 11 representative features supported, including independent Y2 and B% axes and a 1000x700 snapshot.
 - Windows 7 dependency pins, offline-build scripts, installer definitions, manifests when present, and source contracts are automatically checked. GitHub CI does not contain the ignored third-party offline payload and does not produce a Windows 7 executable.
 - Historical Windows 7/Core 2 evidence established that NumPy 1.24.4 fails with `0xc000001d` and NumPy 1.20.3 starts. This supports the existing pin but is not evidence for the current candidate installer.
@@ -38,7 +38,7 @@ These results reduce implementation risk but do not replace the physical gates a
 ## Work that can continue without these blockers
 
 - Release asset discoveryとfail-closed signer-policy基盤は実装済み。production signer thumbprintの設定はidentity取得後に継続し、installer launchはそれまで無効のまま維持する。
-- Updater download error UI against unsigned or synthetic fixtures, without offering execution. Bounded progress/cancel and cleanup are implemented at the non-UI API layer; the Application still does not offer installer download or execution.
+- Updater download progress/cancel/error presentation is implemented with a background Qt worker and synthetic fixtures, without offering execution. Connecting it to the end-user action remains blocked on the approved signer identity and signed release fixture.
 - PyQtGraph production adapter behind an opt-in Windows 11 setting with Matplotlib fallback; changing defaults still requires compatibility evidence.
 - Application-level features, tests, documentation, and project migrations that preserve the pinned Windows 7 dependency set.
 - Release checklist dry runs that create no tag or public Release; `scripts/release_evidence_preflight.py` now distinguishes malformed records from explicit dry-run blockers and rejects both for Stable publication.

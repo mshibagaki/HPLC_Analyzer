@@ -1195,6 +1195,43 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_axis_pan_accepts_backend_neutral_navigation_events(self):
+        window = self.make_window()
+        window.canvas.draw()
+        window.axes.set_xlim(0.0, 100.0)
+        window.axes.set_ylim(0.0, 1000.0)
+        window.axes_right.set_ylim(-100.0, 100.0)
+        bbox = window.axes.bbox
+        before_x = window.axes.get_xlim()
+        before_y1 = window.axes.get_ylim()
+        before_y2 = window.axes_right.get_ylim()
+
+        self.assertTrue(
+            window._begin_axis_pan(
+                ScreenPointerEvent(
+                    button=1,
+                    hit_region="y1",
+                    canvas_x=float(bbox.x0),
+                    canvas_y=float(bbox.y0),
+                )
+            )
+        )
+        self.assertTrue(
+            window._update_axis_pan(
+                ScreenPointerEvent(
+                    canvas_x=float(bbox.x0 + 25.0),
+                    canvas_y=float(bbox.y0 + 30.0),
+                )
+            )
+        )
+        self.assertTrue(window._end_axis_pan())
+        self.assertEqual(window.axes.get_xlim(), before_x)
+        self.assertNotEqual(window.axes.get_ylim(), before_y1)
+        self.assertEqual(window.axes_right.get_ylim(), before_y2)
+        self.assertIsNone(window._screen_pan_session)
+        window.project.dirty = False
+        window.close()
+
     def test_split_mode_uses_clicked_time_without_resetting_view(self):
         window = self.make_window()
         window.project.datasets[0].peaks[0].start_min = 5.0

@@ -111,6 +111,11 @@ from hplc_app.pyqtgraph_scene import (
 )
 from hplc_app.screen_scene import compose_base_screen_scene
 from hplc_app.screen_events import ScreenPointerEvent, normalize_pointer_event
+from hplc_app.screen_navigation import (
+    ScreenViewState,
+    axis_pan_view,
+    begin_axis_pan,
+)
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import (
     check_for_updates,
@@ -588,6 +593,47 @@ class AnalysisTests(unittest.TestCase):
         with self.assertRaises((AttributeError, TypeError)):
             event.axis_role = "changed"
         source = (ROOT / "hplc_app" / "screen_events.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("matplotlib", source.casefold())
+
+    def test_axis_pan_contract_shifts_only_the_targeted_view_limits(self):
+        initial = ScreenViewState(
+            x=(0.0, 100.0),
+            y1=(0.0, 1000.0),
+            y2=(-100.0, 100.0),
+        )
+        session = begin_axis_pan(
+            ScreenPointerEvent(
+                button=1,
+                hit_region="plot_y2",
+                canvas_x=10.0,
+                canvas_y=20.0,
+            ),
+            initial,
+        )
+        self.assertIsNotNone(session)
+        shifted = axis_pan_view(
+            session,
+            ScreenPointerEvent(canvas_x=34.0, canvas_y=50.0),
+            canvas_width=240.0,
+            canvas_height=300.0,
+        )
+        self.assertEqual(shifted.x, (-10.0, 90.0))
+        self.assertEqual(shifted.y1, initial.y1)
+        self.assertEqual(shifted.y2, (-120.0, 80.0))
+        self.assertIsNone(
+            begin_axis_pan(
+                ScreenPointerEvent(
+                    button=1,
+                    hit_region="outside",
+                    canvas_x=0.0,
+                    canvas_y=0.0,
+                ),
+                initial,
+            )
+        )
+        source = (ROOT / "hplc_app" / "screen_navigation.py").read_text(
             encoding="utf-8"
         )
         self.assertNotIn("matplotlib", source.casefold())

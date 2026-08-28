@@ -112,6 +112,11 @@ from .update_check import check_for_updates
 from .screen_renderer import create_screen_render_surface
 from .screen_scene import compose_base_screen_scene
 from .screen_events import ScreenPointerEvent, normalize_pointer_event
+from .screen_navigation import (
+    ScreenViewState,
+    axis_pan_view,
+    begin_axis_pan,
+)
 from .qt_compat import (
     QAction,
     QActionGroup,
@@ -230,102 +235,47 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
     def __init__(self, canvas, parent):
         self._axis_pan_owner = parent
         super().__init__(canvas, parent)
-        self._axis_pan_state = None
+        self._axis_pan_active = False
 
     def press_pan(self, event):
         if getattr(event, "button", None) not in (1, MouseButton.LEFT):
             return super().press_pan(event)
-        if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
-            return
         owner = self._axis_pan_owner
         if owner is None or not getattr(owner, "_view_initialized", False):
             return
         target = owner._pan_target(event)
-        if target not in (
-            "x",
-            "y1",
-            "y2",
-            "plot",
-            "plot_y1",
-            "plot_y2",
-        ):
+        normalized = owner._normalized_pointer_event(
+            event, hit_region=target or ""
+        )
+        if not owner._begin_axis_pan(normalized):
             return
         if self._nav_stack() is None:
             self.push_current()
-        owner._push_view_history()
-        owner._begin_navigation_interaction()
-        self._axis_pan_state = {
-            "target": target,
-            "start_x": float(event.x),
-            "start_y": float(event.y),
-            "x": tuple(owner.axes.get_xlim()),
-            "y1": tuple(owner.axes.get_ylim()),
-            "y2": (
-                tuple(owner.axes_right.get_ylim())
-                if owner.axes_right is not None
-                else None
-            ),
-        }
+        self._axis_pan_active = True
         self.canvas.mpl_disconnect(self._id_drag)
         self._id_drag = self.canvas.mpl_connect(
             "motion_notify_event", self.drag_pan
         )
 
-    @staticmethod
-    def _shifted_limits(limits, pixel_delta: float, pixel_span: float):
-        if not pixel_span:
-            return limits
-        lower, upper = limits
-        data_delta = float(pixel_delta) * (upper - lower) / float(pixel_span)
-        return lower - data_delta, upper - data_delta
-
     def drag_pan(self, event):
-        state = self._axis_pan_state
-        if state is None:
+        if not self._axis_pan_active:
             return super().drag_pan(event)
-        if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
-            return
         owner = self._axis_pan_owner
         if owner is None:
             return
-        target = state["target"]
-        bbox = owner.axes.bbox
-        if target in ("x", "plot", "plot_y1", "plot_y2"):
-            owner.axes.set_xlim(
-                *self._shifted_limits(
-                    state["x"], float(event.x) - state["start_x"], bbox.width
-                )
-            )
-        if target in ("y1", "plot", "plot_y1"):
-            owner.axes.set_ylim(
-                *self._shifted_limits(
-                    state["y1"], float(event.y) - state["start_y"], bbox.height
-                )
-            )
-        if target in ("y2", "plot", "plot_y2") and owner.axes_right is not None:
-            y2_limits = state.get("y2")
-            if y2_limits is not None:
-                owner.axes_right.set_ylim(
-                    *self._shifted_limits(
-                        y2_limits,
-                        float(event.y) - state["start_y"],
-                        bbox.height,
-                    )
-                )
-        owner._request_canvas_draw(throttled=True)
+        owner._update_axis_pan(owner._normalized_pointer_event(event))
 
     def release_pan(self, event):
-        if self._axis_pan_state is None:
+        if not self._axis_pan_active:
             return super().release_pan(event)
         self.canvas.mpl_disconnect(self._id_drag)
         self._id_drag = self.canvas.mpl_connect(
             "motion_notify_event", self.mouse_move
         )
-        self._axis_pan_state = None
+        self._axis_pan_active = False
         owner = self._axis_pan_owner
         if owner is not None:
-            owner._end_navigation_interaction()
-            owner._request_canvas_draw(force=True)
+            owner._end_axis_pan()
         else:
             self.canvas.draw_idle()
         self.push_current()
@@ -507,6 +457,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plot_source_cache = {}
         self._peak_overlay_artists = {}
         self._navigation_interaction_active = False
+        self._screen_pan_session = None
         self._pending_series_refresh = False
         self._draw_timer = None
         self._build_ui()
@@ -749,6 +700,53 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._navigation_interaction_active = False
         self._refresh_screen_series_for_view()
+
+    def _screen_view_state(self):
+        return ScreenViewState(
+            x=tuple(self.axes.get_xlim()),
+            y1=tuple(self.axes.get_ylim()),
+            y2=(
+                tuple(self.axes_right.get_ylim())
+                if self.axes_right is not None
+                else None
+            ),
+        )
+
+    def _begin_axis_pan(self, event):
+        if self._screen_pan_session is not None:
+            return False
+        session = begin_axis_pan(event, self._screen_view_state())
+        if session is None:
+            return False
+        self._push_view_history()
+        self._begin_navigation_interaction()
+        self._screen_pan_session = session
+        return True
+
+    def _update_axis_pan(self, event):
+        if self._screen_pan_session is None:
+            return False
+        bbox = self.axes.bbox
+        state = axis_pan_view(
+            self._screen_pan_session,
+            event,
+            canvas_width=bbox.width,
+            canvas_height=bbox.height,
+        )
+        self.axes.set_xlim(*state.x)
+        self.axes.set_ylim(*state.y1)
+        if self.axes_right is not None and state.y2 is not None:
+            self.axes_right.set_ylim(*state.y2)
+        self._request_canvas_draw(throttled=True)
+        return True
+
+    def _end_axis_pan(self):
+        if self._screen_pan_session is None:
+            return False
+        self._screen_pan_session = None
+        self._end_navigation_interaction()
+        self._request_canvas_draw(force=True)
+        return True
 
     def _set_render_quality(
         self,

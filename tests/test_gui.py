@@ -2583,6 +2583,232 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_preview_peak_range_edit_matches_existing_calculation(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        from hplc_app.project_io import load_project, save_project
+        window = self.make_window()
+        try:
+            window.show()
+            raw = [(d.time_min.copy(), d.intensity_uv.copy()) for d in window.project.datasets]
+            for dataset in window.project.datasets:
+                dataset.x_shift_min = 3.25
+                dataset.offset = 1000.0
+            cases = (("single", "linear", 0), ("overview_detail", "edge_average", 1),
+                     ("split_y_axes", "constant_start", 1), ("single", "manual", 1),
+                     ("split_y_axes", "zero", 0))
+            for mode, baseline, row in cases:
+                with self.subTest(mode=mode, baseline=baseline):
+                    selected = window.project.datasets[row]
+                    selected.peaks = [PeakRegion(start_min=5.0, end_min=10.0,
+                                                baseline_mode=baseline, notes="keep me"),
+                                      PeakRegion(start_min=15.0, end_min=20.0)]
+                    if baseline == "manual":
+                        selected.peaks[0].baseline_start_uv = 12.5
+                        selected.peaks[0].baseline_end_uv = 24.5
+                    recalculate_dataset_peaks(selected)
+                    peak_id = selected.peaks[0].id
+                    window.dataset_table.selectRow(row)
+                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+                    window._refresh_peak_table([peak_id])
+                    window._plot()
+                    window.edit_peak_button.setChecked(True)
+                    window.screen_preview_checkbox.setChecked(True)
+                    self.assertIsNone(window._span_selector)
+                    preview = window._screen_preview
+                    self.assertIsNotNone(preview)
+                    consumer = preview.consumer
+                    core, gui = consumer.qt_core, consumer.qt_gui
+                    role = "y2" if mode == "split_y_axes" and row else "y1"
+                    view = consumer.secondary if role == "y2" else consumer.primary.vb
+                    viewport = consumer.widget.viewport()
+                    def point(time):
+                        return consumer.widget.mapFromScene(view.mapViewToScene(
+                            core.QPointF(time, sum(view.viewRange()[1]) / 2)))
+                    def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
+                              held=core.Qt.MouseButton.NoButton):
+                        self.app.sendEvent(viewport, gui.QMouseEvent(
+                            kind, core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                            button, held, core.Qt.KeyboardModifier.NoModifier))
+                    start, end = (point(14), point(8)) if row else (point(8), point(14))
+                    bounds = sorted(consumer.pointer_event(consumer.widget.mapToScene(p)).data_for(role)[0]
+                                    - selected.x_shift_min for p in (start, end))
+                    before = deepcopy(selected.peaks)
+                    expected = deepcopy(selected)
+                    expected.peaks[0].start_min, expected.peaks[0].end_min = bounds
+                    recalculate_dataset_peaks(expected)
+                    untouched = deepcopy(window.project.datasets[1 - row].peaks)
+                    undo_count = len(window._undo_stack)
+                    state = window._screen_view_state()
+                    window.project.dirty = False
+                    mouse(core.QEvent.Type.MouseButtonPress, start,
+                          core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                    mouse(core.QEvent.Type.MouseMove, end, held=core.Qt.MouseButton.LeftButton)
+                    self.assertTrue(consumer.span_selection.isVisible())
+                    self.assertEqual(consumer.span_selection.brush.color().name(), "#f59e0b")
+                    self.assertIs(consumer._span_view, view)
+                    self.assertEqual(selected.peaks, before)
+                    self.assertFalse(window.project.dirty)
+                    self.assertEqual(len(window._undo_stack), undo_count)
+                    with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                        mouse(core.QEvent.Type.MouseButtonRelease, end, core.Qt.MouseButton.LeftButton)
+                    warning.assert_not_called()
+                    self.assertIs(window._screen_preview, preview)
+                    self.assertIsNone(preview._span_drag)
+                    self.assertFalse(consumer.span_selection.isVisible())
+                    self.assertFalse(window.edit_peak_button.isChecked())
+                    self.assertEqual(len(window._undo_stack), undo_count + 1)
+                    self.assertEqual(selected.peaks, expected.peaks)
+                    self.assertEqual(window.project.datasets[1 - row].peaks, untouched)
+                    self.assertEqual(window._screen_view_state(), state)
+                    self.assertIn(peak_id, window._selected_peak_ids())
+                    self.assertIn(peak_id, {p.peak_id for p in window._screen_scene.peak_overlays})
+                    window.undo()
+                    self.assertEqual(selected.peaks, before)
+                    window.redo()
+                    self.assertEqual(selected.peaks, expected.peaks)
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "native-range.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+                self.assertEqual([d.peaks for d in restored.datasets], [d.peaks for d in window.project.datasets])
+                window.edit_peak_button.setChecked(True)
+                with patch.object(window.canvas.callbacks, "exception_handler",
+                                  side_effect=AssertionError("Unexpected render callback error")):
+                    output = Path(directory) / "range.svg"
+                    window._save_figure_file(str(output))
+                self.assertGreater(output.stat().st_size, 0)
+            for dataset, (times, values) in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.time_min, times)
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_peak_range_target_and_cancellation_guards(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            dataset = window.project.datasets[0]
+            dataset.peaks.append(PeakRegion(start_min=15.0, end_min=20.0))
+            recalculate_dataset_peaks(dataset)
+            window._refresh_peak_table([dataset.peaks[0].id])
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window.screen_preview_checkbox.setChecked(True)
+            window.edit_peak_button.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            def event(time, role="y1", **changes):
+                view = consumer.secondary if role == "y2" else consumer.primary.vb
+                position = view.mapViewToScene(core.QPointF(time, sum(view.viewRange()[1]) / 2))
+                return ScreenPointerEvent(**dict(vars(consumer.pointer_event(position, button=1)), **changes))
+            def begin():
+                window.edit_peak_button.setChecked(True)
+                preview.handle_event("button_press_event", event(8.0))
+                self.assertIsNotNone(preview._span_drag)
+            original = deepcopy(dataset.peaks)
+            window.project.dirty = False
+            undo_count = len(window._undo_stack)
+            for start in (event(8.0, "y2"), event(8.0, hit_region="x"), event(8.0, button=3)):
+                preview.handle_event("button_press_event", start)
+                self.assertIsNone(preview._span_drag)
+            for cancel in (core.QEvent(core.QEvent.Type.FocusOut),
+                           gui.QKeyEvent(core.QEvent.Type.KeyPress, core.Qt.Key.Key_Escape,
+                                         core.Qt.KeyboardModifier.NoModifier)):
+                begin()
+                self.app.sendEvent(consumer.widget.viewport(), cancel)
+                preview.handle_event("button_release_event", event(14.0))
+                self.assertIsNone(preview._span_drag)
+            for end in (event(14.0, "y2"), event(14.0, hit_region=""), event(8.0)):
+                begin()
+                preview.handle_event("button_release_event", end)
+                self.assertIsNone(preview._span_drag)
+            # Mutations without a redraw are also guarded by the captured peak content.
+            for field, value in (("id", "replaced"), ("start_min", 6.0), ("baseline_mode", "zero"),
+                                 ("baseline_start_uv", 3.0)):
+                begin()
+                peak = dataset.peaks[0]
+                old = getattr(peak, field)
+                setattr(peak, field, value)
+                preview.handle_event("button_release_event", event(14.0))
+                setattr(peak, field, old)
+                self.assertIsNone(preview._span_drag)
+            begin()
+            window.peak_table.selectRow(1)
+            preview.handle_event("button_release_event", event(14.0))
+            self.assertEqual(dataset.peaks, original)
+            begin()
+            window.peak_table.clearSelection()
+            preview.handle_event("button_release_event", event(14.0))
+            preview.handle_event("button_press_event", event(8.0))
+            self.assertIsNone(preview._span_drag)
+            window.peak_table.selectRow(0)
+            begin()
+            removed = dataset.peaks.pop(0)
+            preview.handle_event("button_release_event", event(14.0))
+            dataset.peaks.insert(0, removed)
+            self.assertIsNone(preview._span_drag)
+            begin()
+            window.integrate_button.setChecked(True)
+            preview.handle_event("button_release_event", event(14.0))
+            self.assertEqual(dataset.peaks, original)
+            self.assertFalse(window.project.dirty)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            window.edit_peak_button.setChecked(True)
+            window.screen_preview_checkbox.setChecked(False)
+            self.assertEqual(window._span_selector_mode, "edit")
+            self.assertTrue(window._span_selector.active)
+            window.screen_preview_checkbox.setChecked(True)
+            self.assertIsNone(window._span_selector)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            with patch.object(consumer, "set_span_selection", side_effect=RuntimeError("selection failure")):
+                preview.handle_event("button_press_event", event(8.0))
+            self.assertIsNone(window._screen_preview)
+            self.assertEqual(window._span_selector_mode, "edit")
+            self.assertTrue(window._span_selector.active)
+            self.assertEqual(dataset.peaks, original)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_peak_range_invalid_range_rolls_back(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.screen_preview_checkbox.setChecked(True)
+            with patch.object(QtWidgets.QMessageBox, "information") as information:
+                window.peak_table.setCurrentCell(-1, -1)
+                window.edit_peak_button.setChecked(True)
+            information.assert_called_once()
+            self.assertFalse(window.edit_peak_button.isChecked())
+            self.assertIsNotNone(window._screen_preview)
+            window.peak_table.selectRow(0)
+            window.edit_peak_button.setChecked(True)
+            preview = window._screen_preview
+            before = deepcopy(window.project.datasets[0].peaks)
+            window.project.dirty = False
+            undo_count = len(window._undo_stack)
+            def event(time, pixel):
+                return ScreenPointerEvent(button=1, axis_role="y1", hit_region="plot",
+                                          canvas_x=pixel, data_coordinates=(("y1", time, 0.0),))
+            with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                preview.handle_event("button_press_event", event(-20.0, 50.0))
+                preview.handle_event("button_release_event", event(-10.0, 100.0))
+            warning.assert_called_once()
+            self.assertIs(window._screen_preview, preview)
+            self.assertIsNone(preview._span_drag)
+            self.assertEqual(window.project.datasets[0].peaks, before)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertFalse(window.project.dirty)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_manual_integration_matches_existing_calculation(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")

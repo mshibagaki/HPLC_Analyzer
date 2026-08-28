@@ -437,7 +437,7 @@ class GuiTests(unittest.TestCase):
             self.assertLess(upper.bottom(), lower.top())
             self.assertAlmostEqual(upper.left(), lower.left(), delta=1.0)
             self.assertAlmostEqual(upper.width(), lower.width(), delta=1.0)
-            self.assertIs(consumer.gradient_host, consumer.primary)
+            self.assertIs(consumer.gradient_layers[0][2], consumer.primary)
             self.assertEqual(consumer.capture_view_state(), window._screen_view_state())
             np.testing.assert_allclose(consumer.primary.viewRange()[0], consumer.secondary.viewRange()[0])
 
@@ -498,8 +498,8 @@ class GuiTests(unittest.TestCase):
             second.measurement.gradient = deepcopy(first.measurement.gradient)
             window.dataset_table.selectRow(1)
             self.app.processEvents()
-            self.assertIs(consumer.gradient_host, consumer.secondary_plot)
-            self.assertAlmostEqual(consumer.gradient.sceneBoundingRect().top(),
+            self.assertEqual(len(consumer.gradient_layers), 2)
+            self.assertAlmostEqual(consumer.gradient_layers[1][0].sceneBoundingRect().top(),
                                    consumer.secondary.sceneBoundingRect().top(), delta=1.0)
             self.assertAlmostEqual(consumer.primary.vb.sceneBoundingRect().width(),
                                    consumer.secondary.sceneBoundingRect().width(), delta=1.0)
@@ -583,6 +583,128 @@ class GuiTests(unittest.TestCase):
             self.assertIsNone(window._screen_preview)
             self.assertEqual(window.plot_stack.count(), 1)
             self.assertEqual(window._screen_preview_notice, "failed")
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_split_gradient_visibility_shared_by_both_renderers(self):
+        from hplc_app.project_io import load_project, save_project
+        preview_modes = [False]
+        if QT_API == 6 and pyqtgraph_scene_available():
+            preview_modes.append(True)
+        for use_preview in preview_modes:
+            with self.subTest(preview=use_preview):
+                window = self.make_window()
+                try:
+                    first, second = window.project.datasets
+                    second.measurement.gradient = [
+                        GradientPoint(0.0, 80.0, 20.0, 0.0, 0.0),
+                        GradientPoint(90.0, 30.0, 70.0, 0.0, 0.0),
+                    ]
+                    raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+                    window.show()
+                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+                    window.screen_preview_checkbox.setChecked(use_preview)
+
+                    def assert_gradient(expected):
+                        axes = (window.axes_gradient, window.axes_gradient_secondary)
+                        self.assertEqual([axis is not None for axis in axes], [expected is not None] * 2)
+                        if expected is not None:
+                            for axis in axes:
+                                self.assertEqual(len(axis.lines), 1)
+                                np.testing.assert_array_equal(axis.lines[0].get_ydata(), expected)
+                                self.assertEqual(axis.get_xlim(), window.axes.get_xlim())
+                                self.assertEqual(axis.get_ylim(), window.axes_gradient.get_ylim())
+                            labels = [text.get_text() for text in window.axes.get_legend().get_texts()]
+                            self.assertEqual(sum(label.startswith("%B") for label in labels), 1)
+                        if use_preview:
+                            self.assertIsNotNone(window._screen_preview)
+                            consumer = window._screen_preview.consumer
+                            self.assertEqual(len(consumer.gradient_layers), 2)
+                            self.assertEqual(consumer.last_evidence["counts"]["gradients"],
+                                             0 if expected is None else 2)
+                            for view, axis, host in consumer.gradient_layers:
+                                self.assertEqual(axis.isVisible(), expected is not None)
+                                self.assertEqual(view.isVisible(), expected is not None)
+                                self.assertEqual(len(view.addedItems), 0 if expected is None else 1)
+                                if expected is not None:
+                                    np.testing.assert_array_equal(view.addedItems[0].getData()[1], expected)
+                                    np.testing.assert_allclose(view.viewRange()[0], consumer.primary.viewRange()[0])
+                                    np.testing.assert_allclose(view.viewRange()[1], window.axes_gradient.get_ylim())
+                                    self.assertAlmostEqual(view.sceneBoundingRect().top(),
+                                                           host.vb.sceneBoundingRect().top(), delta=1.0)
+                            self.assertAlmostEqual(consumer.primary.vb.sceneBoundingRect().width(),
+                                                   consumer.secondary.sceneBoundingRect().width(), delta=1.0)
+                            legend_labels = [label.text for _sample, label in consumer.primary.legend.items]
+                            self.assertEqual(sum(label.startswith("%B") for label in legend_labels),
+                                             0 if expected is None else 1)
+
+                    assert_gradient([10.0, 90.0])
+                    window.dataset_table.selectRow(1)
+                    assert_gradient([20.0, 70.0])
+                    window._plot()
+                    assert_gradient([20.0, 70.0])
+                    state = window._screen_view_state()
+                    changed = ScreenViewState(x=(5.0, 40.0), y1=state.y1, y2=state.y2,
+                                              gradient=(10.0, 80.0))
+                    window._apply_view_state(changed)
+                    assert_gradient([20.0, 70.0])
+                    self.assertEqual(window.axes_gradient_secondary.get_ylim(), (10.0, 80.0))
+                    window.show_gradient_checkbox.setChecked(False)
+                    assert_gradient(None)
+                    window.show_gradient_checkbox.setChecked(True)
+                    assert_gradient([20.0, 70.0])
+                    with tempfile.TemporaryDirectory() as directory:
+                        for enabled in (False, True):
+                            window.show_gradient_checkbox.setChecked(enabled)
+                            project_path = str(Path(directory) / "both-panels.hplcproj")
+                            save_project(project_path, window.project)
+                            window.project = load_project(project_path)
+                            window._refresh_all(1)
+                            assert_gradient([20.0, 70.0] if enabled else None)
+                        path = Path(directory) / "split.svg"
+                        window._save_figure_file(str(path))
+                        self.assertGreater(path.stat().st_size, 0)
+                        assert_gradient([20.0, 70.0])
+                        self.assertFalse(window._current_view_pixmap().isNull())
+                    window.project.datasets[1].measurement.gradient = []
+                    window._plot()
+                    assert_gradient(None)
+                    window.dataset_table.selectRow(0)
+                    assert_gradient([10.0, 90.0])
+                    window.project.datasets[0].visible = False
+                    window._plot()
+                    assert_gradient(None)
+                    for dataset, values in zip(window.project.datasets, raw):
+                        np.testing.assert_array_equal(dataset.intensity_uv, values)
+                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("single"))
+                    self.assertIsNone(window.axes_gradient_secondary)
+                    if use_preview:
+                        self.assertEqual(len(window._screen_preview.consumer.gradient_layers), 1)
+                finally:
+                    window.project.dirty = False
+                    window.close()
+
+    def test_split_gradient_matplotlib_overlay_pointer_roles(self):
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window.pointer_action.setChecked(True)
+            for role, selected in (("y1", 1), ("y2", 0)):
+                # Selection can be on the opposite panel; the clicked panel wins.
+                window.dataset_table.selectRow(selected)
+                window.project.datasets[selected].measurement.gradient = deepcopy(
+                    window.project.datasets[0].measurement.gradient)
+                window._plot()
+                panel = window.axes if role == "y1" else window.axes_right
+                gradient = window.axes_gradient if role == "y1" else window.axes_gradient_secondary
+                window.canvas.draw()
+                x, y = panel.transData.transform((12.0, sum(panel.get_ylim()) / 2.0))
+                event = SimpleNamespace(button=1, inaxes=gradient, x=float(x), y=float(y))
+                normalized = window._normalized_pointer_event(event)
+                self.assertEqual(normalized.axis_role, role)
+                window._on_canvas_press(event)
+                self.assertEqual(window.project.vertical_markers[-1].y_axis, 1 if role == "y1" else 2)
         finally:
             window.project.dirty = False
             window.close()

@@ -27,8 +27,8 @@ class ExperimentalScreenPreview:
             if self.consumer.secondary_plot is not None:
                 self.consumer.secondary_plot.setMenuEnabled(False)
             for view in (self.consumer.primary.vb, self.consumer.secondary,
-                         self.consumer.gradient, self.consumer.overview.vb,
-                         self.consumer.overview_secondary):
+                         self.consumer.overview.vb, self.consumer.overview_secondary
+                         ) + tuple(layer[0] for layer in self.consumer.gradient_layers):
                 view.setMenuEnabled(False)
             owner.plot_stack.addWidget(self.consumer.widget)
             self.refresh()
@@ -89,7 +89,8 @@ class ExperimentalScreenPreview:
                 primary.showAxis("right", owner.axes_right is not None)
             if lower is None and owner.axes_right is not None:
                 primary.setLabel("right", escape(owner.axes_right.get_ylabel()))
-            self.consumer.gradient_axis.setVisible(owner.axes_gradient is not None)
+            for _view, axis, _host in self.consumer.gradient_layers:
+                axis.setVisible(owner.axes_gradient is not None)
             primary.showGrid(
                 x=owner.project.method.show_major_grid,
                 y=owner.project.method.show_major_grid, alpha=0.2,
@@ -97,7 +98,8 @@ class ExperimentalScreenPreview:
             if lower is not None:
                 lower.showGrid(x=owner.project.method.show_major_grid,
                                y=owner.project.method.show_major_grid, alpha=0.2)
-            axes = [primary.getAxis("bottom"), primary.getAxis("left"), self.consumer.gradient_axis]
+            axes = [primary.getAxis("bottom"), primary.getAxis("left")]
+            axes.extend(layer[1] for layer in self.consumer.gradient_layers)
             if lower is None:
                 axes.append(primary.getAxis("right"))
             else:
@@ -115,18 +117,14 @@ class ExperimentalScreenPreview:
                     axis.setWidth(max(80, metrics.horizontalAdvance("-12345.6789")
                                       + metrics.height() + 16))
             if lower is not None:
-                # Linked X ranges require aligned plot rectangles. Reserve the
-                # same B% axis space on the pane without the gradient axis.
-                # width() can still describe the previous layout until Qt paints.
-                # setWidth() pins minimumWidth immediately, including font changes.
-                width = self.consumer.gradient_axis.minimumWidth() if owner.axes_gradient is not None else 0
+                # Both panels have equally sized B% axes; no placeholder margin.
                 for plot in (primary, lower):
                     plot.showAxis("right")
                     right = plot.getAxis("right")
                     right.setLabel("")
                     right.setStyle(showValues=False)
                     right.setPen(None)
-                    right.setWidth(0 if plot is self.consumer.gradient_host else width)
+                    right.setWidth(0)
             state = owner._screen_view_state()
             self.consumer.apply_view_state(state, compose_overview_state(
                 owner.project.method.view_mode == "overview_detail",

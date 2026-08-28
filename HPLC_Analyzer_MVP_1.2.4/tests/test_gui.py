@@ -43,7 +43,15 @@ from hplc_app.gui import (
     DATASET_X_SHIFT_COLUMN,
     MainWindow,
 )
-from hplc_app.models import GradientPoint, PeakRegion, Project, TextAnnotation, WorkDirectory
+from hplc_app.models import (
+    FractionRegion,
+    GradientPoint,
+    PeakRegion,
+    Project,
+    TextAnnotation,
+    VerticalMarker,
+    WorkDirectory,
+)
 from hplc_app.parser import load_ascii_file
 from hplc_app.peak_fitting import PeakFitResult
 from hplc_app.preset_store import (
@@ -67,6 +75,10 @@ from hplc_app.report import render_analysis_report_pages
 from hplc_app.settings_store import ApplicationSettings
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from hplc_app.update_ui import UpdateDownloadDialog, UpdateDownloadWorker
+from hplc_app.pyqtgraph_scene import (
+    PyQtGraphSceneConsumer,
+    pyqtgraph_scene_available,
+)
 from tests.gcd_fixtures import synthetic_gcd_bytes
 
 
@@ -243,6 +255,51 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.axes.get_xlim(), (4.0, 12.0))
         window.project.dirty = False
         window.close()
+
+    def test_optional_pyqtgraph_consumer_renders_production_scene_snapshot(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional PyQtGraph dependency is not installed")
+        window = self.make_window()
+        window.project.method.show_integration_areas = True
+        window.project.method.show_retention_labels = True
+        window.project.vertical_markers.append(
+            VerticalMarker(x_min=12.0, y_axis=2)
+        )
+        window.project.fraction_regions.append(
+            FractionRegion(start_min=15.0, end_min=18.0, interval_min=1.0)
+        )
+        window.project.annotations.append(
+            TextAnnotation(
+                text="Scene",
+                x_min=20.0,
+                y_value=0.02,
+                dataset_id=window.project.datasets[1].id,
+                y_axis=2,
+            )
+        )
+        window._plot()
+        source_before = [trace.x_values.copy() for trace in window._screen_scene.traces]
+        consumer = PyQtGraphSceneConsumer(size=(800, 500))
+        try:
+            evidence = consumer.render(window._screen_scene)
+            pixmap = consumer.snapshot()
+            self.assertEqual(evidence["counts"]["traces"], 2)
+            self.assertEqual(evidence["counts"]["gradients"], 1)
+            self.assertEqual(evidence["counts"]["peak_overlays"], 1)
+            self.assertEqual(evidence["counts"]["vertical_markers"], 1)
+            self.assertEqual(evidence["counts"]["fraction_regions"], 1)
+            self.assertEqual(evidence["counts"]["text_annotations"], 1)
+            self.assertTrue(evidence["shared_x"])
+            self.assertAlmostEqual(evidence["gradient_range"][0], 0.0, places=2)
+            self.assertAlmostEqual(evidence["gradient_range"][1], 100.0, places=2)
+            self.assertFalse(pixmap.isNull())
+            self.assertGreater(pixmap.width(), 0)
+            for trace, original in zip(window._screen_scene.traces, source_before):
+                self.assertTrue(np.array_equal(trace.x_values, original))
+        finally:
+            consumer.close()
+            window.project.dirty = False
+            window.close()
 
     def test_lightweight_overview_is_coarser_and_peak_selection_reuses_patch(self):
         window = self.make_lightweight_window()

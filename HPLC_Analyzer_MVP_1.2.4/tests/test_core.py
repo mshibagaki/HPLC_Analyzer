@@ -575,6 +575,11 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(event.data_for("y1"), (21.0, 29.0))
         self.assertEqual(event.data_for("y2"), (30.0, 20.0))
         self.assertEqual(event.data_for("outside"), (None, None))
+        targeted = event.with_hit_target("annotation", "note-1")
+        self.assertEqual(
+            (targeted.hit_kind, targeted.hit_id), ("annotation", "note-1")
+        )
+        self.assertEqual((event.hit_kind, event.hit_id), ("", ""))
         partial = normalize_pointer_event(
             SimpleNamespace(button=1, xdata=8.5, ydata=None),
             {"y1": y1},

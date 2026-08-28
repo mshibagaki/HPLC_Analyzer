@@ -29,8 +29,8 @@ Version context: latest published Stable is `1.2.4`; current main development li
 
 These results reduce implementation risk but do not replace the physical gates above.
 
-- The non-GUI suite passed 120 tests for the Issue #114 candidate, including complete/partial backend-neutral pointer coordinates, optional-renderer isolation/pinning, backend-neutral scene contracts, update metadata, project migrations, numerical invariance, import, presets, and release-source contracts.
-- The Windows/PySide6 offscreen GUI suite passed 115 tests for the Issue #114 candidate, including raw-canvas compatibility and direct normalized wheel/press/motion/release paths, the complete static PyQtGraph scene consumer, and a non-empty 800×500 Qt snapshot.
+- The non-GUI suite passed 120 tests for the Issue #116 candidate, including immutable backend-neutral pointer coordinates and hit targets, optional-renderer isolation/pinning, backend-neutral scene contracts, update metadata, project migrations, numerical invariance, import, presets, and release-source contracts.
+- The Windows/PySide6 offscreen GUI suite passed 116 tests for the Issue #116 candidate, including raw Matplotlib hit-testing and directly supplied backend-neutral marker/annotation targets, normalized wheel/press/motion/release paths, the complete static PyQtGraph scene consumer, and a non-empty 800×500 Qt snapshot.
 - The Win11 isolated renderer benchmark measured about 2.25x improvement for the high-density PyQtGraph case; the parity probe reported all 11 representative features supported, including independent Y2 and B% axes and a 1000x700 snapshot.
 - Windows 7 dependency pins, offline-build scripts, installer definitions, manifests when present, and source contracts are automatically checked. GitHub CI does not contain the ignored third-party offline payload and does not produce a Windows 7 executable.
 - Historical Windows 7/Core 2 evidence established that NumPy 1.24.4 fails with `0xc000001d` and NumPy 1.20.3 starts. This supports the existing pin but is not evidence for the current candidate installer.
@@ -39,7 +39,7 @@ These results reduce implementation risk but do not replace the physical gates a
 
 - Release asset discoveryとfail-closed signer-policy基盤は実装済み。production signer thumbprintの設定はidentity取得後に継続し、installer launchはそれまで無効のまま維持する。
 - Updater download progress/cancel/error presentation is implemented with a background Qt worker and synthetic fixtures, without offering execution. Connecting it to the end-user action remains blocked on the approved signer identity and signed release fixture.
-- PyQtGraph MainWindow adapter behind an opt-in Windows 11 setting with Matplotlib fallback. The optional consumer renders the complete static production scene with independent Y1/Y2/B% and snapshot, and custom wheel/press/motion/release handling accepts normalized backend-neutral input. Matplotlib artist hit-testing, toolbar navigation, overview rendering updates, and backend switching still need extraction/adaptation. Changing defaults still requires compatibility evidence.
+- PyQtGraph MainWindow adapter behind an opt-in Windows 11 setting with Matplotlib fallback. The optional consumer renders the complete static production scene with independent Y1/Y2/B% and snapshot; custom pointer handling and marker/annotation target routing accept backend-neutral input. Toolbar navigation, overview rendering updates, and backend switching still need extraction/adaptation. Changing defaults still requires compatibility evidence.
 - Application-level features, tests, documentation, and project migrations that preserve the pinned Windows 7 dependency set.
 - Release checklist dry runs that create no tag or public Release; `scripts/release_evidence_preflight.py` now distinguishes malformed records from explicit dry-run blockers and rejects both for Stable publication.
 

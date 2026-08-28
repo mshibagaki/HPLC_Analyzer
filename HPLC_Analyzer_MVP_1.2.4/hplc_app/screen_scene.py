@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .analysis import display_values
+from .analysis import baseline_trace, display_values, reference_values_for_display
 from .models import Dataset, Project
+from .peak_fitting import PeakFitResult, evaluate_fit_profile
 
 
 @dataclass(frozen=True)
@@ -33,9 +34,33 @@ class ScreenGradientSpec:
 
 
 @dataclass(frozen=True)
+class ScreenPeakOverlaySpec:
+    dataset_id: str
+    peak_id: str
+    axis_id: str
+    is_selected: bool
+    color: str
+    show_integration_area: bool
+    start_x: float
+    end_x: float
+    retention_x: Optional[float]
+    baseline_x: Optional[np.ndarray]
+    baseline_y: Optional[np.ndarray]
+    fit_x: Optional[np.ndarray]
+    fit_y: Optional[np.ndarray]
+    label_x: Optional[float]
+    label_y: Optional[float]
+    label_text: str
+    label_font_family: str
+    label_font_size: float
+    label_color: str
+
+
+@dataclass(frozen=True)
 class BaseScreenScene:
     traces: Tuple[ScreenTraceSpec, ...]
     gradient: Optional[ScreenGradientSpec]
+    peak_overlays: Tuple[ScreenPeakOverlaySpec, ...]
     time_candidates: Tuple[float, ...]
 
 
@@ -48,6 +73,8 @@ def _readonly(values) -> np.ndarray:
 def compose_base_screen_scene(
     project: Project,
     selected_dataset_id: str = "",
+    selected_dataset_ids: Sequence[str] = (),
+    selected_peak_ids: Sequence[str] = (),
     color_resolver: Optional[Callable[[Dataset, int], str]] = None,
 ) -> BaseScreenScene:
     """Compose visible base traces and B% data without creating GUI artists."""
@@ -55,6 +82,8 @@ def compose_base_screen_scene(
     if color_resolver is None:
         raise ValueError("A backend-neutral color resolver is required")
     traces = []
+    selected_ids = set(selected_dataset_ids)
+    selected_peaks = set(selected_peak_ids)
     time_candidates = []
     selected = None
     unit = project.method.display_unit
@@ -86,6 +115,105 @@ def compose_base_screen_scene(
             )
         )
 
+    trace_by_id = {trace.dataset_id: trace for trace in traces}
+    peak_overlays = []
+    for dataset in project.datasets:
+        trace = trace_by_id.get(dataset.id)
+        if trace is None or dataset.id not in selected_ids:
+            continue
+        if not (
+            project.method.show_integration_areas
+            or project.method.show_retention_labels
+            or any(peak.fit_model for peak in dataset.peaks)
+        ):
+            continue
+        for peak in dataset.peaks:
+            is_selected = peak.id in selected_peaks
+            color = "#f59e0b" if is_selected else trace.color
+            baseline_x = baseline_y = None
+            if project.method.show_integration_areas:
+                baseline_time, baseline_uv = baseline_trace(dataset, peak)
+                if baseline_time.size:
+                    baseline_x = _readonly(baseline_time + dataset.x_shift_min)
+                    baseline_y = _readonly(
+                        reference_values_for_display(dataset, baseline_uv, unit)
+                        + dataset.offset
+                    )
+
+            fit_x = fit_y = None
+            if peak.fit_model and peak.fit_parameters:
+                fit_mask = (
+                    (dataset.time_min >= peak.start_min)
+                    & (dataset.time_min <= peak.end_min)
+                )
+                fit_time = dataset.time_min[fit_mask]
+                if fit_time.size >= 3:
+                    fit_result = PeakFitResult(
+                        model=peak.fit_model,
+                        parameters=dict(peak.fit_parameters),
+                        retention_time_min=float(
+                            peak.fit_retention_time_min or fit_time[0]
+                        ),
+                        rmse_uv=float(peak.fit_rmse_uv or 0.0),
+                        r_squared=float(peak.fit_r_squared or 0.0),
+                        aic=float(peak.fit_aic or 0.0),
+                        point_count=int(fit_time.size),
+                    )
+                    fitted_uv = evaluate_fit_profile(fit_time, fit_result)
+                    baseline_time, baseline_uv = baseline_trace(dataset, peak)
+                    if baseline_time.size == fit_time.size:
+                        fitted_uv = fitted_uv + baseline_uv
+                    fit_x = _readonly(fit_time + dataset.x_shift_min)
+                    fit_y = _readonly(
+                        reference_values_for_display(dataset, fitted_uv, unit)
+                        + dataset.offset
+                    )
+
+            retention_x = (
+                float(peak.retention_time_min + dataset.x_shift_min)
+                if peak.retention_time_min is not None
+                else None
+            )
+            label_x = label_y = None
+            label_text = ""
+            if project.method.show_retention_labels and retention_x is not None:
+                label_x = retention_x
+                label_y = float(
+                    np.interp(retention_x, trace.x_values, trace.y_values)
+                )
+                label_text = "%.2f" % retention_x
+            peak_overlays.append(
+                ScreenPeakOverlaySpec(
+                    dataset_id=dataset.id,
+                    peak_id=peak.id,
+                    axis_id=trace.axis_id,
+                    is_selected=is_selected,
+                    color=color,
+                    show_integration_area=bool(
+                        project.method.show_integration_areas
+                    ),
+                    start_x=float(peak.start_min + dataset.x_shift_min),
+                    end_x=float(peak.end_min + dataset.x_shift_min),
+                    retention_x=retention_x,
+                    baseline_x=baseline_x,
+                    baseline_y=baseline_y,
+                    fit_x=fit_x,
+                    fit_y=fit_y,
+                    label_x=label_x,
+                    label_y=label_y,
+                    label_text=label_text,
+                    label_font_family=str(
+                        project.method.retention_label_font_family or ""
+                    ),
+                    label_font_size=float(
+                        project.method.retention_label_font_size
+                    ),
+                    label_color=(
+                        project.method.retention_label_color or "#000000"
+                    ),
+                )
+            )
+
     gradient = None
     if (
         project.method.show_gradient_b
@@ -110,5 +238,6 @@ def compose_base_screen_scene(
     return BaseScreenScene(
         traces=tuple(traces),
         gradient=gradient,
+        peak_overlays=tuple(peak_overlays),
         time_candidates=tuple(time_candidates),
     )

@@ -588,6 +588,43 @@ class AnalysisTests(unittest.TestCase):
         ):
             self.assertTrue(np.array_equal(current, original))
 
+    def test_screen_scene_composes_selected_peak_baseline_fit_and_label(self):
+        dataset = self.synthetic_dataset()
+        peak = integrate_peak(dataset, PeakRegion(start_min=3.5, end_min=6.5))
+        fitted = fit_peak(dataset, peak, "gaussian")
+        peak.fit_model = fitted.model
+        peak.fit_parameters = dict(fitted.parameters)
+        peak.fit_retention_time_min = fitted.retention_time_min
+        peak.fit_rmse_uv = fitted.rmse_uv
+        peak.fit_r_squared = fitted.r_squared
+        peak.fit_aic = fitted.aic
+        dataset.peaks = [peak]
+        dataset.x_shift_min = 0.4
+        dataset.offset = 7.0
+        project = Project(datasets=[dataset])
+        project.method.show_integration_areas = True
+        project.method.show_retention_labels = True
+        scene = compose_base_screen_scene(
+            project,
+            selected_dataset_id=dataset.id,
+            selected_dataset_ids=[dataset.id],
+            selected_peak_ids=[peak.id],
+            color_resolver=lambda _dataset, _index: "#123456",
+        )
+        self.assertEqual(len(scene.peak_overlays), 1)
+        overlay = scene.peak_overlays[0]
+        self.assertTrue(overlay.is_selected)
+        self.assertEqual(overlay.color, "#f59e0b")
+        self.assertAlmostEqual(overlay.start_x, 3.9)
+        self.assertAlmostEqual(overlay.end_x, 6.9)
+        self.assertIsNotNone(overlay.baseline_x)
+        self.assertIsNotNone(overlay.fit_x)
+        self.assertEqual(overlay.baseline_x.size, overlay.baseline_y.size)
+        self.assertEqual(overlay.fit_x.size, overlay.fit_y.size)
+        self.assertFalse(overlay.fit_y.flags.writeable)
+        self.assertEqual(overlay.label_text, "5.40")
+        self.assertAlmostEqual(overlay.label_x, 5.4, places=2)
+
     def test_renderer_benchmark_is_deterministic_and_non_mutating(self):
         workload = RendererWorkload(trace_count=2, point_count=200, repeats=1)
         first_x, first_traces = synthetic_chromatograms(workload)

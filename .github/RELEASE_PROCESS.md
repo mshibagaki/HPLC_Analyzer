@@ -92,3 +92,12 @@ The updater is outside the v1.3.0 scope. A user installs v1.3.0 with the install
 ## 7. Checklist dry run
 
 Before the first RC of a minor release, copy `RELEASE_CHECKLIST.md` into a temporary release-evidence Issue marked `DRY RUN`. Fill the identity/schema fields with a valid RC example, walk through every command and evidence handoff without creating or pushing a tag, and confirm that no required gate can be mistaken for optional. Record unavailable physical-machine gates as `BLOCKED — evidence required`, not as passed or silently `N/A`. Update the templates before starting the real RC if the dry run exposes an ambiguous owner, artifact, or result field.
+
+Run the read-only preflight against the filled Markdown copy. It changes no Git or GitHub state:
+
+```text
+python scripts/release_evidence_preflight.py path/to/evidence.md --mode dry-run
+python scripts/release_evidence_preflight.py path/to/evidence.md --mode stable --json
+```
+
+Dry-run mode reports unavailable non-identity evidence as blockers while still rejecting malformed identities and placeholders. Stable mode treats every unchecked gate, blank evidence cell, placeholder, and explicit blocker as an error and exits nonzero until the record is complete.

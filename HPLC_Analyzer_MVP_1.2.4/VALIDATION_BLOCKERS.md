@@ -41,7 +41,7 @@ These results reduce implementation risk but do not replace the physical gates a
 - Updater download progress/cancel/error UI against unsigned or synthetic fixtures, without offering execution.
 - PyQtGraph production adapter behind an opt-in Windows 11 setting with Matplotlib fallback; changing defaults still requires compatibility evidence.
 - Application-level features, tests, documentation, and project migrations that preserve the pinned Windows 7 dependency set.
-- Release checklist dry runs that create no tag or public Release.
+- Release checklist dry runs that create no tag or public Release; `scripts/release_evidence_preflight.py` now distinguishes malformed records from explicit dry-run blockers and rejects both for Stable publication.
 
 ## Evidence handoff
 

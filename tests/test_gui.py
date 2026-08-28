@@ -360,7 +360,7 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         try:
             for control in (window.integrate_button,
-                            window.fraction_button, window.move_trace_button,
+                            window.move_trace_button,
                             window.annotation_action):
                 window.screen_preview_checkbox.setChecked(True)
                 self.assertIsNotNone(window._screen_preview)
@@ -2517,6 +2517,196 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(window._move_drag)
         window.project.dirty = False
         window.close()
+
+    def test_preview_fraction_drag_commits_shared_model_and_history(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        from hplc_app.project_io import load_project, save_project
+        window = self.make_window()
+        try:
+            window.show()
+            self.app.processEvents()
+            raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+            peaks = [deepcopy(dataset.peaks) for dataset in window.project.datasets]
+            window.fraction_interval_spin.setValue(1.5)
+            # Opt in while the previously Matplotlib-only tool is already active.
+            window.fraction_button.setChecked(True)
+            window.screen_preview_checkbox.setChecked(True)
+            self.assertIsNone(window._span_selector)
+            for mode, role, start, end in (("single", "y1", 8.0, 14.0),
+                                           ("overview_detail", "y1", 25.0, 18.0),
+                                           ("split_y_axes", "y2", 30.0, 36.0)):
+                with self.subTest(mode=mode):
+                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+                    preview = window._screen_preview
+                    self.assertIsNotNone(preview)
+                    consumer = preview.consumer
+                    core, gui = consumer.qt_core, consumer.qt_gui
+                    viewport = consumer.widget.viewport()
+                    view = consumer.secondary if role == "y2" else consumer.primary.vb
+                    def point(time):
+                        return consumer.widget.mapFromScene(view.mapViewToScene(
+                            core.QPointF(time, sum(view.viewRange()[1]) / 2.0)))
+                    def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
+                              held=core.Qt.MouseButton.NoButton):
+                        self.app.sendEvent(viewport, gui.QMouseEvent(
+                            kind, core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                            button, held, core.Qt.KeyboardModifier.NoModifier))
+                    start_point, end_point = point(start), point(end)
+                    expected = sorted(consumer.pointer_event(consumer.widget.mapToScene(p)).data_for(role)[0]
+                                      for p in (start_point, end_point))
+                    state = window._screen_view_state()
+                    count = len(window.project.fraction_regions)
+                    undo_count = len(window._undo_stack)
+                    window.project.dirty = False
+                    with patch.object(window.canvas, "draw_idle") as mpl_draw:
+                        mouse(core.QEvent.Type.MouseButtonPress, start_point,
+                              core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                        mouse(core.QEvent.Type.MouseMove, end_point, held=core.Qt.MouseButton.LeftButton)
+                        self.assertIsNotNone(preview._fraction_drag)
+                        self.assertTrue(consumer.fraction_selection.isVisible())
+                        self.assertIs(consumer._fraction_view, view)
+                        np.testing.assert_allclose(consumer.fraction_selection.getRegion(), expected)
+                        self.assertEqual(len(window.project.fraction_regions), count)
+                        self.assertEqual(len(window._undo_stack), undo_count)
+                        self.assertFalse(window.project.dirty)
+                        mpl_draw.assert_not_called()
+                    self.app.sendEvent(viewport, gui.QWheelEvent(
+                        core.QPointF(end_point), core.QPointF(viewport.mapToGlobal(end_point)),
+                        core.QPoint(), core.QPoint(0, 120), core.Qt.MouseButton.NoButton,
+                        core.Qt.KeyboardModifier.NoModifier, core.Qt.ScrollPhase.NoScrollPhase, False))
+                    self.assertEqual(window._screen_view_state(), state)
+                    mouse(core.QEvent.Type.MouseButtonRelease, end_point, core.Qt.MouseButton.LeftButton)
+                    self.assertIs(window._screen_preview, preview)
+                    self.assertIsNone(preview._fraction_drag)
+                    self.assertFalse(consumer.fraction_selection.isVisible())
+                    self.assertEqual(len(window.project.fraction_regions), count + 1)
+                    self.assertEqual(len(window._undo_stack), undo_count + 1)
+                    region = window.project.fraction_regions[-1]
+                    np.testing.assert_allclose((region.start_min, region.end_min), expected)
+                    self.assertEqual(region.interval_min, 1.5)
+                    self.assertEqual(consumer.last_evidence["counts"]["fraction_regions"], count + 1)
+                    self.assertEqual(window._screen_view_state(), state)
+                    window.undo()
+                    self.assertEqual(len(window.project.fraction_regions), count)
+                    window.redo()
+                    self.assertEqual(window.project.fraction_regions[-1].id, region.id)
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "native-fractions.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+                self.assertEqual(restored.fraction_regions, window.project.fraction_regions)
+                image_path = Path(directory) / "fractions.svg"
+                with patch.object(window.canvas.callbacks, "exception_handler",
+                                  side_effect=AssertionError("Unexpected rendering callback error")):
+                    window._save_figure_file(str(image_path))
+                self.assertGreater(image_path.stat().st_size, 0)
+            self.assertFalse(window._current_view_pixmap().isNull())
+            window.clear_fraction_regions()
+            self.assertEqual(window.project.fraction_regions, [])
+            window.undo()
+            self.assertEqual(len(window.project.fraction_regions), 3)
+            for dataset, values, original_peaks in zip(window.project.datasets, raw, peaks):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+                self.assertEqual(dataset.peaks, original_peaks)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_fraction_drag_cancellation_and_failure_cleanup(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            window.fraction_button.setChecked(True)
+            preview = window._screen_preview
+            self.assertIsNotNone(preview)
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            viewport = consumer.widget.viewport()
+
+            def event(time, button=1, **changes):
+                view = consumer.primary.vb
+                position = view.mapViewToScene(core.QPointF(time, sum(view.viewRange()[1]) / 2))
+                value = consumer.pointer_event(position, button=button)
+                return ScreenPointerEvent(**dict(vars(value), **changes))
+
+            def begin():
+                window.fraction_button.setChecked(True)
+                window.project.dirty = False
+                preview.handle_event("button_press_event", event(10.0))
+                preview.handle_event("motion_notify_event", event(20.0))
+                self.assertIsNotNone(preview._fraction_drag)
+
+            for kind in (core.QEvent.Type.Leave, core.QEvent.Type.FocusOut, core.QEvent.Type.KeyPress):
+                begin()
+                cancel = (gui.QKeyEvent(kind, core.Qt.Key.Key_Escape, core.Qt.KeyboardModifier.NoModifier)
+                          if kind == core.QEvent.Type.KeyPress else core.QEvent(kind))
+                self.app.sendEvent(viewport, cancel)
+                preview.handle_event("button_release_event", event(20.0))
+                self.assertIsNone(preview._fraction_drag)
+                self.assertFalse(consumer.fraction_selection.isVisible())
+                self.assertEqual(window.project.fraction_regions, [])
+                self.assertFalse(window.project.dirty)
+            # Clicks, tiny drags, wrong buttons and axes never commit a range.
+            for end in (event(10.0), event(20.0, canvas_x=event(10.0).canvas_x + 1),
+                        event(20.0, button=3), event(20.0, axis_role="outside", hit_region=""),
+                        event(20.0, axis_role="y2", hit_region="plot_y2"),
+                        event(20.0, data_coordinates=(("y1", float("nan"), 0.0),))):
+                preview.handle_event("button_press_event", event(10.0))
+                preview.handle_event("button_release_event", end)
+                self.assertIsNone(preview._fraction_drag)
+                self.assertEqual(window.project.fraction_regions, [])
+            for start in (event(10.0, button=3), event(10.0, hit_region="x"),
+                          event(10.0, axis_role="outside", hit_region="")):
+                preview.handle_event("button_press_event", start)
+                self.assertIsNone(preview._fraction_drag)
+            begin()
+            preview.handle_event("motion_notify_event", event(20.0, button=None))
+            self.assertIsNone(preview._fraction_drag)
+            for change in (lambda: window._plot(),
+                           lambda: window._zoom_view(0.8, 15.0, zoom_mode="x"),
+                           lambda: window.fraction_button.setChecked(False),
+                           lambda: window.toolbar._actions["pan"].trigger(),
+                           lambda: window.dataset_table.selectRow(1)):
+                begin()
+                change()
+                self.assertIsNone(preview._fraction_drag)
+                self.assertFalse(consumer.fraction_selection.isVisible())
+                self.assertEqual(window.project.fraction_regions, [])
+            begin()
+            window.resize(1300, 950)
+            self.app.processEvents()
+            self.assertIsNone(preview._fraction_drag)
+            begin()
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            self.assertIsNone(preview._fraction_drag)
+            self.assertTrue(consumer._closed)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            begin()
+            window.screen_preview_checkbox.setChecked(False)
+            self.assertIsNone(preview._fraction_drag)
+            self.assertTrue(consumer._closed)
+            self.assertEqual(window._span_selector_mode, "fraction")
+            # A preview failure keeps the existing Matplotlib tool available.
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            with patch.object(consumer, "set_fraction_selection", side_effect=RuntimeError("selection failure")):
+                preview.handle_event("button_press_event", event(10.0))
+            self.assertIsNone(window._screen_preview)
+            self.assertTrue(consumer._closed)
+            self.assertEqual(window.plot_stack.count(), 1)
+            self.assertEqual(window.project.fraction_regions, [])
+            self.assertTrue(window.fraction_button.isChecked())
+            self.assertIsNotNone(window._span_selector)
+            self.assertTrue(window._span_selector.active)
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_fraction_collector_range_draws_interval_lines_and_undoes(self):
         window = self.make_window()

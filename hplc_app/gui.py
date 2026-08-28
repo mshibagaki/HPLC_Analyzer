@@ -711,8 +711,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ))
         messages = {
             "active": (
-                "閲覧・縦線編集・2画面表示に対応。他の編集は従来描画へ戻ります。",
-                "Viewing, vertical markers and split view. Other editing returns to Matplotlib.",
+                "閲覧・縦線・フラクション範囲・2画面に対応。他の編集は従来描画へ戻ります。",
+                "Viewing, vertical markers, fraction ranges and split view. Other editing returns to Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
@@ -735,7 +735,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._stop_screen_preview()
             return
         controls = (self.integrate_button, self.edit_peak_button, self.split_peak_button,
-                    self.fraction_button, self.move_trace_button,
+                    self.move_trace_button,
                     self.annotation_action, self.toolbar._actions["zoom"])
         if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
@@ -746,6 +746,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._screen_preview is None:
                 from .screen_preview import ExperimentalScreenPreview
                 self._screen_preview = ExperimentalScreenPreview(self)
+            if self._span_selector_mode == "fraction":
+                self._clear_span_selector()
             self.plot_stack.setCurrentWidget(self._screen_preview.consumer.widget)
             self._screen_preview_notice = "active"
             self._update_screen_preview_notice()
@@ -762,6 +764,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_stack.setCurrentWidget(self.canvas)
         if preview is not None:
             preview.close()
+        if (self.fraction_button.isChecked() and self._span_selector is None
+                and self._selected_dataset() is not None):
+            self._install_span_selector("fraction")
         self._screen_preview_notice = "failed" if failed else "unsupported" if unsupported else ""
         self._update_screen_preview_notice()
         self.canvas.draw_idle()
@@ -2569,10 +2574,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "axes"):
             return
         view_state = self._capture_view_state() if preserve_view else None
-        if self._span_selector is not None:
-            self._span_selector.set_active(False)
-            self._span_selector = None
-            self._span_selector_mode = None
+        self._clear_span_selector()
         self._interaction_cursor = None
         self._annotation_artists = {}
         self._annotation_drag = None
@@ -2943,7 +2945,18 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             self._ensure_interaction_cursor()
 
+    def _clear_span_selector(self):
+        if self._span_selector is not None:
+            self._span_selector.set_active(False)
+            self._span_selector.disconnect_events()
+            self._span_selector.set_visible(False)
+            self._span_selector = None
+            self._span_selector_mode = None
+
     def _install_span_selector(self, mode: str = "integrate"):
+        self._clear_span_selector()
+        if mode == "fraction" and self._screen_preview is not None:
+            return
         selected = self._selected_dataset()
         selector_axis = (
             self.axes_right
@@ -2986,6 +2999,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _hide_interaction_cursor(self):
         if self._screen_preview is not None:
             try:
+                self._screen_preview.cancel_fraction_drag()
                 self._screen_preview.consumer.set_pointer_cursor()
             except Exception:
                 self._stop_screen_preview(failed=True)
@@ -3100,7 +3114,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_fraction_mode(self, enabled: bool):
         if enabled:
-            self._stop_screen_preview(unsupported=True)
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(
                     self, APP_NAME, self.translator("no_dataset")
@@ -3119,9 +3132,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ensure_interaction_cursor()
         else:
             if self._span_selector is not None and self._span_selector_mode == "fraction":
-                self._span_selector.set_active(False)
-                self._span_selector = None
-                self._span_selector_mode = None
+                self._clear_span_selector()
             self.statusBar().clearMessage()
             self._hide_interaction_cursor()
 

@@ -72,6 +72,7 @@ from hplc_app.qt_compat import (
     QtWidgets,
 )
 from hplc_app.report import render_analysis_report_pages
+from hplc_app.screen_events import ScreenPointerEvent
 from hplc_app.settings_store import ApplicationSettings
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from hplc_app.update_ui import UpdateDownloadDialog, UpdateDownloadWorker
@@ -1005,6 +1006,34 @@ class GuiTests(unittest.TestCase):
         window._on_scroll(SimpleNamespace(button="up", xdata=10.0, inaxes=window.axes, ydata=sum(before_y) / 2.0))
         self.assertNotEqual(window.axes.get_xlim(), before_x)
         self.assertEqual(window.axes.get_ylim(), before_y)
+        window.project.dirty = False
+        window.close()
+
+    def test_scroll_accepts_backend_neutral_pointer_event(self):
+        window = self.make_window()
+        window.project.method.zoom_axis = "auto"
+        before_x = window.axes.get_xlim()
+        before_y1 = window.axes.get_ylim()
+        before_y2 = window.axes_right.get_ylim()
+
+        window._on_scroll(
+            ScreenPointerEvent(
+                button="up",
+                axis_role="y1",
+                hit_region="x",
+                data_coordinates=(
+                    ("y1", sum(before_x) / 2.0, sum(before_y1) / 2.0),
+                    ("y2", sum(before_x) / 2.0, sum(before_y2) / 2.0),
+                ),
+            )
+        )
+
+        self.assertLess(
+            window.axes.get_xlim()[1] - window.axes.get_xlim()[0],
+            before_x[1] - before_x[0],
+        )
+        self.assertEqual(window.axes.get_ylim(), before_y1)
+        self.assertEqual(window.axes_right.get_ylim(), before_y2)
         window.project.dirty = False
         window.close()
 

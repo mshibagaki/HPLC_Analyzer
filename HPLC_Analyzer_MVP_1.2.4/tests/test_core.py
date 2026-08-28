@@ -110,6 +110,7 @@ from hplc_app.pyqtgraph_scene import (
     pyqtgraph_scene_available,
 )
 from hplc_app.screen_scene import compose_base_screen_scene
+from hplc_app.screen_events import ScreenPointerEvent, normalize_pointer_event
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import (
     check_for_updates,
@@ -541,6 +542,45 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(capabilities.supports_matplotlib_artists)
         with self.assertRaises((AttributeError, TypeError)):
             capabilities.backend_id = "changed"
+
+    def test_screen_pointer_event_normalizes_axis_roles_and_coordinates(self):
+        class Transform:
+            def __init__(self, offset):
+                self.offset = offset
+
+            def inverted(self):
+                return self
+
+            def transform(self, values):
+                return values[0] + self.offset, values[1] - self.offset
+
+        y1 = SimpleNamespace(transData=Transform(1.0))
+        y2 = SimpleNamespace(transData=Transform(10.0))
+        raw = SimpleNamespace(
+            button="up",
+            inaxes=y2,
+            x=20.0,
+            y=30.0,
+            dblclick=False,
+            key="ctrl",
+        )
+        event = normalize_pointer_event(
+            raw,
+            {"y1": y1, "y2": y2, "gradient": None},
+            hit_region="plot_y2",
+        )
+        self.assertIsInstance(event, ScreenPointerEvent)
+        self.assertEqual(event.axis_role, "y2")
+        self.assertEqual(event.hit_region, "plot_y2")
+        self.assertEqual(event.data_for("y1"), (21.0, 29.0))
+        self.assertEqual(event.data_for("y2"), (30.0, 20.0))
+        self.assertEqual(event.data_for("outside"), (None, None))
+        with self.assertRaises((AttributeError, TypeError)):
+            event.axis_role = "changed"
+        source = (ROOT / "hplc_app" / "screen_events.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("matplotlib", source.casefold())
 
     def test_base_screen_scene_preserves_trace_axis_legend_gradient_and_raw_data(self):
         first = self.synthetic_dataset()

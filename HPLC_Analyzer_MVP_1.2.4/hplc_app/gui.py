@@ -111,6 +111,7 @@ from .settings_store import (
 from .update_check import check_for_updates
 from .screen_renderer import create_screen_render_surface
 from .screen_scene import compose_base_screen_scene
+from .screen_events import ScreenPointerEvent, normalize_pointer_event
 from .qt_compat import (
     QAction,
     QActionGroup,
@@ -3584,45 +3585,50 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         return self._scroll_target(event)
 
-    @staticmethod
-    def _event_center_for_axis(event, axis):
-        x_value = getattr(event, "x", None)
-        y_value = getattr(event, "y", None)
-        if x_value is not None and y_value is not None:
-            transformed = axis.transData.inverted().transform((x_value, y_value))
-            return float(transformed[0]), float(transformed[1])
-        return getattr(event, "xdata", None), getattr(event, "ydata", None)
+    def _normalized_pointer_event(self, event, hit_region=""):
+        return normalize_pointer_event(
+            event,
+            {
+                "y1": self.axes,
+                "y2": self.axes_right,
+                "gradient": self.axes_gradient,
+                "overview_y1": self.axes_overview,
+                "overview_y2": self.axes_overview_right,
+            },
+            hit_region=hit_region,
+        )
 
     def _on_scroll(self, event):
+        if not isinstance(event, ScreenPointerEvent):
+            event = self._normalized_pointer_event(
+                event, hit_region=self._scroll_target(event) or ""
+            )
         if event.button not in ("up", "down"):
             return
         factor = 0.8 if event.button == "up" else 1.25
         configured_mode = self.project.method.zoom_axis
         if configured_mode != "auto":
-            source_axis = getattr(event, "inaxes", None)
-            center_x, _primary_y = self._event_center_for_axis(event, self.axes)
-            center_axis = (
-                source_axis
-                if source_axis in (self.axes, self.axes_right)
-                else self.axes
-            )
-            _axis_x, center_y = self._event_center_for_axis(
-                event, center_axis
-            )
+            source_axis = {
+                "y1": self.axes,
+                "y2": self.axes_right,
+            }.get(event.axis_role)
+            center_x, _primary_y = event.data_for("y1")
+            center_role = event.axis_role if event.axis_role in ("y1", "y2") else "y1"
+            _axis_x, center_y = event.data_for(center_role)
             self._zoom_view(
                 factor, center_x, source_axis, center_y, zoom_mode=configured_mode
             )
             return
 
-        target = self._scroll_target(event)
+        target = event.hit_region or None
         if target is None:
             return
-        center_x, _unused = self._event_center_for_axis(event, self.axes)
+        center_x, _unused = event.data_for("y1")
         if target == "x":
             self._zoom_view(factor, center_x, zoom_mode="x", y_axes=[])
             return
         if target == "y1":
-            _axis_x, center_y = self._event_center_for_axis(event, self.axes)
+            _axis_x, center_y = event.data_for("y1")
             self._zoom_view(
                 factor,
                 center_x,
@@ -3632,9 +3638,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
         if target == "y2" and self.axes_right is not None:
-            _axis_x, center_y = self._event_center_for_axis(
-                event, self.axes_right
-            )
+            _axis_x, center_y = event.data_for("y2")
             self._zoom_view(
                 factor,
                 center_x,
@@ -3646,7 +3650,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if target in ("plot_y1", "plot_y2"):
             target_axis = self.axes if target == "plot_y1" else self.axes_right
-            _axis_x, center_y = self._event_center_for_axis(event, target_axis)
+            target_role = "y1" if target == "plot_y1" else "y2"
+            _axis_x, center_y = event.data_for(target_role)
             self._zoom_view(
                 factor,
                 center_x,
@@ -3662,7 +3667,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.axes_right is not None:
             y_targets.append(self.axes_right)
         y_centers = {
-            axis: self._event_center_for_axis(event, axis)[1]
+            axis: event.data_for("y1" if axis is self.axes else "y2")[1]
             for axis in y_targets
         }
         self._zoom_view(

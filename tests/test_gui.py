@@ -376,8 +376,9 @@ class GuiTests(unittest.TestCase):
             window.toolbar._actions["zoom"].trigger()
             window.screen_preview_checkbox.setChecked(True)
             window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
-            self.assertIsNone(window._screen_preview)
+            self.assertTrue(window._screen_preview.consumer.split_y_axes)
             window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("single"))
+            window.screen_preview_checkbox.setChecked(False)
             with patch("hplc_app.screen_preview.PyQtGraphSceneConsumer", side_effect=ImportError("missing")):
                 window.screen_preview_checkbox.setChecked(True)
             self.assertIsNone(window._screen_preview)
@@ -408,6 +409,180 @@ class GuiTests(unittest.TestCase):
             with patch("hplc_app.gui.QT_API", 5):
                 window.screen_preview_checkbox.setChecked(True)
             self.assertIsNone(window._screen_preview)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_split_panels_native_navigation_and_markers(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            self.app.processEvents()
+            raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+            window.screen_preview_checkbox.setChecked(True)
+            original = window._screen_preview.consumer
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            preview = window._screen_preview
+            self.assertIsNotNone(preview)
+            consumer = preview.consumer
+            self.assertTrue(original._closed)
+            self.assertTrue(consumer.split_y_axes)
+            self.assertEqual(window.plot_stack.count(), 2)
+            self.assertIs(preview.navigation.history, window._view_history)
+            self.app.processEvents()
+            upper = consumer.primary.vb.sceneBoundingRect()
+            lower = consumer.secondary.sceneBoundingRect()
+            self.assertLess(upper.bottom(), lower.top())
+            self.assertAlmostEqual(upper.left(), lower.left(), delta=1.0)
+            self.assertAlmostEqual(upper.width(), lower.width(), delta=1.0)
+            self.assertIs(consumer.gradient_host, consumer.primary)
+            self.assertEqual(consumer.capture_view_state(), window._screen_view_state())
+            np.testing.assert_allclose(consumer.primary.viewRange()[0], consumer.secondary.viewRange()[0])
+
+            core, gui = consumer.qt_core, consumer.qt_gui
+            viewport = consumer.widget.viewport()
+
+            def mouse(kind, point, button=core.Qt.MouseButton.NoButton,
+                      held=core.Qt.MouseButton.NoButton):
+                consumer.application.sendEvent(viewport, gui.QMouseEvent(
+                    kind, core.QPointF(point), core.QPointF(viewport.mapToGlobal(point)),
+                    button, held, core.Qt.KeyboardModifier.NoModifier,
+                ))
+
+            def click(point):
+                mouse(core.QEvent.Type.MouseButtonPress, point,
+                      core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                mouse(core.QEvent.Type.MouseButtonRelease, point, core.Qt.MouseButton.LeftButton)
+
+            initial = window._screen_view_state()
+            position = consumer.widget.mapFromScene(
+                consumer.secondary_plot.getAxis("left").sceneBoundingRect().center())
+            self.assertEqual(consumer.pointer_event(consumer.widget.mapToScene(position)).hit_region, "y2")
+            consumer.application.sendEvent(viewport, gui.QWheelEvent(
+                core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                core.QPoint(), core.QPoint(0, 120), core.Qt.MouseButton.NoButton,
+                core.Qt.KeyboardModifier.NoModifier, core.Qt.ScrollPhase.NoScrollPhase, False,
+            ))
+            zoomed = window._screen_view_state()
+            self.assertEqual(zoomed, consumer.capture_view_state())
+            self.assertEqual((zoomed.x, zoomed.y1, zoomed.gradient),
+                             (initial.x, initial.y1, initial.gradient))
+            self.assertAlmostEqual(zoomed.y2[1] - zoomed.y2[0],
+                                   0.8 * (initial.y2[1] - initial.y2[0]))
+            window.toolbar.back()
+            self.assertEqual(consumer.capture_view_state(), initial)
+            window.toolbar.forward()
+            self.assertEqual(consumer.capture_view_state(), zoomed)
+            window.toolbar.back()
+            window.toolbar._actions["pan"].trigger()
+            lower = consumer.secondary.sceneBoundingRect()
+            position = consumer.widget.mapFromScene(lower.center())
+            moved = position + core.QPoint(20, 25)
+            self.assertEqual(consumer.pointer_event(consumer.widget.mapToScene(position)).hit_region, "plot_y2")
+            mouse(core.QEvent.Type.MouseButtonPress, position,
+                  core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+            mouse(core.QEvent.Type.MouseMove, moved, held=core.Qt.MouseButton.LeftButton)
+            mouse(core.QEvent.Type.MouseButtonRelease, moved, core.Qt.MouseButton.LeftButton)
+            panned = window._screen_view_state()
+            self.assertEqual(panned, consumer.capture_view_state())
+            self.assertEqual((panned.y1, panned.gradient), (initial.y1, initial.gradient))
+            self.assertAlmostEqual(panned.x[0], initial.x[0] - 20 / lower.width() * (initial.x[1] - initial.x[0]))
+            self.assertAlmostEqual(panned.y2[0], initial.y2[0] + 25 / lower.height() * (initial.y2[1] - initial.y2[0]))
+            window.toolbar.back()
+            self.assertEqual(consumer.capture_view_state(), initial)
+            window.toolbar._actions["pan"].trigger()
+
+            first, second = window.project.datasets
+            second.measurement.gradient = deepcopy(first.measurement.gradient)
+            window.dataset_table.selectRow(1)
+            self.app.processEvents()
+            self.assertIs(consumer.gradient_host, consumer.secondary_plot)
+            self.assertAlmostEqual(consumer.gradient.sceneBoundingRect().top(),
+                                   consumer.secondary.sceneBoundingRect().top(), delta=1.0)
+            self.assertAlmostEqual(consumer.primary.vb.sceneBoundingRect().width(),
+                                   consumer.secondary.sceneBoundingRect().width(), delta=1.0)
+            np.testing.assert_allclose(consumer.primary.viewRange()[0], consumer.secondary.viewRange()[0])
+            np.testing.assert_allclose(consumer.primary.viewRange()[0], consumer.gradient.viewRange()[0])
+            window.pointer_action.setChecked(True)
+            for view, y_axis, time in ((consumer.primary.vb, 1, 12.0), (consumer.secondary, 2, 30.0)):
+                point = consumer.widget.mapFromScene(view.mapViewToScene(
+                    core.QPointF(time, sum(view.viewRange()[1]) / 2.0)))
+                mouse(core.QEvent.Type.MouseMove, point)
+                self.assertIs(consumer._cursor_view, view)
+                self.assertTrue(consumer.pointer_cursor.isVisible())
+                click(point)
+                self.assertEqual(window.project.vertical_markers[-1].y_axis, y_axis)
+            first_marker, second_marker = window.project.vertical_markers
+            # Identical X in another panel must not select the other panel's marker.
+            other_point = consumer.secondary.mapViewToScene(core.QPointF(first_marker.x_min,
+                                                                         sum(consumer.secondary.viewRange()[1]) / 2))
+            self.assertEqual(consumer.pointer_event(other_point).hit_id, "")
+            self.assertIn(consumer.marker_items[first_marker.id], consumer.primary.vb.addedItems)
+            self.assertIn(consumer.marker_items[second_marker.id], consumer.secondary.addedItems)
+            window.undo()
+            self.assertNotIn(second_marker.id, consumer.marker_items)
+            window.redo()
+            self.assertIn(second_marker.id, consumer.marker_items)
+            self.assertFalse(window._current_view_pixmap().isNull())
+            for dataset, values in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_split_layout_switch_refresh_and_failure_cleanup(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.project.method.tick_label_font_size = 16
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window.screen_preview_checkbox.setChecked(True)
+            self.assertFalse(window._current_view_pixmap().isNull())
+            consumer = window._screen_preview.consumer
+            self.assertAlmostEqual(consumer.primary.vb.sceneBoundingRect().width(),
+                                   consumer.secondary.sceneBoundingRect().width(), delta=1.0)
+            history = window._view_history
+            for mode in ("split_y_axes", "single", "overview_detail", "split_y_axes"):
+                previous = window._screen_preview.consumer
+                state = window._screen_view_state()
+                window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+                consumer = window._screen_preview.consumer
+                self.assertIs(window._view_history, history)
+                self.assertIs(window._screen_preview.navigation.history, history)
+                self.assertEqual(consumer.capture_view_state(), state)
+                self.assertEqual(consumer.split_y_axes, mode == "split_y_axes")
+                self.assertEqual(consumer.overview.isVisible(), mode == "overview_detail")
+                if previous is not consumer:
+                    self.assertTrue(previous._closed)
+                self.assertEqual(window.plot_stack.count(), 2)
+            count = len(consumer.items)
+            window.resize(1300, 950)
+            window._plot()
+            window._plot()
+            self.assertEqual(len(consumer.items), count)
+            window.project.method.tick_label_font_size = 16
+            window._plot()
+            self.assertFalse(window._current_view_pixmap().isNull())
+            self.assertAlmostEqual(consumer.primary.vb.sceneBoundingRect().width(),
+                                   consumer.secondary.sceneBoundingRect().width(), delta=1.0)
+            window.project.datasets[1].visible = False
+            window.project.method.show_gradient_b = False
+            window._plot()
+            self.assertEqual(consumer.last_evidence["counts"]["traces"], 1)
+            self.assertFalse(consumer.gradient_axis.isVisible())
+            self.assertAlmostEqual(consumer.primary.vb.sceneBoundingRect().width(),
+                                   consumer.secondary.sceneBoundingRect().width(), delta=1.0)
+            with patch("hplc_app.screen_preview.ExperimentalScreenPreview._update_legend",
+                       side_effect=RuntimeError("layout replacement failure")):
+                window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("single"))
+            self.assertTrue(consumer._closed)
+            self.assertIsNone(window._screen_preview)
+            self.assertEqual(window.plot_stack.count(), 1)
+            self.assertEqual(window._screen_preview_notice, "failed")
         finally:
             window.project.dirty = False
             window.close()

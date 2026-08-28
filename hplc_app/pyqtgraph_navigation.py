@@ -101,7 +101,7 @@ class PyQtGraphNavigationController:
         ):
             if name == "button_release_event" and event.button != 1:
                 return True
-            rectangle = self.consumer.primary.vb.sceneBoundingRect()
+            rectangle = self.consumer.pan_rectangle(self._pan.target)
             state = axis_pan_view(self._pan, event, rectangle.width(), rectangle.height())
             state, _overview = self._bounded_state(state)
             if state != self._pan.initial_view and not self._pan_recorded:

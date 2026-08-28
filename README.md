@@ -14,13 +14,14 @@ v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セ
 
 Windows 11向けのQt 6環境では、グラフ上部の「PyQtGraph表示（実験的・今回のみ）」で試験表示に切り替えられます。標準は引き続きMatplotlibで、この選択は保存されません。
 
-- 通常表示・概要＋詳細、ホイールズーム、ツールバーのパン／戻る／進む／ホーム、軸リセットに対応します。表示範囲と履歴は従来画面と共有します。
+- 通常表示・概要＋詳細・Y1/Y2の上下2画面、ホイールズーム、ツールバーのパン／戻る／進む／ホーム、軸リセットに対応します。表示範囲と履歴は従来画面と共有します。2画面では時間軸を共有し、自動ズームとパンは操作した段の縦軸だけを変更します。ズーム方向を明示指定した場合は従来画面と同じ動作です。B%は選択中のクロマトグラムと同じ段に表示します。
 - 縦線ポインターモードでは、プロット内のクリックで線を追加できます。既存の線はモードOFFでもクリックして選択でき、グラフにフォーカスがある状態でDeleteを押すと削除できます。追加・削除はUndo／Redoとプロジェクト保存に対応します。
-- 積分、範囲編集、ピーク分割、フラクション、トレース移動、テキストラベル編集、矩形ズーム、図の詳細設定、Y1/Y2の2画面表示では、説明を表示してMatplotlibへ戻ります。再試行する場合は手動でチェックを入れ直してください。
+- 2画面の縦線追加先はクリックした段です。別の段にある縦線は選択しません。
+- 積分、範囲編集、ピーク分割、フラクション、トレース移動、テキストラベル編集、矩形ズーム、図の詳細設定では、説明を表示してMatplotlibへ戻ります。再試行する場合は手動でチェックを入れ直してください。
 - 表示画面のコピー・印刷は表示中の描画を使用します。PNG/SVG/PDFの図保存・解析レポートは従来のMatplotlib経路を維持します。
 - PyQtGraph未導入・初期化／描画エラー時も従来画面へ戻ります。Win7では選択できず、依存追加もしません。
 
-これは移行途中の試験表示です。凡例位置・文字・目盛り等の厳密な見た目の一致、縦線以外のネイティブ編集、2画面表示、完全なMatplotlib画面処理の除去は未完了です。再描画時には互換・図保存用のMatplotlibオブジェクトも構築するため、アプリ全体の高速化完了とは扱いません。実機のDPI・日本語フォント・印刷確認も必要です。
+これは移行途中の試験表示です。凡例位置・文字・目盛り等の厳密な見た目の一致、縦線以外のネイティブ編集、完全なMatplotlib画面処理の除去は未完了です。再描画時には互換・図保存用のMatplotlibオブジェクトも構築するため、アプリ全体の高速化完了とは扱いません。実機のDPI・日本語フォント・印刷確認も必要です。
 
 ## 開発者向けクイックスタート
 
@@ -150,7 +151,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 - 軽量描画は画面だけをpixel幅に応じてmin/max間引きし、非表示データを描画対象から除外
 - パン／連続ズーム中は再描画を抑制し、操作終了時に現在の表示範囲を正式再描画
 
-画面レンダラー候補は通常依存へ追加する前に、隔離benchmarkで比較します。Matplotlib基準は既存依存だけで実行でき、PyQtGraphは明示的に導入した環境でだけ測定されます。表示trace、Y1/Y2割当、凡例、B%系列、peak overlay、vertical marker、fraction region、free textはbackend-neutral sceneとして構成し、現行Matplotlib画面も同じsceneを使用します。pointer入力、hit-target、軸別pan、home/back/forward表示履歴、overviewの全体・詳細窓状態はrenderer非依存です。Win7/Python 3.8候補は`pyqtgraph==0.12.4`、新しい環境は別途評価し、MainWindowのopt-in接続と自動fallbackが完成するまではApplicationの選択肢へ追加しません。
+画面レンダラー候補は通常依存へ追加する前に、隔離benchmarkで比較します。Matplotlib基準は既存依存だけで実行でき、PyQtGraphは明示的に導入した環境でだけ測定されます。表示trace、Y1/Y2割当、凡例、B%系列、peak overlay、vertical marker、fraction region、free textはbackend-neutral sceneとして構成し、現行Matplotlib画面も同じsceneを使用します。pointer入力、hit-target、軸別pan、home/back/forward表示履歴、overviewの全体・詳細窓状態はrenderer非依存です。Win7/Python 3.8候補は`pyqtgraph==0.12.4`ですが、Win7の標準依存・画面は変更しません。Qt 6環境のみ、上記のopt-in試験表示と未対応操作・エラー時の自動fallbackを利用できます。
 
 ```text
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json

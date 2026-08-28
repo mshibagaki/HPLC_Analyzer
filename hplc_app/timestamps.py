@@ -54,3 +54,11 @@ def acquisition_timestamp(metadata: Dict[str, str], filename: str) -> str:
     if explicit:
         return _iso_timestamp(explicit, EXPLICIT_TIMESTAMP_FORMATS) or explicit
     return timestamp_from_filename(filename)
+
+
+def run_id_timestamp(value: str) -> str:
+    """Format a known acquisition time without inventing missing date/time."""
+    normalized = _iso_timestamp(str(value or "").strip(), EXPLICIT_TIMESTAMP_FORMATS)
+    if not normalized:
+        return "unknown-datetime"
+    return normalized.replace("-", "").replace("T", "_").replace(":", "")

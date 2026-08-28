@@ -1436,7 +1436,7 @@ class ProjectTests(unittest.TestCase):
         untouched = deepcopy(manifest)
         migrated = migrate_project_manifest(manifest)
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 105)
+        self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
         self.assertEqual(len(migrated["runs"]), 2)
         self.assertEqual(
             [item["id"] for item in migrated["runs"]],
@@ -1524,7 +1524,7 @@ class ProjectTests(unittest.TestCase):
         migrated = migrate_project_manifest(manifest)
 
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 105)
+        self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
         self.assertEqual(migrated["runs"][0]["label"], "sample A")
         self.assertEqual(migrated["runs"][0]["short_label"], "A")
         self.assertEqual(
@@ -1550,7 +1550,7 @@ class ProjectTests(unittest.TestCase):
         untouched = deepcopy(manifest)
         migrated = migrate_project_manifest(manifest)
         self.assertEqual(manifest, untouched)
-        self.assertEqual(migrated["schema_version"], 105)
+        self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
         self.assertEqual(migrated["work_directories"], [])
         invalid = dict(manifest, work_directories={"path": "C:/HPLC"})
         with self.assertRaisesRegex(
@@ -2208,6 +2208,140 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(manifest["format_major"], PROJECT_FORMAT_MAJOR)
             self.assertEqual(manifest["schema_version"], PROJECT_SCHEMA_VERSION)
             self.assertNotIn("preset_metadata", manifest)
+
+    def test_readable_run_ids_are_allocated_once_in_project_order(self):
+        first = Dataset(label="試料_A", measurement=MeasurementMetadata(
+            acquisition_datetime="2026-08-29T14:30:52"))
+        second = Dataset(label="試料_A", measurement=deepcopy(first.measurement))
+        project = Project(datasets=[first, second])
+        self.assertEqual(first.run_id, "20260829_143052_1_試料_A")
+        self.assertEqual(second.run_id, "20260829_143052_2_試料_A")
+        original_ids = [first.run_id, second.run_id]
+        first.label = "changed"
+        first.measurement.acquisition_datetime = "2020-01-01T00:00:00"
+        project.datasets.reverse()
+        project.rebuild_run_index()
+        self.assertEqual([first.run_id, second.run_id], original_ids)
+        project.remove_dataset_at(0)
+        third = Dataset(label="third", measurement=MeasurementMetadata(
+            acquisition_datetime="2026/08/28 10:20:30"))
+        project.add_dataset(third)
+        self.assertEqual(third.run_id, "20260828_102030_3_third")
+
+    def test_unknown_run_datetime_never_uses_import_time(self):
+        for timestamp in ("", "not a date", "2026-08-29", "2026-02-30T10:00:00"):
+            with self.subTest(timestamp=timestamp):
+                dataset = Dataset(label="A", imported_at="2099-12-31T23:59:59",
+                                  measurement=MeasurementMetadata(
+                                      acquisition_datetime=timestamp))
+                Project(datasets=[dataset])
+                self.assertEqual(dataset.run_id, "unknown-datetime_1_A")
+                self.assertEqual(dataset.measurement.acquisition_datetime, timestamp)
+
+    def test_run_rename_is_atomic_local_and_never_groups(self):
+        first, second, other = Dataset(label="A"), Dataset(label="B"), Dataset(label="C")
+        project = Project(datasets=[first, other])
+        run = project.run_for(first)
+        project.add_dataset(second, run=run)
+        elsewhere = Project(datasets=[Dataset(label="A")])
+        self.assertEqual(elsewhere.runs[0].id, run.id)
+        old_id = run.id
+        counter = project.next_run_number
+        self.assertTrue(project.rename_run(run, "任意の ID_ / 280"))
+        self.assertEqual(first.run_id, second.run_id)
+        self.assertIs(project.run_for(second), run)
+        self.assertNotIn(old_id, project._run_index)
+        self.assertEqual(elsewhere.runs[0].id, old_id)
+        self.assertEqual([first.label, second.label], ["A", "A"])
+        for candidate, message in (("  ", "run_id_empty"), (other.run_id, "run_id_duplicate")):
+            with self.assertRaisesRegex(ValueError, message):
+                project.rename_run(run, candidate)
+            self.assertEqual(run.id, "任意の ID_ / 280")
+            self.assertEqual(len(project.runs), 2)
+            self.assertIs(project.run_for(first), project.run_for(second))
+        self.assertFalse(project.rename_run(run, " 任意の ID_ / 280 "))
+        self.assertEqual(project.next_run_number, counter)
+        with self.assertRaisesRegex(ValueError, "belong to the Project"):
+            project.rename_run(elsewhere.runs[0], "foreign")
+
+    def test_run_number_survives_group_split_delete_rename_and_round_trip(self):
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        project = Project(datasets=[first, second])
+        run = project.run_for(first)
+        original_id = run.id
+        project.group_datasets_into_run([first, second], run)
+        self.assertEqual(run.id, original_id)
+        project.ungroup_datasets([second])
+        self.assertIn("_3_", second.run_id)
+        project.rename_run(run, "自由編集したID")
+        project.remove_dataset_at(1)
+        first.peaks = [PeakRegion(start_min=1.0, end_min=2.0)]
+        recalculate_dataset_peaks(first)
+        peak = deepcopy(first.peaks[0])
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "ids.hplcproj")
+            save_project(path, project)
+            restored = load_project(path)
+            self.assertEqual(restored.next_run_number, 4)
+            loaded = restored.datasets[0]
+            self.assertEqual(loaded.run_id, "自由編集したID")
+            self.assertEqual(loaded.raw_bytes, first.raw_bytes)
+            np.testing.assert_array_equal(loaded.time_min, first.time_min)
+            np.testing.assert_array_equal(loaded.intensity_uv, first.intensity_uv)
+            self.assertEqual(loaded.peaks[0], peak)
+            self.assertEqual(loaded.measurement, first.measurement)
+            restored.remove_dataset_at(0)
+            save_project(path, restored)
+            empty = load_project(path)
+            new = Dataset(label="new")
+            empty.add_dataset(new)
+            self.assertEqual(new.run_id, "unknown-datetime_4_new")
+
+    def test_run_number_skips_user_reserved_ids_without_implicit_merge(self):
+        project = Project(datasets=[Dataset(label="A")])
+        project.rename_run(project.runs[0], "unknown-datetime_2_A")
+        new = Dataset(label="A")
+        project.add_dataset(new)
+        self.assertEqual(new.run_id, "unknown-datetime_3_A")
+        self.assertEqual(len(project.runs), 2)
+
+    def test_schema_105_preserves_ids_and_initializes_run_number(self):
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        dataset.run_id = "legacy-uuid"
+        project = Project(datasets=[dataset])
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "legacy.hplcproj")
+            save_project(path, project)
+            with zipfile.ZipFile(path) as archive:
+                contents = {name: archive.read(name) for name in archive.namelist()}
+            manifest = json.loads(contents["project.json"])
+            manifest["schema_version"] = 105
+            del manifest["next_run_number"]
+            untouched = deepcopy(manifest)
+            migrated = migrate_project_manifest(manifest)
+            self.assertEqual(manifest, untouched)
+            self.assertEqual(migrated["runs"], manifest["runs"])
+            self.assertEqual(migrated["datasets"], manifest["datasets"])
+            self.assertEqual(migrated["next_run_number"], 2)
+            self.assertEqual(migrate_project_manifest(migrated), migrated)
+            contents["project.json"] = json.dumps(manifest).encode("utf-8")
+            with zipfile.ZipFile(path, "w") as archive:
+                for name, payload in contents.items():
+                    archive.writestr(name, payload)
+            restored = load_project(path)
+            self.assertEqual(restored.datasets[0].run_id, "legacy-uuid")
+            new = Dataset(label="new")
+            restored.add_dataset(new)
+            self.assertEqual(new.run_id, "unknown-datetime_2_new")
+            for invalid in (0, -1, True, "3", 1.5, None):
+                manifest["next_run_number"] = invalid
+                contents["project.json"] = json.dumps(manifest).encode("utf-8")
+                with zipfile.ZipFile(path, "w") as archive:
+                    for name, payload in contents.items():
+                        archive.writestr(name, payload)
+                with self.assertRaisesRegex(ProjectError, "positive integer"):
+                    load_project(path)
 
     def test_shared_run_is_authoritative_and_dataset_channels_stay_independent(self):
         run = Run(

@@ -194,6 +194,7 @@ def save_project(path: str, project: Project) -> None:
         "ui_language": project.ui_language,
         "method": asdict(project.method),
         "runs": [asdict(run) for run in project.runs],
+        "next_run_number": project.next_run_number,
         "condition_presets": sanitize_condition_presets(project.condition_presets),
         "gradient_presets": project.gradient_presets,
         "annotations": [asdict(annotation) for annotation in project.annotations],
@@ -281,6 +282,7 @@ def load_project(path: str) -> Project:
                     ui_language=manifest.get("ui_language", "ja"),
                     method=_method_from_dict(manifest.get("method", {}), schema_version),
                     runs=[_run_from_dict(run) for run in runs_data],
+                    next_run_number=manifest.get("next_run_number", len(runs_data) + 1),
                     condition_presets=sanitize_condition_presets(
                         manifest.get("condition_presets", {}) or {}
                     ),

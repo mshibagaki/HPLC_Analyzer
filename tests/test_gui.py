@@ -1633,7 +1633,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(first.text(), shared_run.id)
         self.assertEqual(second.text(), shared_run.id)
         self.assertEqual(first.toolTip(), shared_run.id)
-        self.assertFalse(bool(first.flags() & ITEM_IS_EDITABLE))
+        self.assertTrue(bool(first.flags() & ITEM_IS_EDITABLE))
         self.assertTrue(
             bool(
                 window.dataset_table.item(0, DATASET_LABEL_COLUMN).flags()
@@ -1641,6 +1641,72 @@ class GuiTests(unittest.TestCase):
             )
         )
 
+        window.project.dirty = False
+        window.close()
+
+    def test_run_id_inline_rename_shared_rows_history_save_and_legend(self):
+        from hplc_app.project_io import load_project, save_project
+
+        window = self.make_window()
+        first, second = window.project.datasets
+        run = window.project.run_for(first)
+        window.project.group_datasets_into_run([first, second], run)
+        window.project.method.legend_components = ["run_id", "wavelength"]
+        window._refresh_all(0)
+        old_id = run.id
+        peaks = deepcopy(first.peaks)
+        window.dataset_table.item(0, DATASET_RUN_ID_COLUMN).setText("手動 ID_A")
+        self.assertEqual([d.run_id for d in window.project.datasets], ["手動 ID_A"] * 2)
+        for row in range(2):
+            item = window.dataset_table.item(row, DATASET_RUN_ID_COLUMN)
+            self.assertEqual(item.text(), "手動 ID_A")
+            self.assertEqual(item.toolTip(), "手動 ID_A")
+            self.assertEqual(item.data(USER_ROLE), "手動 ID_A")
+        self.assertEqual(len(window._undo_stack), 1)
+        self.assertTrue(window.project.dirty)
+        self.assertTrue(any("手動 ID_A" in t.get_text()
+                            for t in window.axes.get_legend().get_texts()))
+        window.undo()
+        self.assertEqual([d.run_id for d in window.project.datasets], [old_id] * 2)
+        window.redo()
+        self.assertEqual([d.run_id for d in window.project.datasets], ["手動 ID_A"] * 2)
+        window.dataset_table.item(0, DATASET_LABEL_COLUMN).setText("new label")
+        window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).setText("2020-01-01T00:00:00")
+        window.move_dataset_to(0, 1)
+        self.assertEqual([d.run_id for d in window.project.datasets], ["手動 ID_A"] * 2)
+        self.assertEqual(first.peaks, peaks)
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "renamed.hplcproj")
+            save_project(path, window.project)
+            restored = load_project(path)
+            self.assertEqual([d.run_id for d in restored.datasets], ["手動 ID_A"] * 2)
+            output = Path(directory) / "renamed.svg"
+            window._save_figure_file(str(output))
+            self.assertIn("手動 ID_A", output.read_text(encoding="utf-8"))
+        window.project.dirty = False
+        window.close()
+
+    def test_run_id_collision_empty_and_noop_do_not_mutate_or_group(self):
+        window = self.make_window()
+        ids = [d.run_id for d in window.project.datasets]
+        for language in ("ja", "en"):
+            window.set_language(language)
+            window.project.dirty = False
+            window._reset_undo_history()
+            for candidate, key in ((ids[1], "run_id_duplicate"), ("  ", "run_id_empty")):
+                with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                    window.dataset_table.item(0, DATASET_RUN_ID_COLUMN).setText(candidate)
+                self.assertEqual(warning.call_args.args[2], window.translator(key))
+                self.assertEqual([d.run_id for d in window.project.datasets], ids)
+                self.assertEqual(window.dataset_table.item(0, DATASET_RUN_ID_COLUMN).text(), ids[0])
+                self.assertEqual(len(window.project.runs), 2)
+                self.assertFalse(window.project.dirty)
+                self.assertEqual(window._undo_stack, [])
+            with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                window.dataset_table.item(0, DATASET_RUN_ID_COLUMN).setText(" " + ids[0] + " ")
+            warning.assert_not_called()
+            self.assertFalse(window.project.dirty)
+            self.assertEqual(window._undo_stack, [])
         window.project.dirty = False
         window.close()
 
@@ -4187,11 +4253,17 @@ class GuiTests(unittest.TestCase):
         )
         self.assertEqual(window.project.datasets[1].label, "Authoritative")
         self.assertEqual(window.project.datasets[1].measurement.column_name, "C4")
+        split_id = window.project.datasets[1].run_id
+        next_number = window.project.next_run_number
         window.undo()
         self.assertEqual(
             window.project.datasets[0].run_id,
             window.project.datasets[1].run_id,
         )
+        self.assertEqual(window.project.next_run_number, next_number)
+        window.redo()
+        self.assertEqual(window.project.datasets[1].run_id, split_id)
+        self.assertEqual(window.project.next_run_number, next_number)
         window.project.dirty = False
         window.close()
 

@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-29 (Issue #142 delivery)
+Updated: 2026-08-29 (Issue #144 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -11,7 +11,7 @@ This tracked file is the source of truth for the original product requests. Upda
 | Batch condition editing | Direct table editing, validated all-or-nothing Ctrl+C/Ctrl+V, dropdown fields, Shift/Ctrl multi-selection, and gradient content preview/edit/assignment |
 | Project and file workflow | New project in another window, Ctrl+S, current project path/name in the window, ASCII/project drag-and-drop, multi-file and directory import |
 | Continuous directory import | Multiple project-owned work directories, labels, explicit reload, new-file detection, SHA-256 duplicate skip, and changed-path hold without silent replacement |
-| Chromatogram list | Run ID and timestamp separated from label, shared label/column/gradient at Run level, group/ungroup controls, column display, drag-and-drop reorder, and delete confirmation |
+| Chromatogram list | Run ID and timestamp separated from label, shared label/column/gradient at Run level, group/ungroup controls, column display, drag-and-drop reorder, and delete confirmation. Issue #144: new Run IDs use acquisition date/time, persistent project-local sequence and initial label (unknown-datetime when unavailable); direct whole-Run rename rejects empty/colliding IDs without grouping, supports Undo/Redo and preserves existing IDs on migration |
 | Selection and display | Shift range selection, Ctrl multi-selection, Y1/Y2 split-view mode, independent axes, Y-only zoom fix, grid toggle, vertical pointers with Delete, and fraction-collector intervals |
 | Legends and labels | Configurable Run ID/label/timestamp/wavelength legend composition, optional spectrum/trace name in the B% legend, fixed-size text boxes, and retention/integration labels on all selected chromatograms. Issue #140: split-view B% is shown on both panels or hidden on both via the existing toggle; both show the selected trace's same gradient and B% scale, with one legend entry, in Matplotlib and the preview. A hidden/unconfigured selected gradient hides both |
 | Presets | Preview/diff before apply, created/used/updated/name sorting, filter, rename/duplicate/delete, and import/export conflict policies |

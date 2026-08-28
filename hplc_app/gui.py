@@ -1411,6 +1411,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _restore_analysis_state(self, state):
         self.project.method = deepcopy(state["method"])
         self.project.runs = deepcopy(state.get("runs", self.project.runs))
+        # next_run_number is a high-water mark: Undo restores Run IDs, not
+        # permission to reuse numbers already allocated by a split/import.
         self.project.annotations = deepcopy(state.get("annotations", []))
         self.project.work_directories = deepcopy(state.get("work_directories", []))
         self.project.vertical_markers = deepcopy(
@@ -1877,7 +1879,7 @@ class MainWindow(QtWidgets.QMainWindow):
             show.setCheckState(CHECKED if dataset.visible else UNCHECKED)
             show.setData(USER_ROLE, dataset.id)
             self.dataset_table.setItem(row, DATASET_VISIBLE_COLUMN, show)
-            run_id = _read_only_item(dataset.run_id)
+            run_id = QtWidgets.QTableWidgetItem(dataset.run_id)
             run_id.setData(USER_ROLE, dataset.run_id)
             run_id.setToolTip(dataset.run_id)
             self.dataset_table.setItem(row, DATASET_RUN_ID_COLUMN, run_id)
@@ -2042,6 +2044,14 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             if column == DATASET_VISIBLE_COLUMN:
                 dataset.visible = item.checkState() == CHECKED
+            elif column == DATASET_RUN_ID_COLUMN:
+                changed = self.project.rename_run(
+                    self.project.run_for(dataset), item.text()
+                )
+                if not changed:
+                    self._refresh_dataset_table(row)
+                    return
+                shared_run_changed = True
             elif column == DATASET_LABEL_COLUMN:
                 label_changed = True
                 old_label = dataset.label
@@ -2080,7 +2090,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 dataset.measurement.column_name = item.text().strip()
                 shared_run_changed = True
         except ValueError as exc:
-            QtWidgets.QMessageBox.warning(self, self.translator("warning"), str(exc))
+            message = str(exc)
+            if column == DATASET_RUN_ID_COLUMN:
+                message = self.translator(message)
+            QtWidgets.QMessageBox.warning(self, self.translator("warning"), message)
             self._refresh_dataset_table(row)
             return
         self._push_undo_snapshot(

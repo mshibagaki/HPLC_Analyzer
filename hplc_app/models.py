@@ -8,6 +8,8 @@ import uuid
 
 import numpy as np
 
+from .timestamps import run_id_timestamp
+
 
 CONDITION_PRESET_LABEL_FIELDS = frozenset(("label", "short_label"))
 
@@ -502,6 +504,7 @@ class Project:
     ui_language: str = "ja"
     method: AnalysisMethod = field(default_factory=AnalysisMethod)
     runs: List[Run] = field(default_factory=list)
+    next_run_number: int = 1
     datasets: List[Dataset] = field(default_factory=list)
     annotations: List[TextAnnotation] = field(default_factory=list)
     work_directories: List[WorkDirectory] = field(default_factory=list)
@@ -516,6 +519,9 @@ class Project:
         self.rebuild_run_index(create_missing=True)
 
     def rebuild_run_index(self, create_missing: bool = False) -> None:
+        if type(self.next_run_number) is not int or self.next_run_number < 1:
+            raise ValueError("Next Run number must be a positive integer")
+        self.next_run_number = max(self.next_run_number, len(self.runs) + 1)
         index = {}
         for run in self.runs:
             if not run.id or run.id in index:
@@ -527,14 +533,7 @@ class Project:
             if run is None:
                 if not create_missing:
                     raise ValueError("Dataset references a missing Run: %s" % dataset.run_id)
-                requested_id = dataset.run_id if dataset.run_id not in index else ""
-                run = Run.from_measurement(
-                    dataset.measurement,
-                    dataset.gradient_preset_name,
-                    run_id=requested_id,
-                    label=dataset.label,
-                    short_label=dataset.short_label,
-                )
+                run = self._new_run_for(dataset, requested_id=dataset.run_id)
                 self.runs.append(run)
                 index[run.id] = run
             dataset.bind_run(run)
@@ -545,6 +544,53 @@ class Project:
         if run is None:
             raise ValueError("Dataset references a missing Run: %s" % dataset.run_id)
         return run
+
+    def _new_run_for(self, dataset: Dataset, requested_id: str = "") -> Run:
+        """Allocate once per new Run, independently of labels and row order.
+
+        The high-water counter is persisted and never rolled back by Undo.
+        Explicit legacy IDs are retained; no ID text is parsed for metadata.
+        """
+        label = dataset.label or dataset.original_filename or "unlabeled"
+        id_label = " ".join(label.splitlines()).strip() or "unlabeled"
+        timestamp = run_id_timestamp(dataset.measurement.acquisition_datetime)
+        index = self.__dict__.get("_run_index", {})
+        while True:
+            number = self.next_run_number
+            self.next_run_number += 1
+            candidate = requested_id or "%s_%d_%s" % (timestamp, number, id_label)
+            if candidate not in index:
+                break
+            if requested_id:
+                raise ValueError("Duplicate Run ID: %s" % requested_id)
+        return Run.from_measurement(
+            dataset.measurement,
+            dataset.effective_gradient_preset_name(),
+            run_id=candidate,
+            label=dataset.label,
+            short_label=dataset.short_label,
+        )
+
+    def rename_run(self, run: Run, new_id: str) -> bool:
+        """Rename a whole Run atomically; a collision never groups Datasets."""
+        index = self.__dict__.get("_run_index", {})
+        if index.get(run.id) is not run:
+            raise ValueError("The Run must belong to the Project")
+        candidate = str(new_id or "").strip()
+        if not candidate:
+            raise ValueError("run_id_empty")
+        if candidate == run.id:
+            return False
+        if candidate in index:
+            raise ValueError("run_id_duplicate")
+        old_id = run.id
+        members = [dataset for dataset in self.datasets if dataset.run_id == old_id]
+        del index[old_id]
+        run.id = candidate
+        index[candidate] = run
+        for dataset in members:
+            dataset.run_id = candidate
+        return True
 
     def legend_label_for(self, dataset: Dataset) -> str:
         """Build a derived legend without changing any authoritative field."""
@@ -590,13 +636,7 @@ class Project:
         index = self.__dict__.get("_run_index", {})
         selected = run or index.get(dataset.run_id)
         if selected is None:
-            selected = Run.from_measurement(
-                dataset.measurement,
-                dataset.gradient_preset_name,
-                run_id=dataset.run_id,
-                label=dataset.label,
-                short_label=dataset.short_label,
-            )
+            selected = self._new_run_for(dataset, requested_id=dataset.run_id)
             if selected.id in index:
                 raise ValueError("Duplicate Run ID: %s" % selected.id)
             self.runs.append(selected)
@@ -608,6 +648,7 @@ class Project:
         else:
             self.runs.append(selected)
             index[selected.id] = selected
+            self.next_run_number += 1
         dataset.bind_run(selected)
         self.datasets.append(dataset)
         return selected
@@ -658,12 +699,7 @@ class Project:
             replacements.append(
                 (
                     dataset,
-                    Run.from_measurement(
-                        dataset.measurement,
-                        dataset.effective_gradient_preset_name(),
-                        label=dataset.label,
-                        short_label=dataset.short_label,
-                    ),
+                    self._new_run_for(dataset),
                 )
             )
         for dataset, run in replacements:

@@ -306,6 +306,16 @@ def migrate_104_to_105(manifest: Manifest) -> Manifest:
     return migrated
 
 
+def migrate_105_to_106(manifest: Manifest) -> Manifest:
+    """Start project-local numbering without renaming any existing Run."""
+    migrated = _with_schema(manifest, 106)
+    runs = migrated.get("runs", [])
+    if not isinstance(runs, list):
+        raise ProjectMigrationError("Project runs must be an array")
+    migrated.setdefault("next_run_number", len(runs) + 1)
+    return migrated
+
+
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -323,6 +333,7 @@ V1_MIGRATIONS: Dict[int, Migration] = {
     102: migrate_102_to_103,
     103: migrate_103_to_104,
     104: migrate_104_to_105,
+    105: migrate_105_to_106,
 }
 
 

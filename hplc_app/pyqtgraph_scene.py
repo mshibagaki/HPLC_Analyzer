@@ -84,6 +84,17 @@ class PyQtGraphSceneConsumer:
         self._sync_auxiliary_views()
         self.items = []
         self.overview_items = []
+        self.marker_items = {}
+        self._marker_specs = ()
+        self.pointer_cursor = self.pg.InfiniteLine(
+            angle=90, movable=False,
+            pen=self.pg.mkPen("#2563eb", width=1.0, style=getattr(
+                getattr(self.qt_core.Qt, "PenStyle", self.qt_core.Qt), "DashLine"
+            )),
+        )
+        self.pointer_cursor.setZValue(30)
+        self.primary.addItem(self.pointer_cursor, ignoreBounds=True)
+        self.pointer_cursor.hide()
         self.last_evidence = {}
         self._connections = {}
         self._next_connection_id = 1
@@ -284,7 +295,30 @@ class PyQtGraphSceneConsumer:
             data_coordinates=tuple(coordinates),
             double_click=bool(double_click),
             key=str(key or ""),
-        )
+        ).with_hit_target(*self._marker_hit_target(scene_position))
+
+    def _marker_hit_target(self, scene_position):
+        """Use viewport pixels, so selection tolerance is independent of zoom."""
+        pointer_x = self.widget.mapFromScene(scene_position).x()
+        for marker in reversed(self._marker_specs):
+            item = self.marker_items.get(marker.marker_id)
+            view = self.secondary if marker.axis_id == "y2" else self.primary.vb
+            if item is None or not item.isVisible() or not self._point_in_rect(
+                scene_position, view.sceneBoundingRect()
+            ):
+                continue
+            marker_scene = view.mapViewToScene(self.qt_core.QPointF(marker.x_value, 0.0))
+            marker_x = self.widget.mapFromScene(marker_scene).x()
+            if abs(pointer_x - marker_x) <= 6:
+                return "vertical_marker", marker.marker_id
+        return "", ""
+
+    def set_pointer_cursor(self, x_value=None):
+        if x_value is None:
+            self.pointer_cursor.hide()
+        else:
+            self.pointer_cursor.setPos(float(x_value))
+            self.pointer_cursor.show()
 
     def _add(self, item, axis_id="y1"):
         self._view(axis_id).addItem(item)
@@ -303,6 +337,9 @@ class PyQtGraphSceneConsumer:
             view.removeItem(item)
         self.items.clear()
         self.overview_items.clear()
+        self.marker_items.clear()
+        self._marker_specs = scene.vertical_markers
+        self.set_pointer_cursor()
         counts = {
             "traces": 0,
             "gradients": 0,
@@ -410,7 +447,7 @@ class PyQtGraphSceneConsumer:
             counts["peak_overlays"] += 1
 
         for marker in scene.vertical_markers:
-            self._add(
+            item = self._add(
                 self.pg.InfiniteLine(
                     pos=marker.x_value,
                     angle=90,
@@ -419,6 +456,8 @@ class PyQtGraphSceneConsumer:
                 ),
                 marker.axis_id,
             )
+            item.setOpacity(marker.alpha)
+            self.marker_items[marker.marker_id] = item
             counts["vertical_markers"] += 1
 
         for region in scene.fraction_regions:

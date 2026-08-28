@@ -359,7 +359,7 @@ class GuiTests(unittest.TestCase):
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
-            for control in (window.pointer_action, window.integrate_button,
+            for control in (window.integrate_button,
                             window.fraction_button, window.move_trace_button,
                             window.annotation_action):
                 window.screen_preview_checkbox.setChecked(True)
@@ -408,6 +408,147 @@ class GuiTests(unittest.TestCase):
             with patch("hplc_app.gui.QT_API", 5):
                 window.screen_preview_checkbox.setChecked(True)
             self.assertIsNone(window._screen_preview)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_vertical_markers_use_native_events_and_shared_history(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        from hplc_app.project_io import load_project, save_project
+        window = self.make_window()
+        try:
+            window.show()
+            self.app.processEvents()
+            raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            viewport = consumer.widget.viewport()
+            window.pointer_action.setChecked(True)
+            self.assertIs(window._screen_preview, preview)
+
+            def point_at(time):
+                limits = consumer.primary.viewRange()[1]
+                return consumer.widget.mapFromScene(consumer.primary.vb.mapViewToScene(
+                    core.QPointF(time, sum(limits) / 2.0)))
+
+            def mouse(kind, point, button=core.Qt.MouseButton.NoButton,
+                      held=core.Qt.MouseButton.NoButton):
+                consumer.application.sendEvent(viewport, gui.QMouseEvent(
+                    kind, core.QPointF(point), core.QPointF(viewport.mapToGlobal(point)),
+                    button, held, core.Qt.KeyboardModifier.NoModifier,
+                ))
+
+            def click(point):
+                mouse(core.QEvent.Type.MouseButtonPress, point,
+                      core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                mouse(core.QEvent.Type.MouseButtonRelease, point, core.Qt.MouseButton.LeftButton)
+
+            point = point_at(12.0)
+            expected_x = consumer.pointer_event(consumer.widget.mapToScene(point)).data_for("y1")[0]
+            state = window._screen_view_state()
+            with patch.object(window.canvas, "draw_idle") as mpl_draw:
+                mouse(core.QEvent.Type.MouseMove, point)
+                self.assertTrue(consumer.pointer_cursor.isVisible())
+                self.assertAlmostEqual(consumer.pointer_cursor.value(), expected_x)
+                mpl_draw.assert_not_called()
+            self.assertEqual(window._screen_view_state(), state)
+            click(point)
+            self.assertEqual(len(window.project.vertical_markers), 1)
+            first = window.project.vertical_markers[0]
+            self.assertAlmostEqual(first.x_min, expected_x)
+            self.assertEqual(first.y_axis, 1)
+            self.assertEqual(window._selected_vertical_marker_id, first.id)
+            self.assertEqual(consumer.marker_items[first.id].pen.color().name(), "#f59e0b")
+            window.dataset_table.selectRow(1)
+            click(point_at(30.0))
+            self.assertEqual(len(window.project.vertical_markers), 2)
+            second = window.project.vertical_markers[1]
+            self.assertEqual(second.y_axis, 2)
+            self.assertIn(consumer.marker_items[second.id], consumer.secondary.addedItems)
+            window.project.dirty = False
+            undo_count = len(window._undo_stack)
+            # Pixel tolerance remains usable without creating another line.
+            window._zoom_view(0.5, 20.0, zoom_mode="x")
+            near = consumer.widget.mapToScene(point_at(first.x_min) + core.QPoint(5, 0))
+            far = consumer.widget.mapToScene(point_at(first.x_min) + core.QPoint(9, 0))
+            self.assertEqual(consumer.pointer_event(near).hit_id, first.id)
+            self.assertEqual(consumer.pointer_event(far).hit_id, "")
+            click(point_at(first.x_min) + core.QPoint(5, 0))
+            self.assertEqual(len(window.project.vertical_markers), 2)
+            self.assertEqual(window._selected_vertical_marker_id, first.id)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertFalse(window.project.dirty)
+            self.assertEqual(consumer.marker_items[second.id].pen.color().name(), "#7c3aed")
+            consumer.application.sendEvent(consumer.widget, gui.QKeyEvent(
+                core.QEvent.Type.KeyPress, core.Qt.Key.Key_Delete,
+                core.Qt.KeyboardModifier.NoModifier,
+            ))
+            self.assertEqual([marker.id for marker in window.project.vertical_markers], [second.id])
+            self.assertNotIn(first.id, consumer.marker_items)
+            self.assertIs(window._screen_preview, preview)
+            window.undo()
+            self.assertIn(first.id, consumer.marker_items)
+            window.redo()
+            self.assertNotIn(first.id, consumer.marker_items)
+            window.undo()
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "native-markers.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+                self.assertEqual([(m.id, m.x_min, m.y_axis) for m in restored.vertical_markers],
+                                 [(m.id, m.x_min, m.y_axis) for m in window.project.vertical_markers])
+            for dataset, values in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+            self.assertFalse(window._current_view_pixmap().isNull())
+            window.pointer_action.setChecked(False)
+            self.assertFalse(consumer.pointer_cursor.isVisible())
+            # Existing markers stay selectable when placement mode is off.
+            click(point_at(first.x_min))
+            self.assertEqual(window._selected_vertical_marker_id, first.id)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_pointer_boundaries_focus_and_failure_cleanup(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.pointer_action.setChecked(True)
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            self.assertIsNotNone(preview)
+            consumer = preview.consumer
+            # Axis margins and overview clicks are navigation, not placement.
+            for role, region in (("outside", ""), ("y1", "x"), ("overview_y1", "x")):
+                preview.handle_event("button_press_event", ScreenPointerEvent(
+                    button=1, axis_role=role, hit_region=region,
+                    data_coordinates=(("y1", 10.0, 0.0), ("overview_y1", 10.0, 0.0)),
+                ))
+            self.assertEqual(window.project.vertical_markers, [])
+            consumer.set_pointer_cursor(10.0)
+            self.app.sendEvent(consumer.widget.viewport(), QtCore.QEvent(QtCore.QEvent.Type.Leave))
+            self.assertFalse(consumer.pointer_cursor.isVisible())
+            window.project.vertical_markers = [VerticalMarker(x_min=10.0)]
+            window._plot()
+            window._select_vertical_marker(window.project.vertical_markers[0])
+            key = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_Delete,
+                                 QtCore.Qt.KeyboardModifier.NoModifier)
+            with patch.object(window, "delete_selected_vertical_marker", side_effect=RuntimeError("key failure")):
+                self.app.sendEvent(consumer.widget, key)
+            self.assertIsNone(window._screen_preview)
+            self.assertTrue(consumer._closed)
+            self.assertEqual(len(window.project.vertical_markers), 1)
+            self.assertEqual(window.plot_stack.count(), 1)
+            window.screen_preview_checkbox.setChecked(True)
+            consumer = window._screen_preview.consumer
+            with patch.object(consumer, "set_pointer_cursor", side_effect=RuntimeError("cursor failure")):
+                window.pointer_action.setChecked(False)
+            self.assertIsNone(window._screen_preview)
+            self.assertTrue(consumer._closed)
         finally:
             window.project.dirty = False
             window.close()

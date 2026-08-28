@@ -709,8 +709,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ))
         messages = {
             "active": (
-                "閲覧用。編集・2画面表示は従来描画へ戻ります。図の保存はMatplotlibです。",
-                "Viewing only. Editing/split view returns to Matplotlib; figure export uses Matplotlib.",
+                "閲覧・縦線編集に対応。他の編集・2画面表示は従来描画へ戻ります。",
+                "Viewing and vertical markers. Other editing/split view returns to Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
@@ -733,7 +733,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._stop_screen_preview()
             return
         controls = (self.integrate_button, self.edit_peak_button, self.split_peak_button,
-                    self.fraction_button, self.move_trace_button, self.pointer_action,
+                    self.fraction_button, self.move_trace_button,
                     self.annotation_action, self.toolbar._actions["zoom"])
         if (self.project.method.view_mode == "split_y_axes"
                 or any(control.isChecked() for control in controls)):
@@ -2973,6 +2973,11 @@ class MainWindow(QtWidgets.QMainWindow):
             )
 
     def _hide_interaction_cursor(self):
+        if self._screen_preview is not None:
+            try:
+                self._screen_preview.consumer.set_pointer_cursor()
+            except Exception:
+                self._stop_screen_preview(failed=True)
         if self._interaction_cursor is not None:
             self._interaction_cursor.set_visible(False)
             self._request_canvas_draw(throttled=True)
@@ -3148,7 +3153,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_pointer_mode(self, enabled: bool):
         if enabled:
-            self._stop_screen_preview(unsupported=True)
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
@@ -3269,6 +3273,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _select_vertical_marker(self, marker):
         self._selected_vertical_marker_id = marker.id if marker is not None else ""
+        if self._screen_preview is not None:
+            self._plot()
+            return
         for marker_id, artist in self._vertical_marker_artists.items():
             selected = marker_id == self._selected_vertical_marker_id
             model = next(

@@ -3454,10 +3454,12 @@ class GuiTests(unittest.TestCase):
         window.project.method.view_mode = "overview_detail"
         window._plot()
         self.assertIsNotNone(window.axes_overview)
+        self.assertTrue(window._overview_window_state.enabled)
         full_bounds = window._full_x_bounds()
         self.assertAlmostEqual(window.axes_overview.get_xlim()[0], full_bounds[0], places=6)
         self.assertAlmostEqual(window.axes_overview.get_xlim()[1], full_bounds[1], places=6)
         window.axes.set_xlim(4.0, 12.0)
+        self.assertEqual(window._overview_window_state.detail_x, (4.0, 12.0))
         window._on_scroll(
             SimpleNamespace(
                 button="up",

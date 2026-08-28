@@ -112,10 +112,12 @@ from hplc_app.pyqtgraph_scene import (
 from hplc_app.screen_scene import compose_base_screen_scene
 from hplc_app.screen_events import ScreenPointerEvent, normalize_pointer_event
 from hplc_app.screen_navigation import (
+    ScreenOverviewState,
     ScreenViewHistory,
     ScreenViewState,
     axis_pan_view,
     begin_axis_pan,
+    compose_overview_state,
 )
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import (
@@ -659,6 +661,19 @@ class AnalysisTests(unittest.TestCase):
             history.capabilities(home), {"back": False, "forward": False}
         )
         self.assertIsNone(history.navigate("invalid", home))
+
+    def test_overview_state_orders_and_clamps_detail_range(self):
+        state = compose_overview_state(
+            enabled=True,
+            full_x=(20.0, 0.0),
+            detail_x=(18.0, 25.0),
+        )
+        self.assertIsInstance(state, ScreenOverviewState)
+        self.assertEqual(state.full_x, (0.0, 20.0))
+        self.assertEqual(state.detail_x, (13.0, 20.0))
+        self.assertTrue(state.enabled)
+        with self.assertRaises(ValueError):
+            compose_overview_state(True, (0.0, float("nan")), (1.0, 2.0))
 
     def test_base_screen_scene_preserves_trace_axis_legend_gradient_and_raw_data(self):
         first = self.synthetic_dataset()

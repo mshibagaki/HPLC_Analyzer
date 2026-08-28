@@ -370,6 +370,83 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_pyqtgraph_viewport_dispatches_and_disconnects_shared_events(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional PyQtGraph dependency is not installed")
+        consumer = PyQtGraphSceneConsumer(size=(800, 500))
+        try:
+            consumer.snapshot()
+            core, gui = consumer.qt_core, consumer.qt_gui
+            types = getattr(core.QEvent, "Type", core.QEvent)
+            buttons = getattr(core.Qt, "MouseButton", core.Qt)
+            modifiers = getattr(core.Qt, "KeyboardModifier", core.Qt)
+            phases = getattr(core.Qt, "ScrollPhase", core.Qt)
+            viewport = consumer.widget.viewport()
+            position = consumer.widget.mapFromScene(
+                consumer.primary.vb.sceneBoundingRect().center()
+            )
+            local = core.QPointF(position)
+            global_position = core.QPointF(viewport.mapToGlobal(position))
+            received = {name: [] for name in consumer.POINTER_EVENTS}
+            connections = {
+                name: consumer.connect_event(name, events.append)
+                for name, events in received.items()
+            }
+
+            def send_mouse(kind, button, held):
+                event = gui.QMouseEvent(
+                    kind, local, global_position, button, held,
+                    modifiers.ControlModifier | modifiers.ShiftModifier,
+                )
+                consumer.application.sendEvent(viewport, event)
+
+            send_mouse(types.MouseButtonPress, buttons.LeftButton, buttons.LeftButton)
+            send_mouse(types.MouseMove, buttons.NoButton, buttons.LeftButton)
+            send_mouse(types.MouseButtonRelease, buttons.LeftButton, buttons.NoButton)
+            send_mouse(types.MouseButtonDblClick, buttons.MiddleButton, buttons.MiddleButton)
+            presses = received["button_press_event"]
+            self.assertEqual([event.button for event in presses], [1, 2])
+            self.assertFalse(presses[0].double_click)
+            self.assertTrue(presses[1].double_click)
+            self.assertEqual(presses[0].key, "ctrl+shift")
+            self.assertEqual(presses[0].hit_region, "plot")
+            self.assertEqual(received["motion_notify_event"][0].button, 1)
+            self.assertEqual(received["button_release_event"][0].button, 1)
+            self.assertIsInstance(presses[0], ScreenPointerEvent)
+            send_mouse(types.MouseButtonPress, buttons.RightButton, buttons.RightButton)
+            self.assertEqual(presses[-1].button, 3)
+
+            for angle, pixel in ((120, 0), (-120, 0), (0, 15), (0, 0)):
+                event = gui.QWheelEvent(
+                    local, global_position, core.QPoint(0, pixel),
+                    core.QPoint(0, angle), buttons.NoButton,
+                    modifiers.AltModifier, phases.NoScrollPhase, False,
+                )
+                consumer.application.sendEvent(viewport, event)
+            self.assertEqual(
+                [event.button for event in received["scroll_event"]],
+                ["up", "down", "up"],
+            )
+            self.assertEqual(received["scroll_event"][0].key, "alt")
+            # Filters observe events without consuming native Qt handling.
+            self.assertFalse(consumer._pointer_filter.eventFilter(
+                viewport, core.QEvent(types.User)
+            ))
+            consumer.disconnect_event(connections["button_press_event"])
+            consumer.disconnect_event(connections["button_press_event"])
+            send_mouse(types.MouseButtonPress, buttons.RightButton, buttons.RightButton)
+            self.assertEqual(len(presses), 3)
+            with self.assertRaises(ValueError):
+                consumer.connect_event("unknown_event", presses.append)
+            with self.assertRaises(TypeError):
+                consumer.connect_event("scroll_event", None)
+            consumer.close()
+            self.assertEqual(consumer._connections, {})
+            with self.assertRaises(RuntimeError):
+                consumer.connect_event("scroll_event", presses.append)
+        finally:
+            consumer.close()
+
     def test_lightweight_overview_is_coarser_and_peak_selection_reuses_patch(self):
         window = self.make_lightweight_window()
         window.project.method.view_mode = "overview_detail"

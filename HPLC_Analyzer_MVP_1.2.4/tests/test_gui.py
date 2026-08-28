@@ -1477,6 +1477,57 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_canvas_press_motion_and_release_accept_backend_neutral_events(self):
+        window = self.make_window()
+        selected = window.project.datasets[0]
+        window.pointer_action.setChecked(True)
+        window._on_canvas_press(
+            ScreenPointerEvent(
+                button=1,
+                axis_role="y1",
+                data_coordinates=(("y1", 7.25, 0.0),),
+            )
+        )
+        self.assertEqual(len(window.project.vertical_markers), 1)
+        self.assertAlmostEqual(window.project.vertical_markers[0].x_min, 7.25)
+
+        window.pointer_action.setChecked(False)
+        window.integrate_button.setChecked(True)
+        window._on_canvas_motion(
+            ScreenPointerEvent(
+                axis_role="y1",
+                data_coordinates=(("y1", 6.5, 100.0),),
+            )
+        )
+        self.assertTrue(window._interaction_cursor.get_visible())
+        self.assertAlmostEqual(
+            float(window._interaction_cursor.get_xdata()[0]), 6.5, places=6
+        )
+
+        window.integrate_button.setChecked(False)
+        window.move_trace_button.setChecked(True)
+        initial_shift = selected.x_shift_min
+        initial_offset = selected.offset
+        window._on_canvas_press(
+            ScreenPointerEvent(
+                button=1,
+                axis_role="y1",
+                data_coordinates=(("y1", 1.0, 100.0),),
+            )
+        )
+        window._on_canvas_motion(
+            ScreenPointerEvent(
+                axis_role="y1",
+                data_coordinates=(("y1", 1.5, 1100.0),),
+            )
+        )
+        window._on_canvas_release(ScreenPointerEvent(button=1))
+        self.assertAlmostEqual(selected.x_shift_min, initial_shift + 0.5, places=6)
+        self.assertAlmostEqual(selected.offset, initial_offset + 1000.0, places=6)
+        self.assertIsNone(window._move_drag)
+        window.project.dirty = False
+        window.close()
+
     def test_fraction_collector_range_draws_interval_lines_and_undoes(self):
         window = self.make_window()
         original_peaks = deepcopy(window.project.datasets[0].peaks)

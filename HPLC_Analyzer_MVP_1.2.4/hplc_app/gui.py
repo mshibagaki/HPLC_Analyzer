@@ -3042,7 +3042,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
 
     def _annotation_at_event(self, event):
-        if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+        if event.canvas_x is None or event.canvas_y is None:
             return None
         try:
             renderer = self.canvas.get_renderer()
@@ -3056,22 +3056,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 bounds = artist.get_window_extent(renderer=renderer).expanded(1.08, 1.25)
             except (AttributeError, RuntimeError, ValueError):
                 continue
-            if bounds.contains(float(event.x), float(event.y)):
+            if bounds.contains(event.canvas_x, event.canvas_y):
                 return annotation
         return None
 
     def _vertical_marker_at_event(self, event):
-        if getattr(event, "x", None) is None or getattr(event, "y", None) is None:
+        if event.canvas_x is None or event.canvas_y is None:
             return None
         for marker in reversed(self.project.vertical_markers):
             artist = self._vertical_marker_artists.get(marker.id)
             if artist is None or not artist.get_visible():
                 continue
             axis = self._marker_axis(marker)
-            if not axis.bbox.contains(float(event.x), float(event.y)):
+            if not axis.bbox.contains(event.canvas_x, event.canvas_y):
                 continue
             marker_x = axis.transData.transform((marker.x_min, 0.0))[0]
-            if abs(float(event.x) - float(marker_x)) <= 6.0:
+            if abs(event.canvas_x - float(marker_x)) <= 6.0:
                 return marker
         return None
 
@@ -3096,11 +3096,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _place_vertical_marker(self, event):
         selected = self._selected_dataset()
-        y_axis = 2 if getattr(event, "inaxes", None) is self.axes_right else (
+        y_axis = 2 if event.axis_role == "y2" else (
             selected.y_axis if selected is not None else 1
         )
+        source_role = event.axis_role if event.axis_role != "outside" else "y1"
+        x_value, _y_value = event.data_for(source_role)
+        if x_value is None:
+            return
         before = self._capture_analysis_state()
-        marker = VerticalMarker(x_min=float(event.xdata), y_axis=y_axis)
+        marker = VerticalMarker(x_min=float(x_value), y_axis=y_axis)
         self.project.vertical_markers.append(marker)
         self._selected_vertical_marker_id = marker.id
         self._push_undo_snapshot(
@@ -3167,17 +3171,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _place_text_annotation(self, event):
         selected = self._selected_dataset()
-        y_axis = 2 if getattr(event, "inaxes", None) is self.axes_right else (
+        y_axis = 2 if event.axis_role == "y2" else (
             selected.y_axis if selected is not None else 1
         )
-        target_axes = self.axes_right if y_axis == 2 and self.axes_right is not None else self.axes
-        if getattr(event, "x", None) is not None and getattr(event, "y", None) is not None:
-            x_value, y_value = target_axes.transData.inverted().transform(
-                (event.x, event.y)
-            )
-        else:
-            x_value = float(event.xdata)
-            y_value = float(event.ydata)
+        target_role = "y2" if y_axis == 2 and self.axes_right is not None else "y1"
+        x_value, y_value = event.data_for(target_role)
+        if x_value is None or y_value is None:
+            return
         annotation = TextAnnotation(
             x_min=float(x_value),
             y_value=float(y_value),
@@ -3205,6 +3205,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
 
     def _on_canvas_press(self, event):
+        if not isinstance(event, ScreenPointerEvent):
+            event = self._normalized_pointer_event(event)
         if event.button != 1:
             return
         if str(getattr(self.toolbar, "mode", "")):
@@ -3215,17 +3217,17 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         annotation = self._annotation_at_event(event)
         if annotation is not None:
-            if getattr(event, "dblclick", False):
+            if event.double_click:
                 self._edit_text_annotation(annotation)
                 return
-            target_axes = self._annotation_axis(annotation)
-            start_x, start_y = target_axes.transData.inverted().transform(
-                (event.x, event.y)
-            )
+            target_role = "y2" if annotation.y_axis == 2 else "y1"
+            start_x, start_y = event.data_for(target_role)
+            if start_x is None or start_y is None:
+                return
             self._annotation_drag = {
                 "annotation": annotation,
                 "artist": self._annotation_artists.get(annotation.id),
-                "axes": target_axes,
+                "axis_role": target_role,
                 "start_x": float(start_x),
                 "start_y": float(start_y),
                 "initial_x": annotation.x_min,
@@ -3233,7 +3235,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 "undo_state": self._capture_analysis_state(),
             }
             return
-        if event.xdata is None:
+        source_role = event.axis_role if event.axis_role != "outside" else "y1"
+        x_value, _y_value = event.data_for(source_role)
+        if x_value is None:
             return
         if self.annotation_action.isChecked():
             self._place_text_annotation(event)
@@ -3243,13 +3247,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self._selected_vertical_marker_id:
             self._select_vertical_marker(None)
-        if self.axes_overview is not None and getattr(event, "inaxes", None) in (
-            self.axes_overview,
-            self.axes_overview_right,
-        ):
-            self._center_detail_on(float(event.xdata))
+        if event.axis_role in ("overview_y1", "overview_y2"):
+            self._center_detail_on(float(x_value))
             return
-        if getattr(event, "dblclick", False) and not (
+        if event.double_click and not (
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
@@ -3259,15 +3260,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._back_to_previous_view()
             return
         if self.split_peak_button.isChecked():
-            self._split_selected_peak_at(event.xdata)
+            self._split_selected_peak_at(x_value)
             return
         if not self.move_trace_button.isChecked():
             return
         dataset = self._selected_dataset()
         if dataset is None:
             return
-        target_axes = self.axes_right if dataset.y_axis == 2 and self.axes_right is not None else self.axes
-        x_value, y_value = target_axes.transData.inverted().transform((event.x, event.y))
+        target_role = "y2" if dataset.y_axis == 2 and self.axes_right is not None else "y1"
+        x_value, y_value = event.data_for(target_role)
+        if x_value is None or y_value is None:
+            return
         self._move_drag = {
             "dataset": dataset,
             "start_x": float(x_value),
@@ -3278,15 +3281,13 @@ class MainWindow(QtWidgets.QMainWindow):
         }
 
     def _on_canvas_motion(self, event):
-        if (
-            self._annotation_drag is not None
-            and getattr(event, "x", None) is not None
-            and getattr(event, "y", None) is not None
-        ):
+        if not isinstance(event, ScreenPointerEvent):
+            event = self._normalized_pointer_event(event)
+        if self._annotation_drag is not None:
             drag = self._annotation_drag
-            x_value, y_value = drag["axes"].transData.inverted().transform(
-                (event.x, event.y)
-            )
+            x_value, y_value = event.data_for(drag["axis_role"])
+            if x_value is None or y_value is None:
+                return
             annotation = drag["annotation"]
             annotation.x_min = drag["initial_x"] + float(x_value) - drag["start_x"]
             annotation.y_value = drag["initial_y"] + float(y_value) - drag["start_y"]
@@ -3301,23 +3302,25 @@ class MainWindow(QtWidgets.QMainWindow):
             or self.fraction_button.isChecked()
             or self.pointer_button.isChecked()
         ):
-            detail_axes = tuple(
-                axis
-                for axis in (self.axes, self.axes_right, self.axes_gradient)
-                if axis is not None
-            )
-            if event.xdata is not None and event.inaxes in detail_axes:
+            if event.axis_role in ("y1", "y2", "gradient"):
+                x_value, _y_value = event.data_for(event.axis_role)
+            else:
+                x_value = None
+            if x_value is not None:
                 self._ensure_interaction_cursor()
-                self._interaction_cursor.set_xdata([event.xdata, event.xdata])
+                self._interaction_cursor.set_xdata([x_value, x_value])
                 self._interaction_cursor.set_visible(True)
                 self._request_canvas_draw(throttled=True)
             else:
                 self._hide_interaction_cursor()
-        if self._move_drag is None or event.x is None or event.y is None:
+        if self._move_drag is None:
             return
         dataset = self._move_drag["dataset"]
         target_axes = self.axes_right if dataset.y_axis == 2 and self.axes_right is not None else self.axes
-        x_value, y_value = target_axes.transData.inverted().transform((event.x, event.y))
+        target_role = "y2" if target_axes is self.axes_right else "y1"
+        x_value, y_value = event.data_for(target_role)
+        if x_value is None or y_value is None:
+            return
         direction = self.move_axis_combo.currentData()
         if direction in ("x", "both"):
             dataset.x_shift_min = self._move_drag["initial_x_shift"] + float(x_value) - self._move_drag["start_x"]
@@ -3342,7 +3345,9 @@ class MainWindow(QtWidgets.QMainWindow):
             except ValueError:
                 pass
 
-    def _on_canvas_release(self, _event):
+    def _on_canvas_release(self, event):
+        if not isinstance(event, ScreenPointerEvent):
+            event = self._normalized_pointer_event(event)
         if self._annotation_drag is not None:
             drag = self._annotation_drag
             annotation = drag["annotation"]

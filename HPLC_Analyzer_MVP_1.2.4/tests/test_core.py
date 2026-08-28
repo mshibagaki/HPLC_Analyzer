@@ -625,6 +625,54 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(overlay.label_text, "5.40")
         self.assertAlmostEqual(overlay.label_x, 5.4, places=2)
 
+    def test_screen_scene_composes_markers_fractions_and_visible_annotations(self):
+        visible = self.synthetic_dataset()
+        hidden = self.synthetic_dataset()
+        hidden.id = "hidden-scene-dataset"
+        hidden.run_id = "hidden-scene-run"
+        hidden.visible = False
+        selected_marker = VerticalMarker(x_min=4.5, y_axis=2, color="#123456")
+        other_marker = VerticalMarker(x_min=7.0, y_axis=1, color="#654321")
+        region = FractionRegion(start_min=2.1, end_min=1.0, interval_min=0.5)
+        shown_annotation = TextAnnotation(
+            text="Shown",
+            x_min=3.0,
+            y_value=20.0,
+            dataset_id=visible.id,
+            y_axis=2,
+        )
+        hidden_annotation = TextAnnotation(
+            text="Hidden",
+            dataset_id=hidden.id,
+        )
+        blank_annotation = TextAnnotation(text="   ")
+        project = Project(
+            datasets=[visible, hidden],
+            vertical_markers=[selected_marker, other_marker],
+            fraction_regions=[region],
+            annotations=[shown_annotation, hidden_annotation, blank_annotation],
+        )
+        scene = compose_base_screen_scene(
+            project,
+            selected_vertical_marker_id=selected_marker.id,
+            color_resolver=lambda _dataset, _index: "#000000",
+        )
+        self.assertEqual(len(scene.vertical_markers), 2)
+        self.assertTrue(scene.vertical_markers[0].selected)
+        self.assertEqual(scene.vertical_markers[0].axis_id, "y2")
+        self.assertEqual(scene.vertical_markers[0].color, "#f59e0b")
+        self.assertEqual(scene.vertical_markers[0].line_width, 2.0)
+        self.assertEqual(len(scene.fraction_regions), 1)
+        self.assertEqual(scene.fraction_regions[0].start_x, 1.0)
+        self.assertEqual(scene.fraction_regions[0].end_x, 2.1)
+        self.assertEqual(
+            scene.fraction_regions[0].boundary_values,
+            (1.0, 1.5, 2.0),
+        )
+        self.assertEqual(len(scene.text_annotations), 1)
+        self.assertEqual(scene.text_annotations[0].annotation_id, shown_annotation.id)
+        self.assertEqual(scene.text_annotations[0].axis_id, "y2")
+
     def test_renderer_benchmark_is_deterministic_and_non_mutating(self):
         workload = RendererWorkload(trace_count=2, point_count=200, repeats=1)
         first_x, first_traces = synthetic_chromatograms(workload)

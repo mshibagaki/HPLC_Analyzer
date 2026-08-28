@@ -709,8 +709,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ))
         messages = {
             "active": (
-                "閲覧・縦線編集に対応。他の編集・2画面表示は従来描画へ戻ります。",
-                "Viewing and vertical markers. Other editing/split view returns to Matplotlib.",
+                "閲覧・縦線編集・2画面表示に対応。他の編集は従来描画へ戻ります。",
+                "Viewing, vertical markers and split view. Other editing returns to Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
@@ -735,8 +735,7 @@ class MainWindow(QtWidgets.QMainWindow):
         controls = (self.integrate_button, self.edit_peak_button, self.split_peak_button,
                     self.fraction_button, self.move_trace_button,
                     self.annotation_action, self.toolbar._actions["zoom"])
-        if (self.project.method.view_mode == "split_y_axes"
-                or any(control.isChecked() for control in controls)):
+        if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
             return
         try:
@@ -769,10 +768,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_screen_preview(self):
         if self._screen_preview is None:
             return False
-        if self.project.method.view_mode == "split_y_axes":
-            self._stop_screen_preview(unsupported=True)
-            return False
         try:
+            split = self.project.method.view_mode == "split_y_axes"
+            if self._screen_preview.consumer.split_y_axes != split:
+                previous, self._screen_preview = self._screen_preview, None
+                previous.close()
+                from .screen_preview import ExperimentalScreenPreview
+                self._screen_preview = ExperimentalScreenPreview(self)
+                self.plot_stack.setCurrentWidget(self._screen_preview.consumer.widget)
             self._screen_preview.refresh()
             return True
         except Exception:
@@ -3295,9 +3298,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _place_vertical_marker(self, event):
         selected = self._selected_dataset()
-        y_axis = 2 if event.axis_role == "y2" else (
-            selected.y_axis if selected is not None else 1
-        )
+        if self._split_y_axes and event.axis_role in ("y1", "y2"):
+            y_axis = 2 if event.axis_role == "y2" else 1
+        else:
+            y_axis = 2 if event.axis_role == "y2" else (
+                selected.y_axis if selected is not None else 1
+            )
         source_role = event.axis_role if event.axis_role != "outside" else "y1"
         x_value, _y_value = event.data_for(source_role)
         if x_value is None:

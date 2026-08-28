@@ -32,7 +32,7 @@ class PyQtGraphSceneConsumer:
         "button_release_event", "scroll_event",
     ))
 
-    def __init__(self, size=(1000, 700)):
+    def __init__(self, size=(1000, 700), split_y_axes=False):
         try:
             self.pg = importlib.import_module("pyqtgraph")
             qt_widgets = importlib.import_module("pyqtgraph.Qt.QtWidgets")
@@ -68,19 +68,29 @@ class PyQtGraphSceneConsumer:
         self.overview_secondary.setVisible(False)
         self.overview.vb.sigResized.connect(self._sync_overview_view)
         self.primary = self.widget.addPlot(row=1, col=0)
-        self.secondary = self.pg.ViewBox()
+        self.split_y_axes = bool(split_y_axes)
+        self.secondary_plot = None
+        if self.split_y_axes:
+            self.secondary_plot = self.widget.addPlot(row=2, col=0)
+            self.secondary = self.secondary_plot.vb
+            self.primary.getAxis("bottom").setStyle(showValues=False)
+        else:
+            self.secondary = self.pg.ViewBox()
+            self.primary.showAxis("right")
+            self.primary.scene().addItem(self.secondary)
+            self.primary.getAxis("right").linkToView(self.secondary)
         self.gradient = self.pg.ViewBox()
-        self.primary.showAxis("right")
-        self.primary.scene().addItem(self.secondary)
-        self.primary.getAxis("right").linkToView(self.secondary)
         self.secondary.setXLink(self.primary)
         self.gradient_axis = self.pg.AxisItem("right")
+        self.gradient_host = self.primary
         self.primary.layout.addItem(self.gradient_axis, 2, 3)
         self.primary.scene().addItem(self.gradient)
         self.gradient_axis.linkToView(self.gradient)
         self.gradient.setXLink(self.primary)
         self.gradient.setYRange(0.0, 100.0, padding=0.0)
         self.primary.vb.sigResized.connect(self._sync_auxiliary_views)
+        if self.split_y_axes:
+            self.secondary.sigResized.connect(self._sync_auxiliary_views)
         self._sync_auxiliary_views()
         self.items = []
         self.overview_items = []
@@ -94,6 +104,7 @@ class PyQtGraphSceneConsumer:
         )
         self.pointer_cursor.setZValue(30)
         self.primary.addItem(self.pointer_cursor, ignoreBounds=True)
+        self._cursor_view = self.primary.vb
         self.pointer_cursor.hide()
         self.last_evidence = {}
         self._connections = {}
@@ -214,10 +225,15 @@ class PyQtGraphSceneConsumer:
         return self.pg.mkBrush(value)
 
     def _sync_auxiliary_views(self):
-        geometry = self.primary.vb.sceneBoundingRect()
-        for view in (self.secondary, self.gradient):
-            view.setGeometry(geometry)
-            view.linkedViewChanged(self.primary.vb, view.XAxis)
+        if not self.split_y_axes:
+            self.secondary.setGeometry(self.primary.vb.sceneBoundingRect())
+        self.secondary.linkedViewChanged(self.primary.vb, self.secondary.XAxis)
+        self.gradient.setGeometry(self.gradient_host.vb.sceneBoundingRect())
+        self.gradient.linkedViewChanged(self.primary.vb, self.gradient.XAxis)
+
+    def pan_rectangle(self, target):
+        view = self.secondary if target in ("y2", "plot_y2") else self.primary.vb
+        return view.sceneBoundingRect()
 
     def _sync_overview_view(self):
         self.overview_secondary.setGeometry(self.overview.vb.sceneBoundingRect())
@@ -248,6 +264,20 @@ class PyQtGraphSceneConsumer:
             scene_position, self.overview.vb.sceneBoundingRect()
         ):
             return "overview_y1", "x"
+
+        if self.split_y_axes:
+            if self.gradient_axis.isVisible() and self._point_in_rect(
+                scene_position, self.gradient_axis.sceneBoundingRect(), 2.0
+            ):
+                return "gradient", "gradient"
+            for plot, role in ((self.primary, "y1"), (self.secondary_plot, "y2")):
+                for edge, region in (("bottom", "x"), ("left", role)):
+                    axis = plot.getAxis(edge)
+                    if self._point_in_rect(scene_position, axis.sceneBoundingRect(), 2.0):
+                        return role, region
+                if self._point_in_rect(scene_position, plot.vb.sceneBoundingRect()):
+                    return role, "plot_" + role
+            return "outside", ""
 
         axis_regions = (
             (self.primary.getAxis("bottom"), "y1", "x"),
@@ -313,10 +343,15 @@ class PyQtGraphSceneConsumer:
                 return "vertical_marker", marker.marker_id
         return "", ""
 
-    def set_pointer_cursor(self, x_value=None):
+    def set_pointer_cursor(self, x_value=None, axis_id="y1"):
         if x_value is None:
             self.pointer_cursor.hide()
         else:
+            view = self.secondary if self.split_y_axes and axis_id == "y2" else self.primary.vb
+            if view is not self._cursor_view:
+                self._cursor_view.removeItem(self.pointer_cursor)
+                view.addItem(self.pointer_cursor, ignoreBounds=True)
+                self._cursor_view = view
             self.pointer_cursor.setPos(float(x_value))
             self.pointer_cursor.show()
 
@@ -340,6 +375,15 @@ class PyQtGraphSceneConsumer:
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
         self.set_pointer_cursor()
+        gradient_on_y2 = scene.gradient is not None and any(
+            trace.dataset_id == scene.gradient.dataset_id and trace.axis_id == "y2"
+            for trace in scene.traces
+        )
+        host = self.secondary_plot if self.split_y_axes and gradient_on_y2 else self.primary
+        if host is not self.gradient_host:
+            self.gradient_host.layout.removeItem(self.gradient_axis)
+            host.layout.addItem(self.gradient_axis, 2, 3)
+            self.gradient_host = host
         counts = {
             "traces": 0,
             "gradients": 0,

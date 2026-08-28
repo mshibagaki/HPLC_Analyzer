@@ -17,6 +17,74 @@ class ScreenViewState:
     x: Limits
     y1: Limits
     y2: Optional[Limits] = None
+    gradient: Optional[Limits] = None
+
+
+class ScreenViewHistory:
+    def __init__(self, max_entries: int = 50):
+        self.max_entries = max(2, int(max_entries))
+        self._entries = []
+        self._position = -1
+
+    @property
+    def count(self):
+        return len(self._entries)
+
+    @property
+    def position(self):
+        return self._position
+
+    def clear(self):
+        self._entries = []
+        self._position = -1
+
+    def _trim(self):
+        if len(self._entries) <= self.max_entries:
+            return
+        overflow = len(self._entries) - self.max_entries
+        self._entries = self._entries[overflow:]
+        self._position -= overflow
+
+    def ensure_home(self, state: ScreenViewState):
+        if not self._entries:
+            self._entries = [state]
+            self._position = 0
+
+    def record_before_change(self, state: ScreenViewState):
+        self.ensure_home(state)
+        self._entries = self._entries[: self._position + 1]
+        if self._entries[self._position] != state:
+            self._entries.append(state)
+            self._position += 1
+        self._trim()
+
+    def capabilities(self, current: ScreenViewState):
+        self.ensure_home(current)
+        changed = self._entries[self._position] != current
+        return {
+            "back": changed or self._position > 0,
+            "forward": not changed and self._position < len(self._entries) - 1,
+        }
+
+    def navigate(self, command: str, current: ScreenViewState):
+        if command not in ("home", "back", "forward"):
+            return None
+        self.ensure_home(current)
+        if self._entries[self._position] != current:
+            self._entries = self._entries[: self._position + 1]
+            self._entries.append(current)
+            self._position += 1
+            self._trim()
+        if command == "home":
+            target = 0
+        elif command == "back":
+            target = max(0, self._position - 1)
+        elif command == "forward":
+            target = min(len(self._entries) - 1, self._position + 1)
+        if target == self._position:
+            return None
+        self._position = target
+        return self._entries[self._position]
 
 
 @dataclass(frozen=True)

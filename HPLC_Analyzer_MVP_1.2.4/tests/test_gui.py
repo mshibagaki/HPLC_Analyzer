@@ -1037,6 +1037,34 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_toolbar_back_and_forward_use_backend_neutral_view_history(self):
+        window = self.make_window()
+        window.project.method.zoom_axis = "x"
+        before = window.axes.get_xlim()
+        window._on_scroll(
+            ScreenPointerEvent(
+                button="up",
+                axis_role="y1",
+                hit_region="x",
+                data_coordinates=(("y1", sum(before) / 2.0, 0.0),),
+            )
+        )
+        zoomed = window.axes.get_xlim()
+        self.assertNotEqual(zoomed, before)
+        back_action = window.toolbar._actions["back"]
+        forward_action = window.toolbar._actions["forward"]
+        self.assertTrue(back_action.isEnabled())
+
+        back_action.trigger()
+        self.assertTrue(np.allclose(window.axes.get_xlim(), before))
+        self.assertTrue(forward_action.isEnabled())
+        forward_action.trigger()
+        self.assertTrue(np.allclose(window.axes.get_xlim(), zoomed))
+        window.toolbar._actions["home"].trigger()
+        self.assertTrue(np.allclose(window.axes.get_xlim(), before))
+        window.project.dirty = False
+        window.close()
+
     def test_cursor_position_selects_x_y1_y2_or_both_for_wheel_zoom(self):
         window = self.make_window()
         window.project.method.zoom_axis = "auto"

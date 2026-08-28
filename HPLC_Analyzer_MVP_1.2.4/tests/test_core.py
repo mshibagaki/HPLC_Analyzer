@@ -112,6 +112,7 @@ from hplc_app.pyqtgraph_scene import (
 from hplc_app.screen_scene import compose_base_screen_scene
 from hplc_app.screen_events import ScreenPointerEvent, normalize_pointer_event
 from hplc_app.screen_navigation import (
+    ScreenViewHistory,
     ScreenViewState,
     axis_pan_view,
     begin_axis_pan,
@@ -637,6 +638,27 @@ class AnalysisTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("matplotlib", source.casefold())
+
+    def test_screen_view_history_supports_home_back_forward_and_branching(self):
+        home = ScreenViewState(x=(0.0, 100.0), y1=(0.0, 1000.0))
+        zoomed = ScreenViewState(x=(20.0, 60.0), y1=(100.0, 500.0))
+        history = ScreenViewHistory(max_entries=3)
+        history.ensure_home(home)
+        self.assertEqual(
+            history.capabilities(home), {"back": False, "forward": False}
+        )
+        self.assertEqual(history.navigate("back", zoomed), home)
+        self.assertEqual(
+            history.capabilities(home), {"back": False, "forward": True}
+        )
+        self.assertEqual(history.navigate("forward", home), zoomed)
+        self.assertEqual(history.navigate("home", zoomed), home)
+
+        history.record_before_change(home)
+        self.assertEqual(
+            history.capabilities(home), {"back": False, "forward": False}
+        )
+        self.assertIsNone(history.navigate("invalid", home))
 
     def test_base_screen_scene_preserves_trace_axis_legend_gradient_and_raw_data(self):
         first = self.synthetic_dataset()

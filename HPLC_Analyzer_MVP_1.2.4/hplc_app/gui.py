@@ -113,6 +113,7 @@ from .screen_renderer import create_screen_render_surface
 from .screen_scene import compose_base_screen_scene
 from .screen_events import ScreenPointerEvent, normalize_pointer_event
 from .screen_navigation import (
+    ScreenViewHistory,
     ScreenViewState,
     axis_pan_view,
     begin_axis_pan,
@@ -256,6 +257,38 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
         self._id_drag = self.canvas.mpl_connect(
             "motion_notify_event", self.drag_pan
         )
+
+    def press_zoom(self, event):
+        owner = self._axis_pan_owner
+        if owner is not None and getattr(owner, "_view_initialized", False):
+            owner._push_view_history()
+        return super().press_zoom(event)
+
+    def home(self, *args):
+        owner = self._axis_pan_owner
+        if owner is not None:
+            owner._navigate_view_history("home")
+
+    def back(self, *args):
+        owner = self._axis_pan_owner
+        if owner is not None:
+            owner._navigate_view_history("back")
+
+    def forward(self, *args):
+        owner = self._axis_pan_owner
+        if owner is not None:
+            owner._navigate_view_history("forward")
+
+    def set_history_buttons(self):
+        owner = getattr(self, "_axis_pan_owner", None)
+        actions = getattr(self, "_actions", {}) or {}
+        if owner is None or not hasattr(owner, "_view_history"):
+            return super().set_history_buttons()
+        capabilities = owner._view_history_capabilities()
+        for command in ("back", "forward"):
+            action = actions.get(command)
+            if action is not None:
+                action.setEnabled(capabilities[command])
 
     def drag_pan(self, event):
         if not self._axis_pan_active:
@@ -420,7 +453,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._span_selector = None
         self._span_selector_mode = None
         self._view_state = None
-        self._view_history = []
+        self._view_history = ScreenViewHistory(max_entries=50)
         self._view_initialized = False
         self._dataset_lines = {}
         self._move_drag = None
@@ -708,6 +741,11 @@ class MainWindow(QtWidgets.QMainWindow):
             y2=(
                 tuple(self.axes_right.get_ylim())
                 if self.axes_right is not None
+                else None
+            ),
+            gradient=(
+                tuple(self.axes_gradient.get_ylim())
+                if self.axes_gradient is not None
                 else None
             ),
         )
@@ -2203,22 +2241,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def _capture_view_state(self):
         if not self._view_initialized or not hasattr(self, "axes"):
             return None
-        state = {"x": self.axes.get_xlim(), "y1": self.axes.get_ylim()}
-        if self.axes_right is not None:
-            state["y2"] = self.axes_right.get_ylim()
-        if self.axes_gradient is not None:
-            state["gradient"] = self.axes_gradient.get_ylim()
-        return state
+        return self._screen_view_state()
 
     def _apply_view_state(self, state):
         if not state:
             return
-        self.axes.set_xlim(*state["x"])
-        self.axes.set_ylim(*state["y1"])
-        if self.axes_right is not None and "y2" in state:
-            self.axes_right.set_ylim(*state["y2"])
-        if self.axes_gradient is not None and "gradient" in state:
-            self.axes_gradient.set_ylim(*state["gradient"])
+        self.axes.set_xlim(*state.x)
+        self.axes.set_ylim(*state.y1)
+        if self.axes_right is not None and state.y2 is not None:
+            self.axes_right.set_ylim(*state.y2)
+        if self.axes_gradient is not None and state.gradient is not None:
+            self.axes_gradient.set_ylim(*state.gradient)
         self._set_dynamic_x_ticks()
         self._update_overview_window()
         self._request_canvas_draw(force=True, refresh_series=True)
@@ -2227,17 +2260,27 @@ class MainWindow(QtWidgets.QMainWindow):
         state = self._capture_view_state()
         if state is None:
             return
-        if not self._view_history or self._view_history[-1] != state:
-            self._view_history.append(state)
-            self._view_history = self._view_history[-50:]
+        self._view_history.record_before_change(state)
+
+    def _navigate_view_history(self, command):
+        current = self._capture_view_state()
+        if current is None:
+            return False
+        state = self._view_history.navigate(command, current)
+        if state is None:
+            return False
+        self._apply_view_state(state)
+        self.toolbar.set_history_buttons()
+        return True
+
+    def _view_history_capabilities(self):
+        current = self._capture_view_state()
+        if current is None:
+            return {"back": False, "forward": False}
+        return self._view_history.capabilities(current)
 
     def _back_to_previous_view(self):
-        nav_stack = getattr(self.toolbar, "_nav_stack", None)
-        if getattr(nav_stack, "_pos", -1) > 0:
-            self.toolbar.back()
-            return
-        if self._view_history:
-            self._apply_view_state(self._view_history.pop())
+        self._navigate_view_history("back")
 
     @staticmethod
     def _nice_tick_step(target: float) -> float:
@@ -2283,6 +2326,7 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             self._tick_update_guard = False
         self._request_canvas_draw(throttled=True, refresh_series=True)
+        self.toolbar.set_history_buttons()
 
     def _update_overview_window(self):
         if self.axes_overview is None:
@@ -2690,12 +2734,12 @@ class MainWindow(QtWidgets.QMainWindow):
                         axis="both", which="both", labelright=False, labelbottom=False
                     )
         if view_state is not None:
-            self.axes.set_xlim(*view_state["x"])
-            self.axes.set_ylim(*view_state["y1"])
-            if self.axes_right is not None and "y2" in view_state:
-                self.axes_right.set_ylim(*view_state["y2"])
-            if self.axes_gradient is not None and "gradient" in view_state:
-                self.axes_gradient.set_ylim(*view_state["gradient"])
+            self.axes.set_xlim(*view_state.x)
+            self.axes.set_ylim(*view_state.y1)
+            if self.axes_right is not None and view_state.y2 is not None:
+                self.axes_right.set_ylim(*view_state.y2)
+            if self.axes_gradient is not None and view_state.gradient is not None:
+                self.axes_gradient.set_ylim(*view_state.gradient)
         self._set_dynamic_x_ticks()
         self._apply_plot_text_styles()
         self._connect_axes_callbacks()
@@ -2746,6 +2790,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
             legend.set_draggable(True)
         self._view_initialized = bool(times)
+        if self._view_initialized:
+            self._view_history.ensure_home(self._screen_view_state())
         if self._is_lightweight_rendering():
             self._refresh_screen_series_for_view()
         self._request_canvas_draw()
@@ -3508,6 +3554,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
         self._set_dynamic_x_ticks()
         self._request_canvas_draw(throttled=True, refresh_series=True)
+        self.toolbar.set_history_buttons()
 
     @staticmethod
     def _display_point_in_bbox(x_value, y_value, bbox, padding: float = 0.0):
@@ -3965,7 +4012,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         view_state = self._capture_view_state()
         self._push_view_history()
-        x_limits = tuple(view_state["x"])
+        x_limits = tuple(view_state.x)
         self._view_initialized = False
         self._plot(preserve_view=False)
         self.axes.set_xlim(*x_limits)
@@ -4570,7 +4617,7 @@ class MainWindow(QtWidgets.QMainWindow):
             gradient_presets=deepcopy(self._global_gradient_presets),
         )
         self._view_initialized = False
-        self._view_history = []
+        self._view_history.clear()
         self._reset_undo_history()
         self.translator.set_language(self._application_language)
         self._refresh_all()
@@ -4606,7 +4653,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self._merge_global_presets_into_project()
             self._view_initialized = False
-            self._view_history = []
+            self._view_history.clear()
             self._reset_undo_history()
             for dataset in self.project.datasets:
                 recalculate_dataset_peaks(dataset)

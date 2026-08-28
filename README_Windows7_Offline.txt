@@ -18,7 +18,7 @@ NumPy 1.24.4 win32は対象Core 2 6300実機でimport時に0xc000001d
 
 1. このZIPをUSBでWindows 7 SP1 32-bit PCへ移します。
 2. USBから直接実行せず、ZIP全体をPCの内蔵ディスクへコピーして展開します。
-3. 展開先は C:\HPLC_BUILD\HPLC_Analyzer_MVP_1.2.4 等の短い英数字パスを
+3. 展開先は C:\HPLC_BUILD\HPLC_Analyzer 等の短い英数字パスを
    推奨します。Program Files内、USB上、ネットワーク共有上ではビルドしません。
 4. build_windows7_offline.bat をダブルクリックします。
 5. VC++ランタイムの導入で管理者確認が出た場合は許可します。

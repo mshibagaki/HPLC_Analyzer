@@ -9,7 +9,7 @@ from scripts.release_evidence_preflight import inspect_checklist
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY_ROOT = ROOT.parent
+REPOSITORY_ROOT = ROOT
 
 
 class ReleaseDocumentationTests(unittest.TestCase):

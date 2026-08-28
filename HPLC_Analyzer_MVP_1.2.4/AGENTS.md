@@ -161,7 +161,7 @@ Large Win7 offline installers/wheels should normally remain outside ordinary Git
 
 ## How to work on tasks
 For each task:
-1. Read the relevant modules before editing.
+1. Read `REQUIREMENTS_STATUS.md`, `VALIDATION_BLOCKERS.md`, and the relevant modules before editing. Treat the two tracked status files and current `main` as authoritative over local/untracked planning notes.
 2. Identify compatibility-sensitive areas (Win7, project schema, numerical analysis).
 3. Implement the smallest safe change.
 4. Add/update tests where appropriate.
@@ -175,6 +175,7 @@ Do not claim a test, build, or compatibility check was performed unless it actua
 - Never commit directly to `main`.
 - Treat one GitHub Issue as one delivery unit: one working branch, one Pull Request, and one merge by default.
 - Before starting an Issue, fetch the remote state and confirm that the Issue, branch, commit, or equivalent implementation is not already open or merged.
+- Update `REQUIREMENTS_STATUS.md` in the same PR whenever a requirement moves between remaining, implemented, or externally blocked states.
 - Start each independent Issue from the latest `origin/main`, using a `codex/...` branch by default. Never start the next independent Issue from an unmerged feature branch.
 - Keep the branch limited to that Issue. Commit and push the verified change, then open a Pull Request targeting `main`.
 - Use a Draft Pull Request only while required implementation or verification is still in progress. Mark it ready, or create a non-draft Pull Request, once the Issue's checks pass.

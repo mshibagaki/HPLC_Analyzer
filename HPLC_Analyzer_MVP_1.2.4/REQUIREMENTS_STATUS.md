@@ -1,0 +1,40 @@
+# Requirements implementation status
+
+Updated: 2026-08-28 (`main` after PR #99)
+
+This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
+
+## Implemented on main
+
+| Area | Delivered behavior |
+|---|---|
+| Batch condition editing | Direct table editing, validated all-or-nothing Ctrl+C/Ctrl+V, dropdown fields, Shift/Ctrl multi-selection, and gradient content preview/edit/assignment |
+| Project and file workflow | New project in another window, Ctrl+S, current project path/name in the window, ASCII/project drag-and-drop, multi-file and directory import |
+| Continuous directory import | Multiple project-owned work directories, labels, explicit reload, new-file detection, SHA-256 duplicate skip, and changed-path hold without silent replacement |
+| Chromatogram list | Run ID and timestamp separated from label, shared label/column/gradient at Run level, group/ungroup controls, column display, drag-and-drop reorder, and delete confirmation |
+| Selection and display | Shift range selection, Ctrl multi-selection, Y1/Y2 split-view mode, independent axes, Y-only zoom fix, grid toggle, vertical pointers with Delete, and fraction-collector intervals |
+| Legends and labels | Configurable Run ID/label/timestamp/wavelength legend composition, optional spectrum/trace name in the B% legend, fixed-size text boxes, and retention/integration labels on all selected chromatograms |
+| Presets | Preview/diff before apply, created/used/updated/name sorting, filter, rename/duplicate/delete, and import/export conflict policies |
+| Output and reports | Current view print and clipboard copy; all/visible/selected report scopes; compact peak table; per-export baseline/range/retention-time/B% options |
+| Scientific metadata | Run-owned analyte name, stable ID, aliases, source, molecular weight, extinction coefficients and units; persistence, export, and quantitation integration |
+| Peak fitting | Non-destructive Gaussian and right-tailing EMG fitting, automatic model selection, RMSE/R²/AIC, and visual overlay |
+| Preferences and colors | Persisted Japanese/English choice and default 280 nm blue-family / 214 nm red-family trace colors |
+| Update foundations | Nonblocking Stable Release check; canonical asset selection; bounded download; SHA-256 and Authenticode probes; signer allow-list policy; progress/cancel cleanup; installer execution remains disabled |
+
+## Remaining source work
+
+| Priority | Requirement | Current boundary | Next coherent delivery |
+|---|---|---|---|
+| High | Spectrum-domain selection and retention labels | Chromatogram multi-selection/labels are complete, but there is no separate spectrum data model, importer, view, or shared chromatogram/spectrum selection contract | Specify supported spectrum source format and semantics, then add the persisted model/import/view before enabling common labels |
+| High | Replace the interactive Matplotlib screen renderer | Backend-neutral screen boundary, benchmark, and 11-feature PyQtGraph parity probe exist; the production screen still uses Matplotlib | Add an opt-in Windows 11 PyQtGraph surface with automatic Matplotlib fallback and regression coverage; do not change the default until physical compatibility evidence exists |
+| Medium | Updater download/error UI | Check UI and non-launching verified-download API exist; the application deliberately exposes no installer download or execution | Add download progress/cancel/error presentation against synthetic/unsigned fixtures without launch; signer identity and signed fixture are required before a launch workflow |
+
+The following are useful extensions, but are not gaps in the original requested minimum: a shared analyte master library beyond the persisted Run snapshot, multi-peak deconvolution/curved baseline fitting beyond Gaussian/EMG single-peak fitting, and the long-term TraceLab platform split.
+
+## External and physical gates
+
+Code signing identity, signed updater launch, Stable publication approval, Windows 11 installer checks, physical Windows 7 SP1 x86/Core 2 offline checks, cross-OS project/upgrade preservation, physical printing, and published-asset re-download remain open. Their exact required evidence is maintained in `VALIDATION_BLOCKERS.md`; none is considered passed from CI or offscreen tests.
+
+## Maintenance rule
+
+Before opening a new implementation Issue, check this file, `VALIDATION_BLOCKERS.md`, open GitHub Issues/PRs, and current `main` to avoid duplicate work. Merge one independent Issue before starting the next. A PR that implements or materially narrows a row must update this file and cite the Issue/PR in its summary.

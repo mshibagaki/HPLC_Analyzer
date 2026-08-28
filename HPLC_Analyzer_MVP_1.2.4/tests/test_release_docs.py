@@ -72,6 +72,20 @@ class ReleaseDocumentationTests(unittest.TestCase):
         self.assertIn("Project compatibility", text)
         self.assertIn("Code-signing status", text)
 
+    def test_tracked_requirements_status_keeps_remaining_scope_explicit(self):
+        text = (ROOT / "REQUIREMENTS_STATUS.md").read_text(encoding="utf-8")
+        for required in (
+            "Spectrum-domain selection and retention labels",
+            "Replace the interactive Matplotlib screen renderer",
+            "Updater download/error UI",
+            "VALIDATION_BLOCKERS.md",
+            "none is considered passed from CI or offscreen tests",
+        ):
+            self.assertIn(required, text)
+        self.assertIn("Run ID and timestamp separated from label", text)
+        self.assertIn("all/visible/selected report scopes", text)
+        self.assertIn("Multiple project-owned work directories", text)
+
     def test_release_evidence_preflight_rejects_untouched_template(self):
         checklist = (REPOSITORY_ROOT / ".github" / "RELEASE_CHECKLIST.md").read_text(
             encoding="utf-8"

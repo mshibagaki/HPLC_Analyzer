@@ -1,5 +1,7 @@
 # HPLC Analyzer 1.2.4
 
+要求の実装状況と残作業は[`REQUIREMENTS_STATUS.md`](REQUIREMENTS_STATUS.md)、外部・実機律速は[`VALIDATION_BLOCKERS.md`](VALIDATION_BLOCKERS.md)を正本として管理しています。
+
 島津 GCsolution / LCsolution / PACsolution のASCIIクロマトグラム、およびPACsolutionの`.gcd`を、元データを保持したまま管理・重ね描き・積分・定量・作図し、研究室内の測定履歴を共有データベースへ集約する研究用デスクトップソフトです。
 
 提供されたASCII実データに加え、`rawdata`内の6組の`.gcd` / `.TXT`で、GCD直接読込の全強度点、時間軸、ベンダーピーク表の主要値がASCII出力と一致することを検証しています。

@@ -17,12 +17,10 @@ from matplotlib.widgets import SpanSelector
 
 from . import APP_NAME, APP_VERSION
 from .analysis import (
-    baseline_trace,
     detect_peaks,
     display_values,
     integrate_peak,
     recalculate_dataset_peaks,
-    reference_values_for_display,
     split_peak_region,
 )
 from .dialogs import (
@@ -68,7 +66,7 @@ from .naming import (
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
-from .peak_fitting import PeakFitResult, evaluate_fit_profile, fit_peak
+from .peak_fitting import fit_peak
 from .preset_store import (
     load_preset_store_with_metadata,
     merge_preset_sources,
@@ -2457,13 +2455,25 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         if not selected_dataset_ids and selected is not None:
             selected_dataset_ids.add(selected.id)
+        selected_peak_ids = set()
+        if selected is not None:
+            for row in self._selected_peak_rows():
+                if 0 <= row < len(selected.peaks):
+                    selected_peak_ids.add(selected.peaks[row].id)
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
         base_scene = compose_base_screen_scene(
             self.project,
             selected_dataset_id=selected.id if selected is not None else "",
+            selected_dataset_ids=selected_dataset_ids,
+            selected_peak_ids=selected_peak_ids,
             color_resolver=dataset_display_color,
         )
         trace_by_id = {trace.dataset_id: trace for trace in base_scene.traces}
+        overlays_by_dataset = {}
+        for overlay_spec in base_scene.peak_overlays:
+            overlays_by_dataset.setdefault(overlay_spec.dataset_id, []).append(
+                overlay_spec
+            )
         if not self._split_y_axes and any(
             dataset.y_axis == 2 for dataset in visible
         ):
@@ -2528,125 +2538,79 @@ class MainWindow(QtWidgets.QMainWindow):
                 )[0]
                 self._overview_dataset_lines[dataset.id] = overview_line
             plotted += 1
-            if dataset.id in selected_dataset_ids and (
-                self.project.method.show_integration_areas
-                or self.project.method.show_retention_labels
-                or any(peak.fit_model for peak in dataset.peaks)
-            ):
-                selected_peak_rows = (
-                    set(self._selected_peak_rows())
-                    if dataset is selected
-                    else set()
-                )
-                for peak_index, peak in enumerate(dataset.peaks):
-                    is_selected_peak = peak_index in selected_peak_rows
-                    peak_color = "#f59e0b" if is_selected_peak else color
-                    overlay = {
-                        "base_color": color,
-                        "patch": None,
-                        "boundary_lines": [],
-                        "retention_line": None,
-                        "baseline_line": None,
-                        "fit_line": None,
-                    }
-                    if self.project.method.show_integration_areas:
-                        overlay["patch"] = target_axes.axvspan(
-                            peak.start_min + dataset.x_shift_min,
-                            peak.end_min + dataset.x_shift_min,
+            for overlay_spec in overlays_by_dataset.get(dataset.id, []):
+                is_selected_peak = overlay_spec.is_selected
+                peak_color = overlay_spec.color
+                overlay = {
+                    "base_color": color,
+                    "patch": None,
+                    "boundary_lines": [],
+                    "retention_line": None,
+                    "baseline_line": None,
+                    "fit_line": None,
+                }
+                if overlay_spec.show_integration_area:
+                    overlay["patch"] = target_axes.axvspan(
+                        overlay_spec.start_x,
+                        overlay_spec.end_x,
+                        color=peak_color,
+                        alpha=0.24 if is_selected_peak else 0.08,
+                    )
+                    for boundary in (
+                        overlay_spec.start_x,
+                        overlay_spec.end_x,
+                    ):
+                        boundary_line = target_axes.axvline(
+                            boundary,
+                            color=INTEGRATION_BOUNDARY_COLOR,
+                            alpha=0.9 if is_selected_peak else 0.55,
+                            linewidth=1.15 if is_selected_peak else 0.8,
+                            linestyle="--",
+                        )
+                        overlay["boundary_lines"].append(boundary_line)
+                    if overlay_spec.retention_x is not None:
+                        overlay["retention_line"] = target_axes.axvline(
+                            overlay_spec.retention_x,
                             color=peak_color,
-                            alpha=0.24 if is_selected_peak else 0.08,
+                            alpha=0.75 if is_selected_peak else 0.35,
+                            linewidth=1.1 if is_selected_peak else 0.8,
                         )
-                        for boundary in (peak.start_min, peak.end_min):
-                            boundary_line = target_axes.axvline(
-                                boundary + dataset.x_shift_min,
-                                color=INTEGRATION_BOUNDARY_COLOR,
-                                alpha=0.9 if is_selected_peak else 0.55,
-                                linewidth=1.15 if is_selected_peak else 0.8,
-                                linestyle="--",
-                            )
-                            overlay["boundary_lines"].append(boundary_line)
-                        if peak.retention_time_min is not None:
-                            overlay["retention_line"] = target_axes.axvline(
-                                peak.retention_time_min + dataset.x_shift_min,
-                                color=peak_color,
-                                alpha=0.75 if is_selected_peak else 0.35,
-                                linewidth=1.1 if is_selected_peak else 0.8,
-                            )
-                        baseline_time, baseline_uv = baseline_trace(dataset, peak)
-                        if baseline_time.size:
-                            baseline_values = reference_values_for_display(dataset, baseline_uv, unit)
-                            overlay["baseline_line"] = target_axes.plot(
-                                baseline_time + dataset.x_shift_min,
-                                baseline_values + dataset.offset,
-                                color=peak_color,
-                                linestyle="--",
-                                linewidth=1.4 if is_selected_peak else 0.9,
-                                alpha=0.95 if is_selected_peak else 0.55,
-                                antialiased=not self._is_lightweight_rendering(),
-                            )[0]
-                    if peak.fit_model and peak.fit_parameters:
-                        fit_mask = (
-                            (dataset.time_min >= peak.start_min)
-                            & (dataset.time_min <= peak.end_min)
-                        )
-                        fit_time = dataset.time_min[fit_mask]
-                        if fit_time.size >= 3:
-                            fit_result = PeakFitResult(
-                                model=peak.fit_model,
-                                parameters=dict(peak.fit_parameters),
-                                retention_time_min=float(
-                                    peak.fit_retention_time_min or fit_time[0]
-                                ),
-                                rmse_uv=float(peak.fit_rmse_uv or 0.0),
-                                r_squared=float(peak.fit_r_squared or 0.0),
-                                aic=float(peak.fit_aic or 0.0),
-                                point_count=int(fit_time.size),
-                            )
-                            fitted_uv = evaluate_fit_profile(fit_time, fit_result)
-                            baseline_time, baseline_uv = baseline_trace(dataset, peak)
-                            if baseline_time.size == fit_time.size:
-                                fitted_uv = fitted_uv + baseline_uv
-                            fitted_values = reference_values_for_display(
-                                dataset, fitted_uv, unit
-                            )
-                            overlay["fit_line"] = target_axes.plot(
-                                fit_time + dataset.x_shift_min,
-                                fitted_values + dataset.offset,
-                                color="#c026d3",
-                                linewidth=max(1.2, self.project.method.line_width),
-                                linestyle=":",
-                                alpha=0.95,
-                                zorder=18,
-                            )[0]
-                    if self.project.method.show_retention_labels and peak.retention_time_min is not None:
-                        retention = float(peak.retention_time_min)
-                        label_y = float(
-                            np.interp(
-                                retention + dataset.x_shift_min,
-                                trace.x_values,
-                                trace.y_values,
-                            )
-                        )
-                        target_axes.annotate(
-                            "%.2f" % (retention + dataset.x_shift_min),
-                            xy=(retention + dataset.x_shift_min, label_y),
-                            xytext=(0, 5),
-                            textcoords="offset points",
-                            ha="center",
-                            va="bottom",
-                            rotation=90,
-                            fontfamily=(
-                                _resolved_plot_font(
-                                    self.project.method.retention_label_font_family
-                                )
-                            ),
-                            fontsize=self.project.method.retention_label_font_size,
-                            color=(
-                                self.project.method.retention_label_color
-                                or "#000000"
-                            ),
-                        )
-                    self._peak_overlay_artists[peak.id] = overlay
+                    if overlay_spec.baseline_x is not None:
+                        overlay["baseline_line"] = target_axes.plot(
+                            overlay_spec.baseline_x,
+                            overlay_spec.baseline_y,
+                            color=peak_color,
+                            linestyle="--",
+                            linewidth=1.4 if is_selected_peak else 0.9,
+                            alpha=0.95 if is_selected_peak else 0.55,
+                            antialiased=not self._is_lightweight_rendering(),
+                        )[0]
+                if overlay_spec.fit_x is not None:
+                    overlay["fit_line"] = target_axes.plot(
+                        overlay_spec.fit_x,
+                        overlay_spec.fit_y,
+                        color="#c026d3",
+                        linewidth=max(1.2, self.project.method.line_width),
+                        linestyle=":",
+                        alpha=0.95,
+                        zorder=18,
+                    )[0]
+                if overlay_spec.label_x is not None:
+                    target_axes.annotate(
+                        overlay_spec.label_text,
+                        xy=(overlay_spec.label_x, overlay_spec.label_y),
+                        xytext=(0, 5),
+                        textcoords="offset points",
+                        ha="center",
+                        va="bottom",
+                        rotation=90,
+                        fontfamily=(
+                            _resolved_plot_font(overlay_spec.label_font_family)
+                        ),
+                        fontsize=overlay_spec.label_font_size,
+                        color=overlay_spec.label_color,
+                    )
+                self._peak_overlay_artists[overlay_spec.peak_id] = overlay
 
         if self.axes_gradient is not None and base_scene.gradient is not None:
             gradient_spec = base_scene.gradient

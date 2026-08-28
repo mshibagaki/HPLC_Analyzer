@@ -1,6 +1,7 @@
 """Transitional MainWindow adapter; Matplotlib remains the export/edit model.
 
-Imported only on explicit opt-in. No project data or persistent settings change.
+Imported only on explicit opt-in. Model edits use the owner's undo-aware methods;
+renderer selection does not change persistent settings.
 """
 
 from html import escape
@@ -17,6 +18,7 @@ class ExperimentalScreenPreview:
         self.navigation = None
         self._scene = None
         self._busy = False
+        self._key_filter = None
         try:
             self.consumer.widget.setBackground("w")
             self.consumer.primary.setMenuEnabled(False)
@@ -31,9 +33,33 @@ class ExperimentalScreenPreview:
             self.navigation.history = owner._view_history
             self.consumer.set_pointer_handler(None)
             self.consumer.set_pointer_handler(self.handle_event)
+            self._install_key_filter()
         except Exception:
             self.close()
             raise
+
+    def _install_key_filter(self):
+        preview = self
+        core = self.consumer.qt_core
+
+        class PlotKeyFilter(core.QObject):
+            def eventFilter(self, watched, event):
+                try:
+                    if event.type() == core.QEvent.Type.Leave:
+                        preview.consumer.set_pointer_cursor()
+                    if (event.type() == core.QEvent.Type.KeyPress
+                            and event.key() == core.Qt.Key.Key_Delete
+                            and preview.owner.delete_selected_vertical_marker()):
+                        event.accept()
+                        return True
+                except Exception:
+                    preview.owner._stop_screen_preview(failed=True)
+                    return True
+                return False
+
+        self._key_filter = PlotKeyFilter(self.consumer.widget)
+        self.consumer.widget.installEventFilter(self._key_filter)
+        self.consumer.widget.viewport().installEventFilter(self._key_filter)
 
     def refresh(self):
         if self._busy:
@@ -104,6 +130,21 @@ class ExperimentalScreenPreview:
             owner = self.owner
             if not owner._view_initialized:
                 return True
+            if name == "motion_notify_event":
+                x_value = (event.data_for("y1")[0]
+                           if owner.pointer_action.isChecked() and event.hit_region == "plot"
+                           else None)
+                self.consumer.set_pointer_cursor(x_value)
+            if (name == "button_press_event" and event.button == 1
+                    and not str(owner.toolbar.mode)):
+                if event.hit_region == "plot" and (
+                    owner.pointer_action.isChecked() or event.hit_kind == "vertical_marker"
+                ):
+                    self.consumer.widget.setFocus(self.consumer.qt_core.Qt.FocusReason.MouseFocusReason)
+                    owner._on_canvas_press(event)
+                    return True
+                if owner._selected_vertical_marker_id:
+                    owner._select_vertical_marker(None)
             if name == "scroll_event":
                 if self.navigation._pan is None:
                     owner._on_scroll(event)
@@ -123,6 +164,9 @@ class ExperimentalScreenPreview:
             return True
 
     def close(self):
+        if self._key_filter is not None:
+            self.consumer.widget.removeEventFilter(self._key_filter)
+            self.consumer.widget.viewport().removeEventFilter(self._key_filter)
         if self.navigation is not None:
             self.navigation.close()
         self.owner.plot_stack.removeWidget(self.consumer.widget)

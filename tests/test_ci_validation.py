@@ -12,7 +12,7 @@ from scripts.ci_validate import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY_ROOT = ROOT.parent
+REPOSITORY_ROOT = ROOT
 
 
 class CiValidationTests(unittest.TestCase):
@@ -56,11 +56,23 @@ class CiValidationTests(unittest.TestCase):
         self.assertNotIn("actions/cache", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertIn("--offline-assets auto", workflow)
+        self.assertNotIn("HPLC_Analyzer_MVP_1.2.4", workflow)
         action_refs = re.findall(r"uses:\s*[^@\s]+@([^\s#]+)", workflow)
         self.assertTrue(action_refs)
         self.assertTrue(
             all(re.fullmatch(r"[0-9a-f]{40}", ref) for ref in action_refs)
         )
+
+    def test_application_uses_the_repository_root_layout(self):
+        for relative_path in (
+            "README.md",
+            "app.py",
+            "hplc_app",
+            "tests",
+            "scripts",
+            "installer",
+        ):
+            self.assertTrue((ROOT / relative_path).exists(), relative_path)
 
 
 if __name__ == "__main__":

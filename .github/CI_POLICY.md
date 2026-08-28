@@ -12,7 +12,7 @@ The job does not produce or upload executables, installers, offline kits, caches
 
 `win7_offline/` is intentionally ignored because it contains large third-party installers and wheels. A normal GitHub-hosted checkout therefore prints an explicit `[SKIP]` for binary manifest/wheelhouse verification while still enforcing the Win7 requirements pins and offline build source contracts.
 
-Do not place third-party binaries, download credentials, private URLs, or encryption keys in workflow YAML, repository secrets echoed to logs, Actions caches, or uploaded artifacts. To verify the binary payload, obtain it from the laboratory's approved restricted store on a trusted preparation machine, place it at `HPLC_Analyzer_MVP_1.2.4/win7_offline/`, and run:
+Do not place third-party binaries, download credentials, private URLs, or encryption keys in workflow YAML, repository secrets echoed to logs, Actions caches, or uploaded artifacts. To verify the binary payload, obtain it from the laboratory's approved restricted store on a trusted preparation machine, place it at `win7_offline/`, and run from the repository root:
 
 ```text
 python scripts/ci_validate.py --offline-assets required

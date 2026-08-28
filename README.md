@@ -1,4 +1,6 @@
-# HPLC Analyzer 1.2.4
+# HPLC Analyzer
+
+リリース版は[GitHub Releases](https://github.com/mshibagaki/HPLC_Analyzer/releases)とSemVer tagで管理します。ソースディレクトリ名にはバージョン番号を含めません。最新の公開Stable版と現在の開発版は、後述の「バージョン番号とRelease運用」を参照してください。
 
 要求の実装状況と残作業は[`REQUIREMENTS_STATUS.md`](REQUIREMENTS_STATUS.md)、外部・実機律速は[`VALIDATION_BLOCKERS.md`](VALIDATION_BLOCKERS.md)を正本として管理しています。
 
@@ -12,11 +14,7 @@ v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セ
 
 このリポジトリでは、Windows 11版とWindows 7版で使用するPython、Qt、依存パッケージ、ビルドするOSが異なります。アプリケーションのソースは共通ですが、両環境の仮想環境や依存パッケージを混在させないでください。
 
-Gitで取得した直後は、まずアプリ本体があるディレクトリへ移動します。以下のビルド・起動・テストコマンドは、すべてこのディレクトリをカレントディレクトリとして実行します。
-
-```bat
-cd HPLC_Analyzer_MVP_1.2.4
-```
+以下のビルド・起動・テストコマンドは、`README.md`と`app.py`があるリポジトリ直下をカレントディレクトリとして実行します。
 
 最短の作業経路は次のとおりです。
 
@@ -71,7 +69,7 @@ Windows 7版の実行ファイルをWindows 10/11上で生成してはいけま�
 build_all_windows.bat
 ```
 
-生成された次のZIPをUSB等でWindows 7 SP1 32-bit実機へ移し、`C:\HPLC_Build\HPLC_Analyzer_MVP_1.2.4`などのローカルディスクへ展開します。USB、`Program Files`、ネットワーク共有上から直接ビルドしないでください。
+生成された次のZIPをUSB等でWindows 7 SP1 32-bit実機へ移し、`C:\HPLC_Build\HPLC_Analyzer`などの短いローカルディスクパスへ展開します。USB、`Program Files`、ネットワーク共有上から直接ビルドしないでください。
 
 ```text
 dist\offline\HPLC_Analyzer_1.2.4_Windows7_Offline_Build.zip
@@ -390,7 +388,7 @@ Windows 7版セットアップは必要なアプリファイルとVC++ランタ�
 
 Windows 7版は、Windows 11上では生成しません。v1.2.4一式をUSBでWindows 7 SP1 32-bit実機へ移し、その実機上でビルドします。Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2/Qt 5.15.2.1 x86、Matplotlib 3.7.5、PyInstaller 5.13.2、Inno Setup 6.7.3、VC++ 14.29 x86を同梱済みで、Windows 7 PCのインターネット接続は不要です。NumPy 1.24.4 win32は対象Core 2 6300で`0xc000001d`（Illegal Instruction）となるため使用しません。Pillow 10.4.0もNumPy 1.20.3との組み合わせで`numpy.typing.NDArray`を要求するため使用しません。
 
-1. ZIPをWindows 7 PCのローカルディスク上に展開します。推奨先は`C:\HPLC_Build\HPLC_Analyzer_MVP_1.2.4`です。USB、`Program Files`、ネットワーク共有から直接ビルドしないでください。
+1. ZIPをWindows 7 PCのローカルディスク上に展開します。推奨先は`C:\HPLC_Build\HPLC_Analyzer`です。USB、`Program Files`、ネットワーク共有から直接ビルドしないでください。
 2. `build_windows7_offline.bat`をダブルクリックします。従来名の`build_windows7.bat`も同じ処理を呼びます。
 3. PythonやVC++を導入する前に、`REQUIRED_WHEELS.txt`に固定した全wheelの存在と、同梱資材すべてのSHA-256を検証します。続けてWindows 7 SP1 build 7601、32-bit、KB2533623相当のDLLローダーAPIを検証します。
 4. 同梱Pythonへ正規化済み絶対パスを渡します。wheel内METADATAをPython 3.8 win32条件で再帰解析し、Matplotlibの条件付き依存を含む完全な依存閉包を確認してから、固定wheelを`.venv-win7-x86`へ`--no-index`で導入します。同一版のPythonが既存の場合は、版と32-bitを検証してそのインタープリターを利用します。ネットワーク取得は行いません。

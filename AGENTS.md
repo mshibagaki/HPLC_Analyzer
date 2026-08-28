@@ -10,6 +10,11 @@ The repository currently targets two Windows environments:
 Preserve the scientific meaning of imported and saved data. Avoid silent changes that could alter numerical results, project compatibility, or chromatogram interpretation.
 
 ## Repository structure
+The tracked application source lives directly at the repository root. Keep
+`README.md`, `app.py`, `hplc_app/`, `tests/`, build inputs, and installer inputs
+there; do not introduce a version-numbered source wrapper directory. Record
+versions in `hplc_app/version.py`, SemVer tags, and GitHub Releases instead.
+
 Key files/directories include:
 - `app.py` — application entry point
 - `hplc_app/` — application modules

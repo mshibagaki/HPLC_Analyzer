@@ -14,10 +14,6 @@ concurrency:
   group: level2-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-defaults:
-  run:
-    working-directory: HPLC_Analyzer_MVP_1.2.4
-
 jobs:
   source-contracts:
     name: Source contracts (Python 3.8 / release inputs)

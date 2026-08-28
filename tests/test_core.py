@@ -351,7 +351,7 @@ class ParserTests(unittest.TestCase):
             parse_gcd_streams({"Status": bytes(status), "Intensity Data": struct.pack("<2d", 1, 2)})
 
     def test_supplied_gcd_files_match_their_ascii_exports(self):
-        rawdata = ROOT.parent / "rawdata"
+        rawdata = ROOT / "rawdata"
         gcd_files = sorted(rawdata.rglob("*.gcd")) if rawdata.is_dir() else []
         if not gcd_files:
             self.skipTest("rawdata GCD fixtures are not present")
@@ -3227,11 +3227,11 @@ class ProjectTests(unittest.TestCase):
             self.assertIn("QSettings registry changed", errors)
 
     def test_installer_policy_and_upgrade_evidence_forbid_user_data_management(self):
-        guide = (ROOT.parent / ".github" / "INSTALLER_UPGRADE_TEST.md").read_text(
+        guide = (ROOT / ".github" / "INSTALLER_UPGRADE_TEST.md").read_text(
             encoding="utf-8"
         )
         evidence = (
-            ROOT.parent / ".github" / "INSTALLER_UPGRADE_EVIDENCE.md"
+            ROOT / ".github" / "INSTALLER_UPGRADE_EVIDENCE.md"
         ).read_text(encoding="utf-8")
         for required in (
             "Clean install",

@@ -236,6 +236,182 @@ class GuiTests(unittest.TestCase):
         event.mimeData.return_value = mime_data
         return event
 
+    def test_mainwindow_experimental_preview_navigation_refresh_and_snapshot(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            self.app.processEvents()
+            initial = window._screen_view_state()
+            raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+            dirty = window.project.dirty
+            self.assertIsNone(window._screen_preview)
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            self.assertIsNotNone(preview)
+            self.assertIs(window.plot_stack.currentWidget(), preview.consumer.widget)
+            self.assertEqual(preview.consumer.capture_view_state(), initial)
+            self.assertIs(preview.navigation.history, window._view_history)
+            self.assertEqual(window.project.dirty, dirty)
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            viewport = consumer.widget.viewport()
+            position = consumer.widget.mapFromScene(
+                consumer.primary.getAxis("right").sceneBoundingRect().center()
+            )
+            wheel = gui.QWheelEvent(
+                core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                core.QPoint(), core.QPoint(0, 120), core.Qt.MouseButton.NoButton,
+                core.Qt.KeyboardModifier.NoModifier, core.Qt.ScrollPhase.NoScrollPhase, False,
+            )
+            consumer.application.sendEvent(viewport, wheel)
+            zoomed = window._screen_view_state()
+            self.assertEqual(zoomed, consumer.capture_view_state())
+            self.assertEqual(zoomed.x, initial.x)
+            self.assertEqual(zoomed.y1, initial.y1)
+            self.assertEqual(zoomed.gradient, initial.gradient)
+            self.assertAlmostEqual(zoomed.y2[1] - zoomed.y2[0],
+                                   0.8 * (initial.y2[1] - initial.y2[0]))
+            window.toolbar.back()
+            self.assertEqual(consumer.capture_view_state(), initial)
+            window.toolbar.forward()
+            self.assertEqual(consumer.capture_view_state(), zoomed)
+            window.toolbar.home()
+            window.zoom_axis_combo.setCurrentIndex(window.zoom_axis_combo.findData("y"))
+            consumer.application.sendEvent(viewport, wheel)
+            y_zoom = window._screen_view_state()
+            self.assertEqual(y_zoom.x, initial.x)
+            self.assertAlmostEqual(y_zoom.y1[1] - y_zoom.y1[0],
+                                   0.8 * (initial.y1[1] - initial.y1[0]))
+            self.assertAlmostEqual(y_zoom.y2[1] - y_zoom.y2[0],
+                                   0.8 * (initial.y2[1] - initial.y2[0]))
+            self.assertEqual(y_zoom.gradient, initial.gradient)
+            window.toolbar.home()
+            window.toolbar._actions["pan"].trigger()
+            position = consumer.widget.mapFromScene(consumer.primary.vb.sceneBoundingRect().center())
+            moved = position + core.QPoint(20, 25)
+            for kind, point, button, held in (
+                (core.QEvent.Type.MouseButtonPress, position, core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton),
+                (core.QEvent.Type.MouseMove, moved, core.Qt.MouseButton.NoButton, core.Qt.MouseButton.LeftButton),
+                (core.QEvent.Type.MouseButtonRelease, moved, core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.NoButton),
+            ):
+                mouse = gui.QMouseEvent(kind, core.QPointF(point),
+                    core.QPointF(viewport.mapToGlobal(point)), button, held,
+                    core.Qt.KeyboardModifier.NoModifier)
+                consumer.application.sendEvent(viewport, mouse)
+            panned = window._screen_view_state()
+            self.assertNotEqual(panned.x, initial.x)
+            self.assertEqual(panned, consumer.capture_view_state())
+            self.assertEqual(panned.gradient, initial.gradient)
+            window.toolbar.back()
+            self.assertEqual(consumer.capture_view_state(), initial)
+            window.toolbar._actions["pan"].trigger()
+            window._reset_y_view()
+            self.assertEqual(consumer.capture_view_state(), window._screen_view_state())
+            window._reset_x_view()
+            self.assertEqual(consumer.capture_view_state().x, window._full_x_bounds())
+            count = len(consumer.items)
+            window._plot()
+            window._plot()
+            self.assertEqual(len(consumer.items), count)
+            window.project.method.view_mode = "overview_detail"
+            window._plot()
+            self.assertTrue(consumer.overview_secondary.isVisible())
+            self.assertEqual(len(consumer.overview_secondary.addedItems), 1)
+            window.project.datasets[1].visible = False
+            window._plot()
+            self.assertEqual(consumer.last_evidence["counts"]["traces"], 1)
+            self.assertIsNone(consumer.capture_view_state().y2)
+            self.assertEqual(len(consumer.overview_items), 1)
+            self.assertFalse(consumer.overview_secondary.isVisible())
+            window.project.method.view_mode = "overview_detail"
+            window._plot()
+            self.assertTrue(consumer.overview.isVisible())
+            pixmap = window._current_view_pixmap()
+            self.assertFalse(pixmap.isNull())
+            self.assertEqual(pixmap.size(), consumer.widget.size())
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "preview-export.png"
+                window._save_figure_file(str(path))
+                self.assertGreater(path.stat().st_size, 0)
+                self.assertIs(window._screen_preview, preview)
+            for dataset, values in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+            current = window._screen_view_state()
+            window.screen_preview_checkbox.setChecked(False)
+            self.assertIsNone(window._screen_preview)
+            self.assertTrue(consumer._closed)
+            self.assertEqual(window._screen_view_state(), current)
+            self.assertIs(window.plot_stack.currentWidget(), window.canvas)
+            window.screen_preview_checkbox.setChecked(True)
+            window.project.dirty = False
+            window.new_project()
+            self.assertIsNotNone(window._screen_preview)
+            self.assertEqual(window._screen_preview.consumer.items, [])
+            self.assertEqual(window._view_history.count, 0)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_mainwindow_preview_falls_back_for_tools_split_and_failures(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            for control in (window.pointer_action, window.integrate_button,
+                            window.fraction_button, window.move_trace_button,
+                            window.annotation_action):
+                window.screen_preview_checkbox.setChecked(True)
+                self.assertIsNotNone(window._screen_preview)
+                control.setChecked(True)
+                self.assertIsNone(window._screen_preview)
+                self.assertFalse(window.screen_preview_checkbox.isChecked())
+                self.assertTrue(control.isChecked())
+                self.assertEqual(window._screen_preview_notice, "unsupported")
+                control.setChecked(False)
+            window.screen_preview_checkbox.setChecked(True)
+            window.toolbar._actions["zoom"].trigger()
+            self.assertIsNone(window._screen_preview)
+            window.toolbar._actions["zoom"].trigger()
+            window.screen_preview_checkbox.setChecked(True)
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            self.assertIsNone(window._screen_preview)
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("single"))
+            with patch("hplc_app.screen_preview.PyQtGraphSceneConsumer", side_effect=ImportError("missing")):
+                window.screen_preview_checkbox.setChecked(True)
+            self.assertIsNone(window._screen_preview)
+            self.assertEqual(window._screen_preview_notice, "failed")
+            with patch("hplc_app.screen_preview.ExperimentalScreenPreview._update_legend",
+                       side_effect=RuntimeError("initialization failure")):
+                window.screen_preview_checkbox.setChecked(True)
+            self.assertIsNone(window._screen_preview)
+            self.assertEqual(window.plot_stack.count(), 1)
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            with patch.object(preview, "refresh", side_effect=RuntimeError("render failure")):
+                window._request_canvas_draw()
+            self.assertIsNone(window._screen_preview)
+            self.assertTrue(preview.consumer._closed)
+            self.assertEqual(window.plot_stack.count(), 1)
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            with patch.object(preview.navigation, "handle_event", side_effect=RuntimeError("event failure")):
+                self.assertTrue(preview.handle_event("button_press_event", ScreenPointerEvent(
+                    button=1, axis_role="y1", hit_region="plot",
+                )))
+            self.assertIsNone(window._screen_preview)
+            window.screen_preview_checkbox.setChecked(True)
+            with patch.object(window._screen_preview.consumer, "snapshot", side_effect=RuntimeError("snapshot")):
+                self.assertFalse(window._current_view_pixmap().isNull())
+            self.assertIsNone(window._screen_preview)
+            with patch("hplc_app.gui.QT_API", 5):
+                window.screen_preview_checkbox.setChecked(True)
+            self.assertIsNone(window._screen_preview)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_lightweight_screen_decimates_visible_lines_only(self):
         window = self.make_lightweight_window()
         first, second = window.project.datasets

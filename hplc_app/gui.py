@@ -271,6 +271,14 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
         if owner is not None:
             owner._navigate_view_history("home")
 
+    def configure_subplots(self):
+        self._axis_pan_owner._stop_screen_preview(unsupported=True)
+        return super().configure_subplots()
+
+    def edit_parameters(self):
+        self._axis_pan_owner._stop_screen_preview(unsupported=True)
+        return super().edit_parameters()
+
     def back(self, *args):
         owner = self._axis_pan_owner
         if owner is not None:
@@ -498,6 +506,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._peak_overlay_artists = {}
         self._navigation_interaction_active = False
         self._screen_pan_session = None
+        self._screen_preview = None
+        self._screen_preview_notice = ""
         self._pending_series_refresh = False
         self._draw_timer = None
         self._build_ui()
@@ -693,7 +703,85 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 overview_line.set_data(overview_x, overview_y)
 
+    def _update_screen_preview_notice(self):
+        self.screen_preview_checkbox.setText(self._history_label(
+            "PyQtGraph表示（実験的・今回のみ）", "PyQtGraph view (experimental, this session)"
+        ))
+        messages = {
+            "active": (
+                "閲覧用。編集・2画面表示は従来描画へ戻ります。図の保存はMatplotlibです。",
+                "Viewing only. Editing/split view returns to Matplotlib; figure export uses Matplotlib.",
+            ),
+            "unsupported": (
+                "この操作は従来描画に戻して続行します。",
+                "This operation continues with the Matplotlib renderer.",
+            ),
+            "failed": (
+                "PyQtGraphを使用できないため、従来描画に戻しました。",
+                "PyQtGraph is unavailable or failed; restored Matplotlib.",
+            ),
+        }
+        message = messages.get(self._screen_preview_notice, ("", ""))
+        self.screen_preview_label.setText(self._history_label(*message))
+        self.screen_preview_checkbox.setToolTip(self._history_label(
+            "Windows 11向け試験表示。標準描画や保存設定は変更しません。",
+            "Experimental modern-build view. Does not change defaults or saved settings.",
+        ))
+
+    def _toggle_screen_preview(self, enabled):
+        if not enabled:
+            self._stop_screen_preview()
+            return
+        controls = (self.integrate_button, self.edit_peak_button, self.split_peak_button,
+                    self.fraction_button, self.move_trace_button, self.pointer_action,
+                    self.annotation_action, self.toolbar._actions["zoom"])
+        if (self.project.method.view_mode == "split_y_axes"
+                or any(control.isChecked() for control in controls)):
+            self._stop_screen_preview(unsupported=True)
+            return
+        try:
+            if QT_API != 6:
+                raise RuntimeError("The preview requires the modern Qt build")
+            if self._screen_preview is None:
+                from .screen_preview import ExperimentalScreenPreview
+                self._screen_preview = ExperimentalScreenPreview(self)
+            self.plot_stack.setCurrentWidget(self._screen_preview.consumer.widget)
+            self._screen_preview_notice = "active"
+            self._update_screen_preview_notice()
+        except Exception:
+            self._stop_screen_preview(failed=True)
+
+    def _stop_screen_preview(self, *, failed=False, unsupported=False):
+        if self._screen_preview is None and not self.screen_preview_checkbox.isChecked():
+            return
+        preview, self._screen_preview = self._screen_preview, None
+        self.screen_preview_checkbox.blockSignals(True)
+        self.screen_preview_checkbox.setChecked(False)
+        self.screen_preview_checkbox.blockSignals(False)
+        self.plot_stack.setCurrentWidget(self.canvas)
+        if preview is not None:
+            preview.close()
+        self._screen_preview_notice = "failed" if failed else "unsupported" if unsupported else ""
+        self._update_screen_preview_notice()
+        self.canvas.draw_idle()
+        self.toolbar.set_history_buttons()
+
+    def _refresh_screen_preview(self):
+        if self._screen_preview is None:
+            return False
+        if self.project.method.view_mode == "split_y_axes":
+            self._stop_screen_preview(unsupported=True)
+            return False
+        try:
+            self._screen_preview.refresh()
+            return True
+        except Exception:
+            self._stop_screen_preview(failed=True)
+            return False
+
     def _flush_canvas_draw(self):
+        if self._refresh_screen_preview():
+            return
         refresh_series = self._pending_series_refresh
         self._pending_series_refresh = False
         if refresh_series:
@@ -711,6 +799,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Coalesce rapid legacy-PC events while preserving immediate high quality."""
 
         if not hasattr(self, "canvas"):
+            return
+        if self._refresh_screen_preview():
             return
         if force:
             if self._draw_timer is not None:
@@ -992,7 +1082,18 @@ class MainWindow(QtWidgets.QMainWindow):
         plot_layout = QtWidgets.QVBoxLayout(plot_panel)
         plot_layout.setContentsMargins(0, 0, 0, 0)
         plot_layout.addWidget(self.toolbar)
-        plot_layout.addWidget(self.canvas, 1)
+        preview_controls = QtWidgets.QHBoxLayout()
+        self.screen_preview_checkbox = QtWidgets.QCheckBox()
+        self.screen_preview_checkbox.setEnabled(QT_API == 6)
+        self.screen_preview_checkbox.toggled.connect(self._toggle_screen_preview)
+        self.screen_preview_label = QtWidgets.QLabel()
+        self.screen_preview_label.setWordWrap(True)
+        preview_controls.addWidget(self.screen_preview_checkbox)
+        preview_controls.addWidget(self.screen_preview_label, 1)
+        plot_layout.addLayout(preview_controls)
+        self.plot_stack = QtWidgets.QStackedWidget()
+        self.plot_stack.addWidget(self.canvas)
+        plot_layout.addWidget(self.plot_stack, 1)
         plot_panel.setMinimumHeight(220)
         self.right_splitter.addWidget(plot_panel)
 
@@ -1208,6 +1309,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 action.triggered.connect(self._toolbar_navigation_triggered)
 
     def _toolbar_navigation_triggered(self, *_args):
+        if self.toolbar._actions["zoom"].isChecked():
+            self._stop_screen_preview(unsupported=True)
         for control in (
             self.integrate_button,
             self.edit_peak_button,
@@ -1547,6 +1650,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _retranslate(self):
         t = self.translator
+        self._update_screen_preview_notice()
         self.file_menu.setTitle(t("file"))
         action_texts = (
             (self.new_action, "new"),
@@ -2062,7 +2166,8 @@ class MainWindow(QtWidgets.QMainWindow):
             row = self.peak_table.currentRow()
             if dataset is not None and 0 <= row < len(dataset.peaks):
                 self._edit_range_peak_id = dataset.peaks[row].id
-        if self._is_lightweight_rendering() and self._peak_overlay_artists:
+        if (self._screen_preview is None and self._is_lightweight_rendering()
+                and self._peak_overlay_artists):
             self._apply_peak_selection_styles()
             self._request_canvas_draw(throttled=True)
         else:
@@ -2881,6 +2986,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_integration(self, enabled: bool):
         if enabled:
+            self._stop_screen_preview(unsupported=True)
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
                 self.integrate_button.setChecked(False)
@@ -2910,6 +3016,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_edit_range_mode(self, enabled: bool):
         if enabled:
+            self._stop_screen_preview(unsupported=True)
             dataset = self._selected_dataset()
             row = self.peak_table.currentRow()
             if dataset is None or not (0 <= row < len(dataset.peaks)):
@@ -2945,6 +3052,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_split_mode(self, enabled: bool):
         if enabled:
+            self._stop_screen_preview(unsupported=True)
             dataset = self._selected_dataset()
             row = self.peak_table.currentRow()
             if dataset is None or not (0 <= row < len(dataset.peaks)):
@@ -2976,6 +3084,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_fraction_mode(self, enabled: bool):
         if enabled:
+            self._stop_screen_preview(unsupported=True)
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(
                     self, APP_NAME, self.translator("no_dataset")
@@ -3014,6 +3123,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_move_mode(self, enabled: bool):
         if enabled:
+            self._stop_screen_preview(unsupported=True)
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
                 self.move_trace_button.setChecked(False)
@@ -3038,6 +3148,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_pointer_mode(self, enabled: bool):
         if enabled:
+            self._stop_screen_preview(unsupported=True)
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
@@ -3059,6 +3170,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_annotation_mode(self, enabled: bool):
         if enabled:
+            self._stop_screen_preview(unsupported=True)
             if not self.project.datasets:
                 QtWidgets.QMessageBox.information(
                     self, APP_NAME, self.translator("no_dataset")
@@ -4022,7 +4134,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.axes.set_xlim(*self._full_x_bounds())
         self._set_dynamic_x_ticks()
         self._update_overview_window()
-        self.canvas.draw_idle()
+        self._request_canvas_draw()
 
     def _reset_y_view(self):
         if not self._view_initialized:
@@ -4035,7 +4147,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.axes.set_xlim(*x_limits)
         self._set_dynamic_x_ticks()
         self._update_overview_window()
-        self.canvas.draw_idle()
+        self._request_canvas_draw()
 
     def _import_chromatogram_paths(
         self, paths, group_label="", show_progress=False, group_labels=None
@@ -4794,6 +4906,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._request_canvas_draw(force=True)
 
     def _current_view_pixmap(self):
+        if self._screen_preview is not None:
+            try:
+                return self._screen_preview.consumer.snapshot()
+            except Exception:
+                self._stop_screen_preview(failed=True)
         return self.screen_render_surface.snapshot()
 
     def copy_view_to_clipboard(self):
@@ -5123,6 +5240,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):
         if self._confirm_unsaved():
+            self._stop_screen_preview()
             self._automatic_update_timer.stop()
             self._open_windows.discard(self)
             event.accept()

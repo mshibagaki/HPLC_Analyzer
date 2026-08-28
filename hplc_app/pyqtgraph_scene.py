@@ -61,6 +61,12 @@ class PyQtGraphSceneConsumer:
         )
         self.overview.addItem(self.overview_region)
         self.overview.setVisible(False)
+        self.overview_secondary = self.pg.ViewBox()
+        self.overview.scene().addItem(self.overview_secondary)
+        self.overview_secondary.setXLink(self.overview)
+        self.overview_secondary.setMouseEnabled(x=False, y=False)
+        self.overview_secondary.setVisible(False)
+        self.overview.vb.sigResized.connect(self._sync_overview_view)
         self.primary = self.widget.addPlot(row=1, col=0)
         self.secondary = self.pg.ViewBox()
         self.gradient = self.pg.ViewBox()
@@ -202,6 +208,10 @@ class PyQtGraphSceneConsumer:
             view.setGeometry(geometry)
             view.linkedViewChanged(self.primary.vb, view.XAxis)
 
+    def _sync_overview_view(self):
+        self.overview_secondary.setGeometry(self.overview.vb.sceneBoundingRect())
+        self.overview_secondary.linkedViewChanged(self.overview.vb, self.overview_secondary.XAxis)
+
     def _view(self, axis_id):
         return self.secondary if axis_id == "y2" else self.primary
 
@@ -282,6 +292,17 @@ class PyQtGraphSceneConsumer:
         return item
 
     def render(self, scene):
+        # Repeated application refreshes replace the scene, not append copies.
+        for item in self.items:
+            for view in (self.primary.vb, self.secondary, self.gradient):
+                if item in view.addedItems:
+                    view.removeItem(item)
+        for item in self.overview_items:
+            view = (self.overview_secondary if item in self.overview_secondary.addedItems
+                    else self.overview)
+            view.removeItem(item)
+        self.items.clear()
+        self.overview_items.clear()
         counts = {
             "traces": 0,
             "gradients": 0,
@@ -303,7 +324,8 @@ class PyQtGraphSceneConsumer:
                 trace.y_values,
                 pen=self.pg.mkPen(trace.color, width=trace.line_width),
             )
-            self.overview.addItem(overview_item)
+            overview_view = self.overview_secondary if trace.axis_id == "y2" else self.overview
+            overview_view.addItem(overview_item)
             self.overview_items.append(overview_item)
             counts["traces"] += 1
 
@@ -437,6 +459,7 @@ class PyQtGraphSceneConsumer:
         self.primary.enableAutoRange()
         self.secondary.enableAutoRange()
         self.overview.enableAutoRange()
+        self.overview_secondary.enableAutoRange()
         self.gradient.setYRange(0.0, 100.0, padding=0.0)
         self._sync_auxiliary_views()
         self.application.processEvents()
@@ -468,6 +491,8 @@ class PyQtGraphSceneConsumer:
     ):
         """Apply backend-neutral navigation state to the optional renderer."""
         self.overview_state = overview_state
+        self._has_y2 = view_state.y2 is not None
+        self._has_gradient = view_state.gradient is not None
         self.primary.setXRange(*view_state.x, padding=0.0)
         self.primary.setYRange(*view_state.y1, padding=0.0)
         if view_state.y2 is not None:
@@ -476,12 +501,14 @@ class PyQtGraphSceneConsumer:
             self.gradient.setYRange(*view_state.gradient, padding=0.0)
 
         self.overview.setVisible(overview_state.enabled)
+        self.overview_secondary.setVisible(overview_state.enabled and self._has_y2)
         self.overview_region.setVisible(overview_state.enabled)
         if overview_state.enabled:
             self.overview.setXRange(*overview_state.full_x, padding=0.0)
             self.overview_region.setRegion(overview_state.detail_x)
 
         self._sync_auxiliary_views()
+        self._sync_overview_view()
         self.application.processEvents()
         primary_range = self.primary.viewRange()
         secondary_range = self.secondary.viewRange()
@@ -506,8 +533,10 @@ class PyQtGraphSceneConsumer:
         return ScreenViewState(
             x=self._range_tuple(primary_range[0]),
             y1=self._range_tuple(primary_range[1]),
-            y2=self._range_tuple(self.secondary.viewRange()[1]),
-            gradient=self._range_tuple(self.gradient.viewRange()[1]),
+            y2=(self._range_tuple(self.secondary.viewRange()[1])
+                if getattr(self, "_has_y2", True) else None),
+            gradient=(self._range_tuple(self.gradient.viewRange()[1])
+                      if getattr(self, "_has_gradient", True) else None),
         )
 
     def snapshot(self):
@@ -522,4 +551,7 @@ class PyQtGraphSceneConsumer:
         self._pointer_handler = None
         self._connections.clear()
         self.widget.viewport().removeEventFilter(self._pointer_filter)
+        for view in (self.primary.vb, self.secondary, self.gradient,
+                     self.overview.vb, self.overview_secondary):
+            view.close()
         self.widget.close()

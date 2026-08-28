@@ -21,6 +21,10 @@ _SHA256_LINE = re.compile(r"^([0-9a-fA-F]{64})[ \t]+[*]?(.+?)$")
 _CERTIFICATE_THUMBPRINT = re.compile(r"^[0-9A-F]{40}$")
 
 
+class DownloadCancelled(Exception):
+    """Raised when the caller cooperatively cancels an updater download."""
+
+
 def official_release_asset_url(url: str, repository: str = DEFAULT_REPOSITORY) -> bool:
     parsed = urlparse(str(url))
     prefix = "/%s/releases/download/" % repository
@@ -117,16 +121,56 @@ def parse_sha256_manifest(payload: bytes, filename: str) -> str:
     return matches[0]
 
 
-def _fetch_bounded(url: str, limit: int, timeout: float) -> bytes:
+def fetch_bounded(
+    url: str,
+    limit: int,
+    timeout: float,
+    progress: Optional[Callable[[int, Optional[int]], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
+    opener: Optional[Callable] = None,
+    chunk_size: int = 64 * 1024,
+) -> bytes:
+    """Stream one response within ``limit`` with progress and cancellation."""
+
+    if limit < 0 or chunk_size <= 0:
+        raise ValueError("Download size parameters must be positive")
     request = Request(url, headers={"User-Agent": "HPLC-Analyzer-updater"})
-    with urlopen(request, timeout=timeout) as response:
+    open_url = opener or urlopen
+    with open_url(request, timeout=timeout) as response:
         declared = response.headers.get("Content-Length")
-        if declared and int(declared) > limit:
-            raise ValueError("Download exceeds the size limit")
-        payload = response.read(limit + 1)
-    if len(payload) > limit:
-        raise ValueError("Download exceeds the size limit")
-    return payload
+        total = None
+        if declared:
+            try:
+                total = int(declared)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Download Content-Length is invalid") from exc
+            if total < 0 or total > limit:
+                raise ValueError("Download exceeds the size limit")
+        chunks = []
+        received = 0
+        if progress is not None:
+            progress(received, total)
+        while True:
+            if cancelled is not None and cancelled():
+                raise DownloadCancelled("Download canceled")
+            chunk = response.read(min(chunk_size, limit + 1 - received))
+            if not chunk:
+                break
+            received += len(chunk)
+            if received > limit:
+                raise ValueError("Download exceeds the size limit")
+            chunks.append(chunk)
+            if progress is not None:
+                progress(received, total)
+        if total is not None and received != total:
+            raise ValueError("Download size does not match Content-Length")
+    return b"".join(chunks)
+
+
+def _fetch_bounded(url: str, limit: int, timeout: float) -> bytes:
+    """Compatibility wrapper for the original bounded fetch seam."""
+
+    return fetch_bounded(url, limit, timeout)
 
 
 def probe_authenticode(path, runner: Optional[Callable] = None) -> Dict[str, str]:
@@ -169,6 +213,8 @@ def stage_verified_installer(
     timeout: float = 15.0,
     fetch: Optional[Callable[[str, int, float], bytes]] = None,
     authenticode_probe: Optional[Callable] = None,
+    progress: Optional[Callable[[str, int, Optional[int]], None]] = None,
+    cancelled: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, object]:
     """Download and verify an installer, but never execute it."""
 
@@ -197,10 +243,35 @@ def stage_verified_installer(
         manifest_path = root / (installer_filename + ".sha256")
         if destination.exists() or manifest_path.exists():
             raise ValueError("Temporary destination already exists")
-        download = fetch or _fetch_bounded
-        manifest = download(manifest_url, MAX_MANIFEST_BYTES, timeout)
+        def download(asset, url, limit):
+            if cancelled is not None and cancelled():
+                raise DownloadCancelled("Download canceled")
+            if fetch is None:
+                return fetch_bounded(
+                    url,
+                    limit,
+                    timeout,
+                    progress=(
+                        (lambda received, total: progress(asset, received, total))
+                        if progress is not None
+                        else None
+                    ),
+                    cancelled=cancelled,
+                )
+            if progress is not None:
+                progress(asset, 0, None)
+            payload = fetch(url, limit, timeout)
+            if len(payload) > limit:
+                raise ValueError("Download exceeds the size limit")
+            if progress is not None:
+                progress(asset, len(payload), len(payload))
+            if cancelled is not None and cancelled():
+                raise DownloadCancelled("Download canceled")
+            return payload
+
+        manifest = download("manifest", manifest_url, MAX_MANIFEST_BYTES)
         expected = parse_sha256_manifest(manifest, installer_filename)
-        installer = download(installer_url, MAX_INSTALLER_BYTES, timeout)
+        installer = download("installer", installer_url, MAX_INSTALLER_BYTES)
         digest = hashlib.sha256(installer).hexdigest()
         if not hmac.compare_digest(digest, expected):
             raise ValueError("Installer SHA-256 does not match the manifest")
@@ -218,6 +289,15 @@ def stage_verified_installer(
             authenticode=auth,
             reason="" if auth.get("status") == "valid" else "Authenticode signature is not valid",
         )
+        return result
+    except DownloadCancelled as exc:
+        result["status"] = "canceled"
+        result["reason"] = str(exc)
+        for path in created_paths:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         return result
     except Exception as exc:
         result["reason"] = str(exc)

@@ -112,6 +112,8 @@ from hplc_app.update_check import (
     parse_stable_version,
 )
 from hplc_app.updater_download import (
+    DownloadCancelled,
+    fetch_bounded,
     normalize_signer_thumbprints,
     official_release_asset_url,
     parse_sha256_manifest,
@@ -711,6 +713,81 @@ class AnalysisTests(unittest.TestCase):
             self.assertEqual(result["status"], "verified")
             self.assertEqual(Path(result["path"]).read_bytes(), installer)
             self.assertFalse(result["launch_allowed"])
+
+    def test_updater_bounded_stream_reports_monotonic_progress_and_cancels(self):
+        class Response:
+            def __init__(self, payload, declared=None):
+                self.payload = payload
+                self.offset = 0
+                self.headers = {}
+                if declared is not None:
+                    self.headers["Content-Length"] = str(declared)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, size):
+                chunk = self.payload[self.offset : self.offset + size]
+                self.offset += len(chunk)
+                return chunk
+
+        events = []
+        payload = b"abcdefghij"
+        result = fetch_bounded(
+            "https://example.invalid/file",
+            10,
+            1.0,
+            progress=lambda received, total: events.append((received, total)),
+            opener=lambda *_args, **_kwargs: Response(payload, len(payload)),
+            chunk_size=3,
+        )
+        self.assertEqual(result, payload)
+        self.assertEqual(events, [(0, 10), (3, 10), (6, 10), (9, 10), (10, 10)])
+
+        cancel_events = []
+        with self.assertRaises(DownloadCancelled):
+            fetch_bounded(
+                "https://example.invalid/file",
+                10,
+                1.0,
+                progress=lambda received, total: cancel_events.append((received, total)),
+                cancelled=lambda: bool(cancel_events and cancel_events[-1][0] >= 3),
+                opener=lambda *_args, **_kwargs: Response(payload, len(payload)),
+                chunk_size=3,
+            )
+        self.assertEqual(cancel_events[-1], (3, 10))
+
+    def test_updater_stage_cancellation_is_explicit_and_non_mutating(self):
+        filename = "safe.exe"
+        installer = b"installer"
+        digest = hashlib.sha256(installer).hexdigest()
+        base = "https://github.com/mshibagaki/HPLC_Analyzer/releases/download/v1/"
+        events = []
+
+        def fetch(url, _limit, _timeout):
+            if url.endswith("txt"):
+                return (digest + " *" + filename + "\n").encode("utf-8")
+            return installer
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = stage_verified_installer(
+                base + filename,
+                base + "SHA256SUMS.txt",
+                filename,
+                directory,
+                fetch=fetch,
+                progress=lambda asset, received, total: events.append(
+                    (asset, received, total)
+                ),
+                cancelled=lambda: bool(events and events[-1][0] == "manifest" and events[-1][1] > 0),
+            )
+            self.assertEqual(result["status"], "canceled")
+            self.assertFalse(result["launch_allowed"])
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            self.assertEqual(events[0], ("manifest", 0, None))
 
     def test_updater_rejects_untrusted_urls_bad_paths_and_hash_mismatch(self):
         self.assertTrue(

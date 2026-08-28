@@ -66,6 +66,7 @@ from hplc_app.qt_compat import (
 from hplc_app.report import render_analysis_report_pages
 from hplc_app.settings_store import ApplicationSettings
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
+from hplc_app.update_ui import UpdateDownloadDialog, UpdateDownloadWorker
 from tests.gcd_fixtures import synthetic_gcd_bytes
 
 
@@ -386,6 +387,73 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(window.check_updates_action.isEnabled())
         window.project.dirty = False
         window.close()
+
+    def test_update_download_worker_reports_progress_cancels_and_forbids_launch(self):
+        progress = []
+        finished = []
+
+        def stage(**arguments):
+            arguments["progress"]("manifest", 0, None)
+            arguments["progress"]("installer", 5, 10)
+            self.assertFalse(arguments["cancelled"]())
+            return {"status": "verified", "reason": "", "launch_allowed": True}
+
+        worker = UpdateDownloadWorker({"fixture": True}, stage=stage)
+        worker.progress.connect(
+            lambda asset, received, total: progress.append((asset, received, total))
+        )
+        worker.finished.connect(finished.append)
+        worker.run()
+        self.assertEqual(progress, [("manifest", 0, None), ("installer", 5, 10)])
+        self.assertEqual(finished[0]["status"], "verified")
+        self.assertFalse(finished[0]["launch_allowed"])
+
+        canceled = []
+
+        def canceled_stage(**arguments):
+            canceled.append(arguments["cancelled"]())
+            return {"status": "canceled", "reason": "Download canceled"}
+
+        canceled_worker = UpdateDownloadWorker({}, stage=canceled_stage)
+        canceled_worker.cancel()
+        canceled_worker.finished.connect(finished.append)
+        canceled_worker.run()
+        self.assertEqual(canceled, [True])
+        self.assertEqual(finished[-1]["status"], "canceled")
+        self.assertFalse(finished[-1]["launch_allowed"])
+
+    def test_update_download_dialog_presents_progress_cancel_and_safe_results(self):
+        dialog = UpdateDownloadDialog(language="en")
+        dialog.apply_progress("manifest", 12, None)
+        self.assertEqual(dialog.progress_bar.minimum(), 0)
+        self.assertEqual(dialog.progress_bar.maximum(), 0)
+        self.assertIn("12", dialog.detail_label.text())
+        dialog.apply_progress("installer", 50, 100)
+        self.assertEqual(dialog.progress_bar.maximum(), 100)
+        self.assertEqual(dialog.progress_bar.value(), 50)
+
+        canceled = []
+        dialog.cancel_requested.connect(lambda: canceled.append(True))
+        worker = UpdateDownloadWorker({}, stage=lambda **_kwargs: {})
+        dialog.bind_worker(worker)
+        dialog.action_button.click()
+        self.assertEqual(dialog.state, "canceling")
+        self.assertEqual(canceled, [True])
+        worker_cancel_state = []
+        worker._stage = lambda **arguments: worker_cancel_state.append(
+            arguments["cancelled"]()
+        ) or {"status": "canceled"}
+        worker.run()
+        self.assertEqual(worker_cancel_state, [True])
+
+        dialog.apply_result(
+            {"status": "held", "reason": "Signer not approved", "launch_allowed": True}
+        )
+        self.assertEqual(dialog.state, "held")
+        self.assertFalse(dialog.result["launch_allowed"])
+        self.assertIn("disabled", dialog.phase_label.text())
+        self.assertEqual(dialog.action_button.text(), "Close")
+        dialog.close()
 
     def test_preset_manager_renames_duplicates_and_deletes_both_kinds(self):
         metadata = {

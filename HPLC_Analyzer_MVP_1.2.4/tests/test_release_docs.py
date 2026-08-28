@@ -77,7 +77,7 @@ class ReleaseDocumentationTests(unittest.TestCase):
         for required in (
             "Spectrum-domain selection and retention labels",
             "Replace the interactive Matplotlib screen renderer",
-            "Updater download/error UI",
+            "Activate signed updater workflow",
             "VALIDATION_BLOCKERS.md",
             "none is considered passed from CI or offscreen tests",
         ):

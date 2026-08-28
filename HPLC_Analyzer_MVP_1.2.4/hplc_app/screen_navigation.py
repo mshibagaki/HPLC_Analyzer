@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Optional, Tuple
 
 from .screen_events import ScreenPointerEvent
@@ -18,6 +19,48 @@ class ScreenViewState:
     y1: Limits
     y2: Optional[Limits] = None
     gradient: Optional[Limits] = None
+
+
+@dataclass(frozen=True)
+class ScreenOverviewState:
+    enabled: bool
+    full_x: Limits
+    detail_x: Limits
+
+
+def _ordered_finite_limits(limits: Limits) -> Limits:
+    try:
+        first, second = float(limits[0]), float(limits[1])
+    except (IndexError, TypeError, ValueError) as exc:
+        raise ValueError("Screen limits require two finite values") from exc
+    if not math.isfinite(first) or not math.isfinite(second):
+        raise ValueError("Screen limits require two finite values")
+    return (first, second) if first <= second else (second, first)
+
+
+def compose_overview_state(
+    enabled: bool,
+    full_x: Limits,
+    detail_x: Limits,
+) -> ScreenOverviewState:
+    full_left, full_right = _ordered_finite_limits(full_x)
+    detail_left, detail_right = _ordered_finite_limits(detail_x)
+    full_span = full_right - full_left
+    detail_span = detail_right - detail_left
+    if full_span <= 0.0 or detail_span >= full_span:
+        detail_left, detail_right = full_left, full_right
+    else:
+        if detail_left < full_left:
+            detail_right += full_left - detail_left
+            detail_left = full_left
+        if detail_right > full_right:
+            detail_left -= detail_right - full_right
+            detail_right = full_right
+    return ScreenOverviewState(
+        enabled=bool(enabled),
+        full_x=(full_left, full_right),
+        detail_x=(detail_left, detail_right),
+    )
 
 
 class ScreenViewHistory:

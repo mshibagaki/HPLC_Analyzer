@@ -113,10 +113,12 @@ from .screen_renderer import create_screen_render_surface
 from .screen_scene import compose_base_screen_scene
 from .screen_events import ScreenPointerEvent, normalize_pointer_event
 from .screen_navigation import (
+    ScreenOverviewState,
     ScreenViewHistory,
     ScreenViewState,
     axis_pan_view,
     begin_axis_pan,
+    compose_overview_state,
 )
 from .qt_compat import (
     QAction,
@@ -464,6 +466,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._selected_vertical_marker_id = ""
         self._edit_range_peak_id = None
         self._overview_view_patch = None
+        self._overview_window_state = ScreenOverviewState(
+            enabled=False,
+            full_x=(0.0, 1.0),
+            detail_x=(0.0, 1.0),
+        )
         self.axes_overview = None
         self.axes_overview_right = None
         self._xlim_callback_id = None
@@ -2329,11 +2336,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.toolbar.set_history_buttons()
 
     def _update_overview_window(self):
-        if self.axes_overview is None:
+        self._overview_window_state = compose_overview_state(
+            enabled=self.axes_overview is not None,
+            full_x=self._full_x_bounds(),
+            detail_x=tuple(self.axes.get_xlim()),
+        )
+        self._apply_matplotlib_overview_window(self._overview_window_state)
+
+    def _apply_matplotlib_overview_window(self, state):
+        if not state.enabled or self.axes_overview is None:
+            self._overview_view_patch = None
             return
+        self.axes_overview.set_xlim(*state.full_x)
         if self._overview_view_patch is not None:
             try:
-                left, right = self.axes.get_xlim()
+                left, right = state.detail_x
                 if hasattr(self._overview_view_patch, "set_x"):
                     self._overview_view_patch.set_x(left)
                     self._overview_view_patch.set_width(right - left)
@@ -2344,7 +2361,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             except (ValueError, AttributeError, RuntimeError):
                 self._overview_view_patch = None
-        left, right = self.axes.get_xlim()
+        left, right = state.detail_x
         self._overview_view_patch = self.axes_overview.axvspan(
             left,
             right,

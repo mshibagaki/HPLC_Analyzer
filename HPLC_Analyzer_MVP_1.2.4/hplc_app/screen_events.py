@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Mapping, Optional, Tuple
 
@@ -17,6 +17,8 @@ class ScreenPointerEvent:
     data_coordinates: Tuple[
         Tuple[str, Optional[float], Optional[float]], ...
     ] = ()
+    hit_kind: str = ""
+    hit_id: str = ""
     double_click: bool = False
     key: str = ""
 
@@ -25,6 +27,13 @@ class ScreenPointerEvent:
             if role == axis_role:
                 return x_value, y_value
         return None, None
+
+    def with_hit_target(self, kind: str, target_id: str):
+        return replace(
+            self,
+            hit_kind=str(kind or ""),
+            hit_id=str(target_id or ""),
+        )
 
 
 def _finite_value(value):

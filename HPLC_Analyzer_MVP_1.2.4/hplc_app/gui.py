@@ -3041,28 +3041,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plot()
         self._update_title()
 
-    def _annotation_at_event(self, event):
+    def _matplotlib_hit_target(self, event):
         if event.canvas_x is None or event.canvas_y is None:
-            return None
-        try:
-            renderer = self.canvas.get_renderer()
-        except (AttributeError, RuntimeError):
-            return None
-        for annotation in reversed(self.project.annotations):
-            artist = self._annotation_artists.get(annotation.id)
-            if artist is None or not artist.get_visible():
-                continue
-            try:
-                bounds = artist.get_window_extent(renderer=renderer).expanded(1.08, 1.25)
-            except (AttributeError, RuntimeError, ValueError):
-                continue
-            if bounds.contains(event.canvas_x, event.canvas_y):
-                return annotation
-        return None
-
-    def _vertical_marker_at_event(self, event):
-        if event.canvas_x is None or event.canvas_y is None:
-            return None
+            return "", ""
         for marker in reversed(self.project.vertical_markers):
             artist = self._vertical_marker_artists.get(marker.id)
             if artist is None or not artist.get_visible():
@@ -3072,8 +3053,46 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
             marker_x = axis.transData.transform((marker.x_min, 0.0))[0]
             if abs(event.canvas_x - float(marker_x)) <= 6.0:
-                return marker
-        return None
+                return "vertical_marker", marker.id
+        try:
+            renderer = self.canvas.get_renderer()
+        except (AttributeError, RuntimeError):
+            return "", ""
+        for annotation in reversed(self.project.annotations):
+            artist = self._annotation_artists.get(annotation.id)
+            if artist is None or not artist.get_visible():
+                continue
+            try:
+                bounds = artist.get_window_extent(renderer=renderer).expanded(1.08, 1.25)
+            except (AttributeError, RuntimeError, ValueError):
+                continue
+            if bounds.contains(event.canvas_x, event.canvas_y):
+                return "annotation", annotation.id
+        return "", ""
+
+    def _annotation_at_event(self, event):
+        if event.hit_kind != "annotation":
+            return None
+        return next(
+            (
+                annotation
+                for annotation in self.project.annotations
+                if annotation.id == event.hit_id
+            ),
+            None,
+        )
+
+    def _vertical_marker_at_event(self, event):
+        if event.hit_kind != "vertical_marker":
+            return None
+        return next(
+            (
+                marker
+                for marker in self.project.vertical_markers
+                if marker.id == event.hit_id
+            ),
+            None,
+        )
 
     def _select_vertical_marker(self, marker):
         self._selected_vertical_marker_id = marker.id if marker is not None else ""
@@ -3207,6 +3226,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_canvas_press(self, event):
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(event)
+            event = event.with_hit_target(*self._matplotlib_hit_target(event))
         if event.button != 1:
             return
         if str(getattr(self.toolbar, "mode", "")):

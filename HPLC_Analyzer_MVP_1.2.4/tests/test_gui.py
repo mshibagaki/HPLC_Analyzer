@@ -1477,6 +1477,54 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_canvas_press_accepts_backend_neutral_hit_targets(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        marker = VerticalMarker(x_min=6.0)
+        annotation = TextAnnotation(
+            text="Target",
+            x_min=7.0,
+            y_value=1000.0,
+            dataset_id=dataset.id,
+        )
+        window.project.vertical_markers = [marker]
+        window.project.annotations = [annotation]
+        window._plot()
+
+        window._on_canvas_press(
+            ScreenPointerEvent(
+                button=1,
+                axis_role="y1",
+                data_coordinates=(("y1", 6.0, 0.0),),
+                hit_kind="vertical_marker",
+                hit_id=marker.id,
+            )
+        )
+        self.assertEqual(window._selected_vertical_marker_id, marker.id)
+
+        window._on_canvas_press(
+            ScreenPointerEvent(
+                button=1,
+                axis_role="y1",
+                data_coordinates=(("y1", 7.0, 1000.0),),
+                hit_kind="annotation",
+                hit_id=annotation.id,
+            )
+        )
+        self.assertIsNotNone(window._annotation_drag)
+        window._on_canvas_motion(
+            ScreenPointerEvent(
+                axis_role="y1",
+                data_coordinates=(("y1", 7.5, 1100.0),),
+            )
+        )
+        window._on_canvas_release(ScreenPointerEvent(button=1))
+        self.assertAlmostEqual(annotation.x_min, 7.5, places=6)
+        self.assertAlmostEqual(annotation.y_value, 1100.0, places=6)
+        self.assertIsNone(window._annotation_drag)
+        window.project.dirty = False
+        window.close()
+
     def test_canvas_press_motion_and_release_accept_backend_neutral_events(self):
         window = self.make_window()
         selected = window.project.datasets[0]

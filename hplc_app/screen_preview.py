@@ -4,6 +4,7 @@ Imported only on explicit opt-in. Model edits use the owner's undo-aware methods
 renderer selection does not change persistent settings.
 """
 
+from copy import deepcopy
 from html import escape
 from math import isfinite
 
@@ -171,6 +172,7 @@ class ExperimentalScreenPreview:
     def _handle_span_event(self, name, event):
         owner = self.owner
         mode = ("integrate" if owner.integrate_button.isChecked() else
+                "edit" if owner.edit_peak_button.isChecked() else
                 "fraction" if owner.fraction_button.isChecked() else "")
         if not mode or str(owner.toolbar.mode):
             if self._span_drag is not None:
@@ -180,15 +182,24 @@ class ExperimentalScreenPreview:
         target = (None if selected is None else
                   (selected.id, selected.y_axis, selected.visible, selected.x_shift_min,
                    owner.project.method.baseline_mode))
+        if mode == "edit":
+            # Capture identity and content, never a row index or mutable reference.
+            # A selection/recalculation change must not redirect a pending edit.
+            peak = next((item for item in selected.peaks
+                         if item.id == owner._edit_range_peak_id
+                         and item.id in owner._selected_peak_ids()), None) if selected else None
+            target = (target, deepcopy(peak))
         in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
         x_value = event.data_for(event.axis_role)[0]
         valid = (in_plot and x_value is not None and isfinite(x_value)
                  and event.canvas_x is not None and isfinite(event.canvas_x))
-        if mode == "integrate":
+        if mode in ("integrate", "edit"):
             valid = (valid and selected is not None and selected.visible
                      and any(trace.dataset_id == selected.id for trace in self._scene.traces)
                      and (not self.consumer.split_y_axes
                           or event.axis_role == ("y2" if selected.y_axis == 2 else "y1")))
+            if mode == "edit":
+                valid = valid and peak is not None
         drag = self._span_drag
         if drag is not None:
             if drag["mode"] != mode or drag["target"] != target:
@@ -207,6 +218,7 @@ class ExperimentalScreenPreview:
                 self.cancel_span_drag()
                 if abs(event.canvas_x - drag["pixel"]) >= 3 and x_value != drag["start"]:
                     callback = (owner._on_span_selected if mode == "integrate"
+                                else owner._on_edit_span_selected if mode == "edit"
                                 else owner._on_fraction_span_selected)
                     callback(drag["start"], x_value)
             return True
@@ -236,7 +248,7 @@ class ExperimentalScreenPreview:
             if name == "motion_notify_event":
                 x_value = (event.data_for("y1")[0]
                            if (owner.pointer_action.isChecked() or owner.fraction_button.isChecked()
-                               or owner.integrate_button.isChecked())
+                               or owner.integrate_button.isChecked() or owner.edit_peak_button.isChecked())
                            and event.hit_region in ("plot", "plot_y1", "plot_y2")
                            else None)
                 self.consumer.set_pointer_cursor(x_value, event.axis_role)

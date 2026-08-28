@@ -711,8 +711,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ))
         messages = {
             "active": (
-                "閲覧・縦線・手動積分・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
-                "Viewing, vertical markers, manual integration, fractions and split view. Other editing returns to Matplotlib.",
+                "閲覧・縦線・手動積分・積分範囲修正・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
+                "Viewing, vertical markers, manual integration, peak range editing, fractions and split view. Other editing returns to Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
@@ -734,7 +734,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not enabled:
             self._stop_screen_preview()
             return
-        controls = (self.edit_peak_button, self.split_peak_button,
+        controls = (self.split_peak_button,
                     self.move_trace_button,
                     self.annotation_action, self.toolbar._actions["zoom"])
         if any(control.isChecked() for control in controls):
@@ -746,7 +746,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._screen_preview is None:
                 from .screen_preview import ExperimentalScreenPreview
                 self._screen_preview = ExperimentalScreenPreview(self)
-            if self._span_selector_mode in ("integrate", "fraction"):
+            if self._span_selector_mode in ("integrate", "edit", "fraction"):
                 self._clear_span_selector()
             self.plot_stack.setCurrentWidget(self._screen_preview.consumer.widget)
             self._screen_preview_notice = "active"
@@ -764,10 +764,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_stack.setCurrentWidget(self.canvas)
         if preview is not None:
             preview.close()
-        if ((self.integrate_button.isChecked() or self.fraction_button.isChecked())
+        if ((self.integrate_button.isChecked() or self.edit_peak_button.isChecked()
+             or self.fraction_button.isChecked())
                 and self._span_selector is None
                 and self._selected_dataset() is not None):
-            self._install_span_selector("integrate" if self.integrate_button.isChecked() else "fraction")
+            self._install_span_selector("integrate" if self.integrate_button.isChecked() else
+                                        "edit" if self.edit_peak_button.isChecked() else "fraction")
         self._screen_preview_notice = "failed" if failed else "unsupported" if unsupported else ""
         self._update_screen_preview_notice()
         self.canvas.draw_idle()
@@ -2969,7 +2971,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _install_span_selector(self, mode: str = "integrate"):
         self._clear_span_selector()
-        if mode in ("integrate", "fraction") and self._screen_preview is not None:
+        if mode in ("integrate", "edit", "fraction") and self._screen_preview is not None:
             return
         selected = self._selected_dataset()
         selector_axis = (
@@ -3056,7 +3058,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_edit_range_mode(self, enabled: bool):
         if enabled:
-            self._stop_screen_preview(unsupported=True)
             dataset = self._selected_dataset()
             row = self.peak_table.currentRow()
             if dataset is None or not (0 <= row < len(dataset.peaks)):
@@ -3079,9 +3080,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._edit_range_peak_id = None
             if self._span_selector is not None and self._span_selector_mode == "edit":
-                self._span_selector.set_active(False)
-                self._span_selector = None
-                self._span_selector_mode = None
+                self._clear_span_selector()
             if not (
                 self.integrate_button.isChecked()
                 or self.split_peak_button.isChecked()

@@ -711,8 +711,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ))
         messages = {
             "active": (
-                "閲覧・縦線・フラクション範囲・2画面に対応。他の編集は従来描画へ戻ります。",
-                "Viewing, vertical markers, fraction ranges and split view. Other editing returns to Matplotlib.",
+                "閲覧・縦線・手動積分・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
+                "Viewing, vertical markers, manual integration, fractions and split view. Other editing returns to Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
@@ -734,7 +734,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not enabled:
             self._stop_screen_preview()
             return
-        controls = (self.integrate_button, self.edit_peak_button, self.split_peak_button,
+        controls = (self.edit_peak_button, self.split_peak_button,
                     self.move_trace_button,
                     self.annotation_action, self.toolbar._actions["zoom"])
         if any(control.isChecked() for control in controls):
@@ -746,7 +746,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._screen_preview is None:
                 from .screen_preview import ExperimentalScreenPreview
                 self._screen_preview = ExperimentalScreenPreview(self)
-            if self._span_selector_mode == "fraction":
+            if self._span_selector_mode in ("integrate", "fraction"):
                 self._clear_span_selector()
             self.plot_stack.setCurrentWidget(self._screen_preview.consumer.widget)
             self._screen_preview_notice = "active"
@@ -764,9 +764,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_stack.setCurrentWidget(self.canvas)
         if preview is not None:
             preview.close()
-        if (self.fraction_button.isChecked() and self._span_selector is None
+        if ((self.integrate_button.isChecked() or self.fraction_button.isChecked())
+                and self._span_selector is None
                 and self._selected_dataset() is not None):
-            self._install_span_selector("fraction")
+            self._install_span_selector("integrate" if self.integrate_button.isChecked() else "fraction")
         self._screen_preview_notice = "failed" if failed else "unsupported" if unsupported else ""
         self._update_screen_preview_notice()
         self.canvas.draw_idle()
@@ -2968,7 +2969,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _install_span_selector(self, mode: str = "integrate"):
         self._clear_span_selector()
-        if mode == "fraction" and self._screen_preview is not None:
+        if mode in ("integrate", "fraction") and self._screen_preview is not None:
             return
         selected = self._selected_dataset()
         selector_axis = (
@@ -3012,7 +3013,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _hide_interaction_cursor(self):
         if self._screen_preview is not None:
             try:
-                self._screen_preview.cancel_fraction_drag()
+                self._screen_preview.cancel_span_drag()
                 self._screen_preview.consumer.set_pointer_cursor()
             except Exception:
                 self._stop_screen_preview(failed=True)
@@ -3029,7 +3030,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_integration(self, enabled: bool):
         if enabled:
-            self._stop_screen_preview(unsupported=True)
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
                 self.integrate_button.setChecked(False)
@@ -3046,10 +3046,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ensure_interaction_cursor()
         else:
             self.statusBar().clearMessage()
-            if self._span_selector is not None:
-                self._span_selector.set_active(False)
-                self._span_selector = None
-                self._span_selector_mode = None
+            self._clear_span_selector()
             if not (
                 self.edit_peak_button.isChecked()
                 or self.split_peak_button.isChecked()

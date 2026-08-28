@@ -359,8 +359,7 @@ class GuiTests(unittest.TestCase):
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
-            for control in (window.integrate_button,
-                            window.move_trace_button,
+            for control in (window.move_trace_button,
                             window.annotation_action):
                 window.screen_preview_checkbox.setChecked(True)
                 self.assertIsNotNone(window._screen_preview)
@@ -2584,6 +2583,220 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_preview_manual_integration_matches_existing_calculation(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        from hplc_app.analysis import integrate_peak
+        from hplc_app.project_io import load_project, save_project
+        window = self.make_window()
+        try:
+            window.show()
+            raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+            for dataset in window.project.datasets:
+                dataset.x_shift_min = 3.25
+                dataset.offset = 1000.0
+            window.integrate_button.setChecked(True)
+            window.screen_preview_checkbox.setChecked(True)
+            self.assertIsNone(window._span_selector)
+            cases = (("single", "linear", 0), ("overview_detail", "edge_average", 1),
+                     ("split_y_axes", "constant_start", 1), ("single", "manual", 1),
+                     ("split_y_axes", "zero", 0))
+            for mode, baseline, row in cases:
+                with self.subTest(mode=mode, baseline=baseline):
+                    window.dataset_table.selectRow(row)
+                    window.baseline_combo.setCurrentIndex(window.baseline_combo.findData(baseline))
+                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+                    window._plot()
+                    preview = window._screen_preview
+                    self.assertIsNotNone(preview)
+                    consumer = preview.consumer
+                    core, gui = consumer.qt_core, consumer.qt_gui
+                    viewport = consumer.widget.viewport()
+                    selected = window.project.datasets[row]
+                    expected_dataset = deepcopy(selected)
+                    untouched = deepcopy(window.project.datasets[1 - row].peaks)
+                    role = "y2" if mode == "split_y_axes" and row == 1 else "y1"
+                    view = consumer.secondary if role == "y2" else consumer.primary.vb
+                    def point(time):
+                        return consumer.widget.mapFromScene(view.mapViewToScene(
+                            core.QPointF(time, sum(view.viewRange()[1]) / 2.0)))
+                    def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
+                              held=core.Qt.MouseButton.NoButton):
+                        self.app.sendEvent(viewport, gui.QMouseEvent(
+                            kind, core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                            button, held, core.Qt.KeyboardModifier.NoModifier))
+                    start, end = (point(14.0), point(8.0)) if row else (point(8.0), point(14.0))
+                    bounds = sorted(consumer.pointer_event(consumer.widget.mapToScene(p)).data_for(role)[0]
+                                    - selected.x_shift_min for p in (start, end))
+                    before_ids = {peak.id for peak in selected.peaks}
+                    undo_count = len(window._undo_stack)
+                    window.project.dirty = False
+                    state = window._screen_view_state()
+                    mouse(core.QEvent.Type.MouseButtonPress, start,
+                          core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                    mouse(core.QEvent.Type.MouseMove, end, held=core.Qt.MouseButton.LeftButton)
+                    self.assertTrue(consumer.span_selection.isVisible())
+                    self.assertEqual(consumer.span_selection.brush.color().name(), "#2563eb")
+                    self.assertEqual(selected.peaks, expected_dataset.peaks)
+                    self.assertEqual(len(window._undo_stack), undo_count)
+                    self.assertFalse(window.project.dirty)
+                    with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                        mouse(core.QEvent.Type.MouseButtonRelease, end, core.Qt.MouseButton.LeftButton)
+                    warning.assert_not_called()
+                    self.assertIs(window._screen_preview, preview)
+                    self.assertIsNone(preview._span_drag)
+                    self.assertFalse(consumer.span_selection.isVisible())
+                    self.assertEqual(len(window._undo_stack), undo_count + 1)
+                    new_peak = next(peak for peak in selected.peaks if peak.id not in before_ids)
+                    expected_dataset.peaks.append(integrate_peak(expected_dataset, PeakRegion(
+                        id=new_peak.id, start_min=bounds[0], end_min=bounds[1], baseline_mode=baseline)))
+                    recalculate_dataset_peaks(expected_dataset)
+                    self.assertEqual(selected.peaks, expected_dataset.peaks)
+                    self.assertEqual(window.project.datasets[1 - row].peaks, untouched)
+                    self.assertEqual(window._screen_view_state(), state)
+                    self.assertIn(new_peak.id, window._peak_overlay_artists)
+                    self.assertIn(new_peak.id, {p.peak_id for p in window._screen_scene.peak_overlays})
+                    window.undo()
+                    self.assertEqual({p.id for p in window.project.datasets[row].peaks}, before_ids)
+                    window.redo()
+                    self.assertEqual(window.project.datasets[row].peaks, expected_dataset.peaks)
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "native-integrated.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+                self.assertEqual([d.peaks for d in restored.datasets], [d.peaks for d in window.project.datasets])
+                output = Path(directory) / "integrated.svg"
+                with patch.object(window.canvas.callbacks, "exception_handler",
+                                  side_effect=AssertionError("Unexpected render callback error")):
+                    window._save_figure_file(str(output))
+                self.assertGreater(output.stat().st_size, 0)
+            for dataset, values in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_manual_integration_target_and_cancellation_guards(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window.screen_preview_checkbox.setChecked(True)
+            window.integrate_button.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            def event(time, role="y1", **changes):
+                view = consumer.secondary if role == "y2" else consumer.primary.vb
+                position = view.mapViewToScene(core.QPointF(time, sum(view.viewRange()[1]) / 2))
+                value = consumer.pointer_event(position, button=1)
+                return ScreenPointerEvent(**dict(vars(value), **changes))
+            def begin():
+                window.integrate_button.setChecked(True)
+                preview.handle_event("button_press_event", event(8.0))
+                self.assertIsNotNone(preview._span_drag)
+            original = [deepcopy(d.peaks) for d in window.project.datasets]
+            window.project.dirty = False
+            undo_count = len(window._undo_stack)
+            for start in (event(8.0, "y2"), event(8.0, hit_region="x"), event(8.0, button=3)):
+                preview.handle_event("button_press_event", start)
+                self.assertIsNone(preview._span_drag)
+            with patch.object(preview.navigation, "handle_event") as navigation:
+                preview.handle_event("button_press_event", event(8.0, double_click=True))
+            navigation.assert_not_called()
+            self.assertIsNone(preview._span_drag)
+            for cancel in (core.QEvent(core.QEvent.Type.FocusOut),
+                           gui.QKeyEvent(core.QEvent.Type.KeyPress, core.Qt.Key.Key_Escape,
+                                         core.Qt.KeyboardModifier.NoModifier)):
+                begin()
+                self.app.sendEvent(consumer.widget.viewport(), cancel)
+                preview.handle_event("button_release_event", event(14.0))
+                self.assertIsNone(preview._span_drag)
+            for end in (event(14.0, "y2"), event(14.0, axis_role="outside", hit_region=""), event(8.0)):
+                begin()
+                preview.handle_event("button_release_event", end)
+                self.assertIsNone(preview._span_drag)
+            # A changed target/shift/baseline cannot redirect a pending drag, even before replot.
+            dataset = window.project.datasets[0]
+            for field, value in (("visible", False), ("x_shift_min", 2.0), ("y_axis", 2)):
+                begin()
+                previous = getattr(dataset, field)
+                setattr(dataset, field, value)
+                preview.handle_event("button_release_event", event(14.0))
+                setattr(dataset, field, previous)
+                self.assertIsNone(preview._span_drag)
+            begin()
+            previous = window.project.method.baseline_mode
+            window.project.method.baseline_mode = "zero"
+            preview.handle_event("button_release_event", event(14.0))
+            window.project.method.baseline_mode = previous
+            self.assertIsNone(preview._span_drag)
+            self.assertEqual([d.peaks for d in window.project.datasets], original)
+            self.assertFalse(window.project.dirty)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            begin()
+            window.dataset_table.selectRow(1)
+            preview.handle_event("button_release_event", event(14.0))
+            self.assertEqual([d.peaks for d in window.project.datasets], original)
+            window.dataset_table.selectRow(0)
+            dataset.visible = False
+            window._plot()
+            preview.handle_event("button_press_event", event(8.0))
+            self.assertIsNone(preview._span_drag)
+            dataset.visible = True
+            window._plot()
+            begin()
+            window.fraction_button.setChecked(True)
+            preview.handle_event("button_release_event", event(14.0))
+            self.assertEqual(window.project.fraction_regions, [])
+            self.assertEqual([d.peaks for d in window.project.datasets], original)
+            window.integrate_button.setChecked(True)
+            window.screen_preview_checkbox.setChecked(False)
+            self.assertIsNotNone(window._span_selector)
+            self.assertEqual(window._span_selector_mode, "integrate")
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            with patch.object(consumer, "set_span_selection", side_effect=RuntimeError("selection failure")):
+                preview.handle_event("button_press_event", event(8.0))
+            self.assertIsNone(window._screen_preview)
+            self.assertTrue(window.integrate_button.isChecked())
+            self.assertTrue(window._span_selector.active)
+            self.assertEqual([d.peaks for d in window.project.datasets], original)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_manual_integration_rejects_insufficient_points(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            window.integrate_button.setChecked(True)
+            preview = window._screen_preview
+            before = deepcopy(window.project.datasets[0].peaks)
+            window.project.dirty = False
+            undo_count = len(window._undo_stack)
+            def event(time, pixel):
+                return ScreenPointerEvent(button=1, axis_role="y1", hit_region="plot",
+                                          canvas_x=pixel, data_coordinates=(("y1", time, 0.0),))
+            with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                preview.handle_event("button_press_event", event(-20.0, 50.0))
+                preview.handle_event("button_release_event", event(-10.0, 100.0))
+            warning.assert_called_once()
+            self.assertIs(window._screen_preview, preview)
+            self.assertIsNone(preview._span_drag)
+            self.assertEqual(window.project.datasets[0].peaks, before)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertFalse(window.project.dirty)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_fraction_drag_commits_shared_model_and_history(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -2629,10 +2842,10 @@ class GuiTests(unittest.TestCase):
                         mouse(core.QEvent.Type.MouseButtonPress, start_point,
                               core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
                         mouse(core.QEvent.Type.MouseMove, end_point, held=core.Qt.MouseButton.LeftButton)
-                        self.assertIsNotNone(preview._fraction_drag)
-                        self.assertTrue(consumer.fraction_selection.isVisible())
-                        self.assertIs(consumer._fraction_view, view)
-                        np.testing.assert_allclose(consumer.fraction_selection.getRegion(), expected)
+                        self.assertIsNotNone(preview._span_drag)
+                        self.assertTrue(consumer.span_selection.isVisible())
+                        self.assertIs(consumer._span_view, view)
+                        np.testing.assert_allclose(consumer.span_selection.getRegion(), expected)
                         self.assertEqual(len(window.project.fraction_regions), count)
                         self.assertEqual(len(window._undo_stack), undo_count)
                         self.assertFalse(window.project.dirty)
@@ -2644,8 +2857,8 @@ class GuiTests(unittest.TestCase):
                     self.assertEqual(window._screen_view_state(), state)
                     mouse(core.QEvent.Type.MouseButtonRelease, end_point, core.Qt.MouseButton.LeftButton)
                     self.assertIs(window._screen_preview, preview)
-                    self.assertIsNone(preview._fraction_drag)
-                    self.assertFalse(consumer.fraction_selection.isVisible())
+                    self.assertIsNone(preview._span_drag)
+                    self.assertFalse(consumer.span_selection.isVisible())
                     self.assertEqual(len(window.project.fraction_regions), count + 1)
                     self.assertEqual(len(window._undo_stack), undo_count + 1)
                     region = window.project.fraction_regions[-1]
@@ -2704,7 +2917,7 @@ class GuiTests(unittest.TestCase):
                 window.project.dirty = False
                 preview.handle_event("button_press_event", event(10.0))
                 preview.handle_event("motion_notify_event", event(20.0))
-                self.assertIsNotNone(preview._fraction_drag)
+                self.assertIsNotNone(preview._span_drag)
 
             for kind in (core.QEvent.Type.Leave, core.QEvent.Type.FocusOut, core.QEvent.Type.KeyPress):
                 begin()
@@ -2712,8 +2925,8 @@ class GuiTests(unittest.TestCase):
                           if kind == core.QEvent.Type.KeyPress else core.QEvent(kind))
                 self.app.sendEvent(viewport, cancel)
                 preview.handle_event("button_release_event", event(20.0))
-                self.assertIsNone(preview._fraction_drag)
-                self.assertFalse(consumer.fraction_selection.isVisible())
+                self.assertIsNone(preview._span_drag)
+                self.assertFalse(consumer.span_selection.isVisible())
                 self.assertEqual(window.project.fraction_regions, [])
                 self.assertFalse(window.project.dirty)
             # Clicks, tiny drags, wrong buttons and axes never commit a range.
@@ -2723,15 +2936,15 @@ class GuiTests(unittest.TestCase):
                         event(20.0, data_coordinates=(("y1", float("nan"), 0.0),))):
                 preview.handle_event("button_press_event", event(10.0))
                 preview.handle_event("button_release_event", end)
-                self.assertIsNone(preview._fraction_drag)
+                self.assertIsNone(preview._span_drag)
                 self.assertEqual(window.project.fraction_regions, [])
             for start in (event(10.0, button=3), event(10.0, hit_region="x"),
                           event(10.0, axis_role="outside", hit_region="")):
                 preview.handle_event("button_press_event", start)
-                self.assertIsNone(preview._fraction_drag)
+                self.assertIsNone(preview._span_drag)
             begin()
             preview.handle_event("motion_notify_event", event(20.0, button=None))
-            self.assertIsNone(preview._fraction_drag)
+            self.assertIsNone(preview._span_drag)
             for change in (lambda: window._plot(),
                            lambda: window._zoom_view(0.8, 15.0, zoom_mode="x"),
                            lambda: window.fraction_button.setChecked(False),
@@ -2739,29 +2952,29 @@ class GuiTests(unittest.TestCase):
                            lambda: window.dataset_table.selectRow(1)):
                 begin()
                 change()
-                self.assertIsNone(preview._fraction_drag)
-                self.assertFalse(consumer.fraction_selection.isVisible())
+                self.assertIsNone(preview._span_drag)
+                self.assertFalse(consumer.span_selection.isVisible())
                 self.assertEqual(window.project.fraction_regions, [])
             begin()
             window.resize(1300, 950)
             self.app.processEvents()
-            self.assertIsNone(preview._fraction_drag)
+            self.assertIsNone(preview._span_drag)
             begin()
             window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
-            self.assertIsNone(preview._fraction_drag)
+            self.assertIsNone(preview._span_drag)
             self.assertTrue(consumer._closed)
             preview = window._screen_preview
             consumer = preview.consumer
             begin()
             window.screen_preview_checkbox.setChecked(False)
-            self.assertIsNone(preview._fraction_drag)
+            self.assertIsNone(preview._span_drag)
             self.assertTrue(consumer._closed)
             self.assertEqual(window._span_selector_mode, "fraction")
             # A preview failure keeps the existing Matplotlib tool available.
             window.screen_preview_checkbox.setChecked(True)
             preview = window._screen_preview
             consumer = preview.consumer
-            with patch.object(consumer, "set_fraction_selection", side_effect=RuntimeError("selection failure")):
+            with patch.object(consumer, "set_span_selection", side_effect=RuntimeError("selection failure")):
                 preview.handle_event("button_press_event", event(10.0))
             self.assertIsNone(window._screen_preview)
             self.assertTrue(consumer._closed)

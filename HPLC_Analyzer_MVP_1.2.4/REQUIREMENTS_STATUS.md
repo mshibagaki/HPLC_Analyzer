@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-28 (Issue #102 delivery)
+Updated: 2026-08-28 (Issue #104 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -26,7 +26,7 @@ This tracked file is the source of truth for the original product requests. Upda
 | Priority | Requirement | Current boundary | Next coherent delivery |
 |---|---|---|---|
 | High | Spectrum-domain selection and retention labels | Chromatogram multi-selection/labels are complete, but there is no separate spectrum data model, importer, view, or shared chromatogram/spectrum selection contract | Specify supported spectrum source format and semantics, then add the persisted model/import/view before enabling common labels |
-| High | Replace the interactive Matplotlib screen renderer | Backend-neutral screen boundary, benchmark, and 11-feature PyQtGraph parity probe exist; the production screen still uses Matplotlib | Add an opt-in Windows 11 PyQtGraph surface with automatic Matplotlib fallback and regression coverage; do not change the default until physical compatibility evidence exists |
+| High | Replace the interactive Matplotlib screen renderer | Backend-neutral surface lifecycle plus production-used base trace/Y-axis/legend/B% scene, benchmark, and 11-feature PyQtGraph parity probe exist; overlays and navigation still create Matplotlib artists | Extract overlay/interaction scene commands, then add an opt-in Windows 11 PyQtGraph consumer with automatic Matplotlib fallback; do not change the default until physical compatibility evidence exists |
 | Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
 
 The following are useful extensions, but are not gaps in the original requested minimum: a shared analyte master library beyond the persisted Run snapshot, multi-peak deconvolution/curved baseline fitting beyond Gaussian/EMG single-peak fitting, and the long-term TraceLab platform split.

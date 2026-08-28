@@ -112,6 +112,7 @@ from .settings_store import (
 )
 from .update_check import check_for_updates
 from .screen_renderer import create_screen_render_surface
+from .screen_scene import compose_base_screen_scene
 from .qt_compat import (
     QAction,
     QActionGroup,
@@ -2457,6 +2458,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if not selected_dataset_ids and selected is not None:
             selected_dataset_ids.add(selected.id)
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
+        base_scene = compose_base_screen_scene(
+            self.project,
+            selected_dataset_id=selected.id if selected is not None else "",
+            color_resolver=dataset_display_color,
+        )
+        trace_by_id = {trace.dataset_id: trace for trace in base_scene.traces}
         if not self._split_y_axes and any(
             dataset.y_axis == 2 for dataset in visible
         ):
@@ -2464,12 +2471,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.axes_overview is not None:
                 self.axes_overview_right = self.axes_overview.twinx()
                 self.axes_overview_right.set_navigate(False)
-        if (
-            self.project.method.show_gradient_b
-            and selected is not None
-            and selected.visible
-            and selected.measurement.gradient
-        ):
+        if base_scene.gradient is not None and selected is not None:
             gradient_host = (
                 self.axes_right
                 if self._split_y_axes and selected.y_axis == 2
@@ -2480,18 +2482,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.axes_gradient.spines["right"].set_position(("outward", 62))
 
         plotted = 0
-        for index, dataset in enumerate(self.project.datasets):
-            if not dataset.visible:
+        for dataset in self.project.datasets:
+            trace = trace_by_id.get(dataset.id)
+            if trace is None:
                 continue
-            try:
-                values = display_values(dataset, unit)
-            except ValueError:
-                continue
-            color = dataset_display_color(dataset, index)
-            label = self.project.legend_label_for(dataset)
-            target_axes = self.axes_right if dataset.y_axis == 2 and self.axes_right is not None else self.axes
-            full_x = dataset.time_min + dataset.x_shift_min
-            full_y = values + dataset.offset
+            color = trace.color
+            label = trace.label
+            target_axes = self.axes_right if trace.axis_id == "y2" and self.axes_right is not None else self.axes
+            full_x = trace.x_values
+            full_y = trace.y_values
             self._plot_source_cache[dataset.id] = (full_x, full_y)
             screen_x, screen_y = self._screen_data(
                 full_x,
@@ -2503,7 +2502,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 screen_y,
                 label=label,
                 color=color,
-                linewidth=self.project.method.line_width,
+                linewidth=trace.line_width,
                 antialiased=not self._is_lightweight_rendering(),
             )[0]
             self._dataset_lines[dataset.id] = line
@@ -2621,7 +2620,13 @@ class MainWindow(QtWidgets.QMainWindow):
                             )[0]
                     if self.project.method.show_retention_labels and peak.retention_time_min is not None:
                         retention = float(peak.retention_time_min)
-                        label_y = float(np.interp(retention, dataset.time_min, values)) + dataset.offset
+                        label_y = float(
+                            np.interp(
+                                retention + dataset.x_shift_min,
+                                trace.x_values,
+                                trace.y_values,
+                            )
+                        )
                         target_axes.annotate(
                             "%.2f" % (retention + dataset.x_shift_min),
                             xy=(retention + dataset.x_shift_min, label_y),
@@ -2643,22 +2648,11 @@ class MainWindow(QtWidgets.QMainWindow):
                         )
                     self._peak_overlay_artists[peak.id] = overlay
 
-        if self.axes_gradient is not None and selected is not None:
-            ordered_gradient = sorted(selected.measurement.gradient, key=lambda point: point.time_min)
-            gradient_label = "%B"
-            if self.project.method.gradient_legend_include_dataset_name:
-                gradient_label = "%B ({})".format(
-                    self.project.legend_label_for(selected)
-                )
-            gradient_x = np.asarray(
-                [point.time_min for point in ordered_gradient], dtype=float
-            )
-            gradient_y = np.asarray(
-                [point.b_pct for point in ordered_gradient], dtype=float
-            )
+        if self.axes_gradient is not None and base_scene.gradient is not None:
+            gradient_spec = base_scene.gradient
             gradient_screen_x, gradient_screen_y = self._screen_data(
-                gradient_x,
-                gradient_y,
+                gradient_spec.x_values,
+                gradient_spec.y_values,
                 self.axes_gradient,
                 overview=True,
             )
@@ -2668,12 +2662,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 color="#111827",
                 linestyle=":",
                 linewidth=1.3,
-                label=gradient_label,
+                label=gradient_spec.label,
                 antialiased=not self._is_lightweight_rendering(),
             )
             self.axes_gradient.set_ylim(0.0, 100.0)
             self.axes_gradient.set_ylabel(
-                self.project.method.gradient_axis_label.strip() or "Mobile phase B (%)"
+                gradient_spec.axis_label
             )
 
         self._draw_vertical_markers()
@@ -2714,12 +2708,7 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 self.axes_overview.grid(False, which="major")
 
-        times = [float(dataset.time_min[-1] + dataset.x_shift_min) for dataset in visible if dataset.time_min.size]
-        times.extend(
-            max(point.time_min for point in dataset.measurement.gradient)
-            for dataset in visible
-            if dataset.measurement.gradient
-        )
+        times = list(base_scene.time_candidates)
         if not times:
             times = [float(dataset.time_min[-1] + dataset.x_shift_min) for dataset in self.project.datasets if dataset.time_min.size]
         if times:

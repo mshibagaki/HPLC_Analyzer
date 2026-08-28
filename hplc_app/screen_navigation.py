@@ -186,4 +186,6 @@ def axis_pan_view(
         y1_limits = _shifted_limits(initial.y1, delta_y, canvas_height)
     if target in ("y2", "plot", "plot_y2") and initial.y2 is not None:
         y2_limits = _shifted_limits(initial.y2, delta_y, canvas_height)
-    return ScreenViewState(x=x_limits, y1=y1_limits, y2=y2_limits)
+    return ScreenViewState(
+        x=x_limits, y1=y1_limits, y2=y2_limits, gradient=initial.gradient
+    )

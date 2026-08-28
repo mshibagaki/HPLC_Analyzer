@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import weakref
 
 from .screen_events import ScreenPointerEvent
 from .screen_navigation import ScreenOverviewState, ScreenViewState
@@ -23,6 +24,11 @@ def pyqtgraph_scene_available() -> bool:
 
 class PyQtGraphSceneConsumer:
     """Translate a production scene into optional PyQtGraph graphics items."""
+
+    POINTER_EVENTS = frozenset((
+        "button_press_event", "motion_notify_event",
+        "button_release_event", "scroll_event",
+    ))
 
     def __init__(self, size=(1000, 700)):
         try:
@@ -71,6 +77,96 @@ class PyQtGraphSceneConsumer:
         self.items = []
         self.overview_items = []
         self.last_evidence = {}
+        self._connections = {}
+        self._next_connection_id = 1
+        self._closed = False
+        self._install_pointer_filter()
+
+    def _install_pointer_filter(self):
+        owner_ref = weakref.ref(self)
+
+        class PointerFilter(self.qt_core.QObject):
+            def eventFilter(self, watched, event):
+                owner = owner_ref()
+                if owner is not None:
+                    owner._dispatch_viewport_event(event)
+                # Observing a sample must not suppress native Qt behavior.
+                return False
+
+        viewport = self.widget.viewport()
+        self._pointer_filter = PointerFilter(viewport)
+        viewport.setMouseTracking(True)
+        viewport.installEventFilter(self._pointer_filter)
+
+    def connect_event(self, event_name, callback):
+        if self._closed:
+            raise RuntimeError("Renderer is closed")
+        if event_name not in self.POINTER_EVENTS:
+            raise ValueError("Unsupported pointer event: %s" % event_name)
+        if not callable(callback):
+            raise TypeError("Pointer callback must be callable")
+        connection_id = self._next_connection_id
+        self._next_connection_id += 1
+        self._connections[connection_id] = (event_name, callback)
+        return connection_id
+
+    def disconnect_event(self, connection_id):
+        self._connections.pop(connection_id, None)
+
+    def _dispatch_viewport_event(self, event):
+        types = getattr(self.qt_core.QEvent, "Type", self.qt_core.QEvent)
+        names = {
+            types.MouseButtonPress: "button_press_event",
+            types.MouseButtonDblClick: "button_press_event",
+            types.MouseMove: "motion_notify_event",
+            types.MouseButtonRelease: "button_release_event",
+            types.Wheel: "scroll_event",
+        }
+        event_name = names.get(event.type())
+        listeners = tuple(
+            (connection_id, callback)
+            for connection_id, (name, callback) in self._connections.items()
+            if name == event_name
+        )
+        if not listeners:
+            return
+        buttons = getattr(self.qt_core.Qt, "MouseButton", self.qt_core.Qt)
+        if event_name == "scroll_event":
+            delta = event.angleDelta().y() or event.pixelDelta().y()
+            if not delta:
+                return
+            button = "up" if delta > 0 else "down"
+        else:
+            raw_button = (
+                event.buttons() if event_name == "motion_notify_event"
+                else event.button()
+            )
+            # Qt uses Left=1/Right=2/Middle=4; the shared contract uses 1/3/2.
+            button = next((
+                value for flag, value in (
+                    (buttons.LeftButton, 1), (buttons.MiddleButton, 2),
+                    (buttons.RightButton, 3),
+                ) if raw_button & flag
+            ), None)
+        modifiers = getattr(self.qt_core.Qt, "KeyboardModifier", self.qt_core.Qt)
+        key = "+".join(
+            name for flag, name in (
+                (modifiers.ControlModifier, "ctrl"),
+                (modifiers.ShiftModifier, "shift"),
+                (modifiers.AltModifier, "alt"),
+                (modifiers.MetaModifier, "super"),
+            ) if event.modifiers() & flag
+        )
+        position = event.position() if hasattr(event, "position") else event.pos()
+        if hasattr(position, "toPoint"):
+            position = position.toPoint()
+        normalized = self.pointer_event(
+            self.widget.mapToScene(position), button=button,
+            double_click=event.type() == types.MouseButtonDblClick, key=key,
+        )
+        for connection_id, callback in listeners:
+            if connection_id in self._connections:
+                callback(normalized)
 
     def _brush(self, color, alpha):
         value = self.pg.mkColor(color)
@@ -383,4 +479,9 @@ class PyQtGraphSceneConsumer:
         return self.widget.grab()
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        self._connections.clear()
+        self.widget.viewport().removeEventFilter(self._pointer_filter)
         self.widget.close()

@@ -104,6 +104,7 @@ from hplc_app.renderer_parity import (
     three_axis_ranges_are_independent,
     unavailable_parity_report,
 )
+from hplc_app.screen_scene import compose_base_screen_scene
 from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
 from hplc_app.update_check import (
     check_for_updates,
@@ -535,6 +536,57 @@ class AnalysisTests(unittest.TestCase):
         self.assertFalse(capabilities.supports_matplotlib_artists)
         with self.assertRaises((AttributeError, TypeError)):
             capabilities.backend_id = "changed"
+
+    def test_base_screen_scene_preserves_trace_axis_legend_gradient_and_raw_data(self):
+        first = self.synthetic_dataset()
+        first.x_shift_min = 0.25
+        first.offset = 12.0
+        second = self.synthetic_dataset()
+        second.id = "second-dataset"
+        second.run_id = "second-run"
+        second.label = "secondary"
+        second.y_axis = 2
+        second.measurement.wavelength_nm = 214.0
+        invalid = self.synthetic_dataset()
+        invalid.id = "invalid-dataset"
+        invalid.run_id = "invalid-run"
+        invalid.measurement.aux_range_au_per_v = None
+        hidden = self.synthetic_dataset()
+        hidden.id = "hidden-dataset"
+        hidden.run_id = "hidden-run"
+        hidden.visible = False
+        project = Project(datasets=[first, second, invalid, hidden])
+        project.method.display_unit = "mAU"
+        project.method.show_gradient_b = True
+        project.method.gradient_legend_include_dataset_name = True
+        raw_before = (
+            first.time_min.copy(),
+            first.intensity_uv.copy(),
+            second.time_min.copy(),
+            second.intensity_uv.copy(),
+        )
+        scene = compose_base_screen_scene(
+            project,
+            selected_dataset_id=second.id,
+            color_resolver=lambda dataset, index: "#%06d" % (index + 1),
+        )
+        self.assertEqual([trace.axis_id for trace in scene.traces], ["y1", "y2"])
+        self.assertEqual(
+            [trace.dataset_id for trace in scene.traces], [first.id, second.id]
+        )
+        self.assertEqual([trace.color for trace in scene.traces], ["#000001", "#000002"])
+        self.assertEqual(scene.traces[0].x_values[0], 0.25)
+        self.assertIn("secondary", scene.traces[1].label)
+        self.assertIsNotNone(scene.gradient)
+        self.assertEqual(scene.gradient.dataset_id, second.id)
+        self.assertEqual(scene.gradient.y_values.tolist(), [0.0, 100.0])
+        self.assertIn("%B (", scene.gradient.label)
+        self.assertFalse(scene.traces[0].x_values.flags.writeable)
+        for current, original in zip(
+            (first.time_min, first.intensity_uv, second.time_min, second.intensity_uv),
+            raw_before,
+        ):
+            self.assertTrue(np.array_equal(current, original))
 
     def test_renderer_benchmark_is_deterministic_and_non_mutating(self):
         workload = RendererWorkload(trace_count=2, point_count=200, repeats=1)

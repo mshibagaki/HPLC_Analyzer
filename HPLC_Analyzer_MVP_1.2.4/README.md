@@ -140,7 +140,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 - 軽量描画は画面だけをpixel幅に応じてmin/max間引きし、非表示データを描画対象から除外
 - パン／連続ズーム中は再描画を抑制し、操作終了時に現在の表示範囲を正式再描画
 
-画面レンダラー候補は通常依存へ追加する前に、隔離benchmarkで比較します。Matplotlib基準は既存依存だけで実行でき、PyQtGraphは明示的に導入した環境でだけ測定されます。Win7/Python 3.8候補は`pyqtgraph==0.12.4`、新しい環境は別途評価し、どちらも現時点ではApplication本体へ組み込みません。
+画面レンダラー候補は通常依存へ追加する前に、隔離benchmarkで比較します。Matplotlib基準は既存依存だけで実行でき、PyQtGraphは明示的に導入した環境でだけ測定されます。表示trace、Y1/Y2割当、凡例、B%系列はbackend-neutral sceneとして構成し、現行Matplotlib画面も同じsceneを使用します。Win7/Python 3.8候補は`pyqtgraph==0.12.4`、新しい環境は別途評価し、overlay・操作sceneとfallbackが完成するまではApplicationの選択肢へ追加しません。
 
 ```text
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json

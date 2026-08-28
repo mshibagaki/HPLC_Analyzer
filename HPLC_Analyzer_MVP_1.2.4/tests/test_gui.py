@@ -73,6 +73,10 @@ from hplc_app.qt_compat import (
 )
 from hplc_app.report import render_analysis_report_pages
 from hplc_app.screen_events import ScreenPointerEvent
+from hplc_app.screen_navigation import (
+    ScreenViewState,
+    compose_overview_state,
+)
 from hplc_app.settings_store import ApplicationSettings
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from hplc_app.update_ui import UpdateDownloadDialog, UpdateDownloadWorker
@@ -283,6 +287,19 @@ class GuiTests(unittest.TestCase):
         consumer = PyQtGraphSceneConsumer(size=(800, 500))
         try:
             evidence = consumer.render(window._screen_scene)
+            view_evidence = consumer.apply_view_state(
+                ScreenViewState(
+                    x=(4.0, 22.0),
+                    y1=(-0.1, 0.2),
+                    y2=(-0.3, 0.4),
+                    gradient=(10.0, 80.0),
+                ),
+                compose_overview_state(
+                    enabled=True,
+                    full_x=(0.0, 60.0),
+                    detail_x=(4.0, 22.0),
+                ),
+            )
             pixmap = consumer.snapshot()
             self.assertEqual(evidence["counts"]["traces"], 2)
             self.assertEqual(evidence["counts"]["gradients"], 1)
@@ -293,8 +310,24 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(evidence["shared_x"])
             self.assertAlmostEqual(evidence["gradient_range"][0], 0.0, places=2)
             self.assertAlmostEqual(evidence["gradient_range"][1], 100.0, places=2)
+            self.assertEqual(view_evidence["x"], (4.0, 22.0))
+            self.assertEqual(view_evidence["y1"], (-0.1, 0.2))
+            self.assertEqual(view_evidence["y2"], (-0.3, 0.4))
+            self.assertEqual(view_evidence["gradient"], (10.0, 80.0))
+            self.assertTrue(view_evidence["overview_enabled"])
+            self.assertEqual(view_evidence["overview_full_x"], (0.0, 60.0))
+            self.assertEqual(view_evidence["overview_detail_x"], (4.0, 22.0))
             self.assertFalse(pixmap.isNull())
             self.assertGreater(pixmap.width(), 0)
+            hidden_overview = consumer.apply_view_state(
+                ScreenViewState(x=(4.0, 22.0), y1=(-0.1, 0.2)),
+                compose_overview_state(
+                    enabled=False,
+                    full_x=(0.0, 60.0),
+                    detail_x=(4.0, 22.0),
+                ),
+            )
+            self.assertFalse(hidden_overview["overview_enabled"])
             for trace, original in zip(window._screen_scene.traces, source_before):
                 self.assertTrue(np.array_equal(trace.x_values, original))
         finally:

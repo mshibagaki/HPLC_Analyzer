@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 
+from .screen_navigation import ScreenOverviewState, ScreenViewState
+
 
 class OptionalRendererUnavailable(RuntimeError):
     pass
@@ -36,7 +38,21 @@ class PyQtGraphSceneConsumer:
             self.application = qt_widgets.QApplication([])
         self.widget = self.pg.GraphicsLayoutWidget(show=False)
         self.widget.resize(int(size[0]), int(size[1]))
-        self.primary = self.widget.addPlot(row=0, col=0)
+        self.overview = self.widget.addPlot(row=0, col=0)
+        self.overview.setMaximumHeight(140)
+        self.overview.setMouseEnabled(x=False, y=False)
+        self.overview.hideAxis("left")
+        self.overview.hideAxis("bottom")
+        self.overview.setTitle("Overview", color="#4b5563", size="8pt")
+        self.overview_region = self.pg.LinearRegionItem(
+            values=(0.0, 1.0),
+            movable=False,
+            brush=self._brush("#2563eb", 0.14),
+            pen=self.pg.mkPen("#1d4ed8", width=0.8),
+        )
+        self.overview.addItem(self.overview_region)
+        self.overview.setVisible(False)
+        self.primary = self.widget.addPlot(row=1, col=0)
         self.secondary = self.pg.ViewBox()
         self.gradient = self.pg.ViewBox()
         self.primary.showAxis("right")
@@ -52,6 +68,7 @@ class PyQtGraphSceneConsumer:
         self.primary.vb.sigResized.connect(self._sync_auxiliary_views)
         self._sync_auxiliary_views()
         self.items = []
+        self.overview_items = []
         self.last_evidence = {}
 
     def _brush(self, color, alpha):
@@ -90,6 +107,13 @@ class PyQtGraphSceneConsumer:
                 name=trace.label,
             )
             self._add(item, trace.axis_id)
+            overview_item = self.pg.PlotCurveItem(
+                trace.x_values,
+                trace.y_values,
+                pen=self.pg.mkPen(trace.color, width=trace.line_width),
+            )
+            self.overview.addItem(overview_item)
+            self.overview_items.append(overview_item)
             counts["traces"] += 1
 
         if scene.gradient is not None:
@@ -221,6 +245,7 @@ class PyQtGraphSceneConsumer:
 
         self.primary.enableAutoRange()
         self.secondary.enableAutoRange()
+        self.overview.enableAutoRange()
         self.gradient.setYRange(0.0, 100.0, padding=0.0)
         self._sync_auxiliary_views()
         self.application.processEvents()
@@ -237,6 +262,49 @@ class PyQtGraphSceneConsumer:
             "gradient_range": tuple(gradient_range[1]),
         }
         return dict(self.last_evidence)
+
+    @staticmethod
+    def _range_tuple(view_range):
+        return tuple(float(value) for value in view_range)
+
+    def apply_view_state(
+        self,
+        view_state: ScreenViewState,
+        overview_state: ScreenOverviewState,
+    ):
+        """Apply backend-neutral navigation state to the optional renderer."""
+        self.primary.setXRange(*view_state.x, padding=0.0)
+        self.primary.setYRange(*view_state.y1, padding=0.0)
+        if view_state.y2 is not None:
+            self.secondary.setYRange(*view_state.y2, padding=0.0)
+        if view_state.gradient is not None:
+            self.gradient.setYRange(*view_state.gradient, padding=0.0)
+
+        self.overview.setVisible(overview_state.enabled)
+        self.overview_region.setVisible(overview_state.enabled)
+        if overview_state.enabled:
+            self.overview.setXRange(*overview_state.full_x, padding=0.0)
+            self.overview_region.setRegion(overview_state.detail_x)
+
+        self._sync_auxiliary_views()
+        self.application.processEvents()
+        primary_range = self.primary.viewRange()
+        secondary_range = self.secondary.viewRange()
+        gradient_range = self.gradient.viewRange()
+        overview_range = self.overview.viewRange()
+        evidence = {
+            "x": self._range_tuple(primary_range[0]),
+            "y1": self._range_tuple(primary_range[1]),
+            "y2": self._range_tuple(secondary_range[1]),
+            "gradient": self._range_tuple(gradient_range[1]),
+            "overview_enabled": self.overview.isVisible(),
+            "overview_full_x": self._range_tuple(overview_range[0]),
+            "overview_detail_x": self._range_tuple(
+                self.overview_region.getRegion()
+            ),
+        }
+        self.last_evidence["view_state"] = evidence
+        return dict(evidence)
 
     def snapshot(self):
         self.widget.show()

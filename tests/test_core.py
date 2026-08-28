@@ -605,6 +605,7 @@ class AnalysisTests(unittest.TestCase):
             x=(0.0, 100.0),
             y1=(0.0, 1000.0),
             y2=(-100.0, 100.0),
+            gradient=(10.0, 90.0),
         )
         session = begin_axis_pan(
             ScreenPointerEvent(
@@ -625,6 +626,7 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(shifted.x, (-10.0, 90.0))
         self.assertEqual(shifted.y1, initial.y1)
         self.assertEqual(shifted.y2, (-120.0, 80.0))
+        self.assertEqual(shifted.gradient, initial.gradient)
         self.assertIsNone(
             begin_axis_pan(
                 ScreenPointerEvent(

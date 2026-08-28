@@ -6,7 +6,9 @@ import importlib
 import weakref
 
 from .screen_events import ScreenPointerEvent
-from .screen_navigation import ScreenOverviewState, ScreenViewState
+from .screen_navigation import (
+    ScreenOverviewState, ScreenViewState, compose_overview_state,
+)
 
 
 class OptionalRendererUnavailable(RuntimeError):
@@ -80,6 +82,8 @@ class PyQtGraphSceneConsumer:
         self._connections = {}
         self._next_connection_id = 1
         self._closed = False
+        self._pointer_handler = None
+        self.overview_state = ScreenOverviewState(False, (0.0, 1.0), (0.0, 1.0))
         self._install_pointer_filter()
 
     def _install_pointer_filter(self):
@@ -89,8 +93,7 @@ class PyQtGraphSceneConsumer:
             def eventFilter(self, watched, event):
                 owner = owner_ref()
                 if owner is not None:
-                    owner._dispatch_viewport_event(event)
-                # Observing a sample must not suppress native Qt behavior.
+                    return owner._dispatch_viewport_event(event)
                 return False
 
         viewport = self.widget.viewport()
@@ -113,6 +116,17 @@ class PyQtGraphSceneConsumer:
     def disconnect_event(self, connection_id):
         self._connections.pop(connection_id, None)
 
+    def set_pointer_handler(self, handler):
+        """Install one explicit owner; observers remain non-consuming."""
+        if self._closed:
+            raise RuntimeError("Renderer is closed")
+        if handler is not None:
+            if not callable(handler):
+                raise TypeError("Pointer handler must be callable")
+            if self._pointer_handler is not None and self._pointer_handler != handler:
+                raise RuntimeError("A pointer handler is already installed")
+        self._pointer_handler = handler
+
     def _dispatch_viewport_event(self, event):
         types = getattr(self.qt_core.QEvent, "Type", self.qt_core.QEvent)
         names = {
@@ -123,19 +137,23 @@ class PyQtGraphSceneConsumer:
             types.Wheel: "scroll_event",
         }
         event_name = names.get(event.type())
+        if event_name is None:
+            return False
         listeners = tuple(
             (connection_id, callback)
             for connection_id, (name, callback) in self._connections.items()
             if name == event_name
         )
-        if not listeners:
-            return
+        if not listeners and self._pointer_handler is None:
+            return False
         buttons = getattr(self.qt_core.Qt, "MouseButton", self.qt_core.Qt)
         if event_name == "scroll_event":
             delta = event.angleDelta().y() or event.pixelDelta().y()
             if not delta:
-                return
-            button = "up" if delta > 0 else "down"
+                if self._pointer_handler is None:
+                    return False
+                listeners = ()
+            button = ("up" if delta > 0 else "down") if delta else None
         else:
             raw_button = (
                 event.buttons() if event_name == "motion_notify_event"
@@ -164,9 +182,14 @@ class PyQtGraphSceneConsumer:
             self.widget.mapToScene(position), button=button,
             double_click=event.type() == types.MouseButtonDblClick, key=key,
         )
+        consumed = (
+            bool(self._pointer_handler(event_name, normalized))
+            if self._pointer_handler is not None else False
+        )
         for connection_id, callback in listeners:
             if connection_id in self._connections:
                 callback(normalized)
+        return consumed or self._closed
 
     def _brush(self, color, alpha):
         value = self.pg.mkColor(color)
@@ -246,7 +269,8 @@ class PyQtGraphSceneConsumer:
             axis_role=axis_role,
             hit_region=hit_region,
             canvas_x=float(widget_position.x()),
-            canvas_y=float(widget_position.y()),
+            # Shared pan calculations use bottom-left, Y-up canvas pixels.
+            canvas_y=float(self.widget.viewport().height() - widget_position.y()),
             data_coordinates=tuple(coordinates),
             double_click=bool(double_click),
             key=str(key or ""),
@@ -419,6 +443,9 @@ class PyQtGraphSceneConsumer:
         primary_range = self.primary.viewRange()
         secondary_range = self.secondary.viewRange()
         gradient_range = self.gradient.viewRange()
+        self.overview_state = compose_overview_state(
+            False, primary_range[0], primary_range[0]
+        )
         self.last_evidence = {
             "counts": counts,
             "shared_x": all(
@@ -440,6 +467,7 @@ class PyQtGraphSceneConsumer:
         overview_state: ScreenOverviewState,
     ):
         """Apply backend-neutral navigation state to the optional renderer."""
+        self.overview_state = overview_state
         self.primary.setXRange(*view_state.x, padding=0.0)
         self.primary.setYRange(*view_state.y1, padding=0.0)
         if view_state.y2 is not None:
@@ -473,6 +501,15 @@ class PyQtGraphSceneConsumer:
         self.last_evidence["view_state"] = evidence
         return dict(evidence)
 
+    def capture_view_state(self):
+        primary_range = self.primary.viewRange()
+        return ScreenViewState(
+            x=self._range_tuple(primary_range[0]),
+            y1=self._range_tuple(primary_range[1]),
+            y2=self._range_tuple(self.secondary.viewRange()[1]),
+            gradient=self._range_tuple(self.gradient.viewRange()[1]),
+        )
+
     def snapshot(self):
         self.widget.show()
         self.application.processEvents()
@@ -482,6 +519,7 @@ class PyQtGraphSceneConsumer:
         if self._closed:
             return
         self._closed = True
+        self._pointer_handler = None
         self._connections.clear()
         self.widget.viewport().removeEventFilter(self._pointer_filter)
         self.widget.close()

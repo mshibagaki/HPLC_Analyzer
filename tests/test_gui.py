@@ -84,6 +84,7 @@ from hplc_app.pyqtgraph_scene import (
     PyQtGraphSceneConsumer,
     pyqtgraph_scene_available,
 )
+from hplc_app.pyqtgraph_navigation import PyQtGraphNavigationController
 from tests.gcd_fixtures import synthetic_gcd_bytes
 
 
@@ -445,6 +446,123 @@ class GuiTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 consumer.connect_event("scroll_event", presses.append)
         finally:
+            consumer.close()
+
+    def test_pyqtgraph_navigation_owns_zoom_pan_overview_and_history(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional PyQtGraph dependency is not installed")
+        consumer = PyQtGraphSceneConsumer(size=(800, 500))
+        navigation = None
+        try:
+            initial = ScreenViewState(
+                x=(20.0, 80.0), y1=(0.0, 100.0),
+                y2=(0.0, 1000.0), gradient=(10.0, 90.0),
+            )
+            consumer.apply_view_state(initial, compose_overview_state(
+                False, (0.0, 100.0), initial.x
+            ))
+            consumer.snapshot()
+            navigation = PyQtGraphNavigationController(consumer)
+            core, gui = consumer.qt_core, consumer.qt_gui
+            types = core.QEvent.Type
+            buttons, modifiers = core.Qt.MouseButton, core.Qt.KeyboardModifier
+            viewport = consumer.widget.viewport()
+
+            def send_mouse(kind, position, button, held):
+                event = gui.QMouseEvent(
+                    kind, core.QPointF(position),
+                    core.QPointF(viewport.mapToGlobal(position)),
+                    button, held, modifiers.NoModifier,
+                )
+                consumer.application.sendEvent(viewport, event)
+
+            observed = []
+            consumer.connect_event("scroll_event", observed.append)
+            position = consumer.widget.mapFromScene(
+                consumer.primary.getAxis("right").sceneBoundingRect().center()
+            )
+            wheel = gui.QWheelEvent(
+                core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                core.QPoint(), core.QPoint(0, 120), buttons.NoButton,
+                modifiers.NoModifier, core.Qt.ScrollPhase.NoScrollPhase, False,
+            )
+            consumer.application.sendEvent(viewport, wheel)
+            zoomed = consumer.capture_view_state()
+            self.assertEqual(len(observed), 1)
+            self.assertEqual(observed[0].hit_region, "y2")
+            self.assertEqual(zoomed.x, initial.x)
+            self.assertEqual(zoomed.y1, initial.y1)
+            self.assertEqual(zoomed.gradient, initial.gradient)
+            self.assertAlmostEqual(zoomed.y2[1] - zoomed.y2[0], 800.0)
+            self.assertTrue(navigation.capabilities()["back"])
+            navigation.navigate("back")
+            self.assertEqual(consumer.capture_view_state(), initial)
+            navigation.navigate("forward")
+            self.assertEqual(consumer.capture_view_state(), zoomed)
+            navigation.navigate("home")
+            navigation.set_pan_enabled(True)
+            rectangle = consumer.primary.vb.sceneBoundingRect()
+            position = consumer.widget.mapFromScene(rectangle.center())
+            moved = position + core.QPoint(20, 30)
+            send_mouse(types.MouseButtonPress, position, buttons.LeftButton, buttons.LeftButton)
+            consumer.application.sendEvent(viewport, wheel)
+            self.assertEqual(consumer.capture_view_state(), initial)
+            send_mouse(types.MouseMove, moved, buttons.NoButton, buttons.LeftButton)
+            send_mouse(types.MouseButtonRelease, moved, buttons.LeftButton, buttons.NoButton)
+            panned = consumer.capture_view_state()
+            self.assertAlmostEqual(panned.x[0], 20.0 - 20.0 * 60.0 / rectangle.width())
+            self.assertAlmostEqual(panned.y1[0], 30.0 * 100.0 / rectangle.height())
+            self.assertAlmostEqual(panned.y2[0], 30.0 * 1000.0 / rectangle.height())
+            self.assertEqual(panned.gradient, initial.gradient)
+            navigation.navigate("back")
+            self.assertEqual(consumer.capture_view_state(), initial)
+            navigation.navigate("forward")
+            self.assertEqual(consumer.capture_view_state(), panned)
+            # Unimplemented native right-drag must not change our owned ranges.
+            send_mouse(types.MouseButtonPress, position, buttons.RightButton, buttons.RightButton)
+            send_mouse(types.MouseMove, moved, buttons.NoButton, buttons.RightButton)
+            send_mouse(types.MouseButtonRelease, moved, buttons.RightButton, buttons.NoButton)
+            self.assertEqual(consumer.capture_view_state(), panned)
+            consumer.apply_view_state(initial, compose_overview_state(
+                True, (0.0, 100.0), initial.x
+            ))
+            consumer.snapshot()
+            navigation.reset_history()
+            point = consumer.overview.vb.mapViewToScene(core.QPointF(95.0, 0.5))
+            position = consumer.widget.mapFromScene(point)
+            send_mouse(types.MouseButtonPress, position, buttons.LeftButton, buttons.LeftButton)
+            send_mouse(types.MouseButtonRelease, position, buttons.LeftButton, buttons.NoButton)
+            self.assertEqual(consumer.capture_view_state().x, (40.0, 100.0))
+            self.assertEqual(consumer.overview_region.getRegion(), (40.0, 100.0))
+            navigation.navigate("back")
+            self.assertEqual(consumer.capture_view_state(), initial)
+            # Zooming out beyond an overview's full extent is a no-op and must
+            # retain the forward entry instead of truncating navigation history.
+            full = ScreenViewState(
+                x=(0.0, 100.0), y1=initial.y1,
+                y2=initial.y2, gradient=initial.gradient,
+            )
+            consumer.apply_view_state(full, compose_overview_state(True, full.x, full.x))
+            navigation.reset_history()
+            navigation.handle_event("scroll_event", ScreenPointerEvent(
+                button="up", axis_role="y1", hit_region="x",
+            ))
+            navigation.navigate("back")
+            self.assertTrue(navigation.capabilities()["forward"])
+            navigation.handle_event("scroll_event", ScreenPointerEvent(
+                button="down", axis_role="y1", hit_region="x",
+            ))
+            self.assertEqual(consumer.capture_view_state(), full)
+            self.assertTrue(navigation.capabilities()["forward"])
+            with self.assertRaises(RuntimeError):
+                PyQtGraphNavigationController(consumer)
+            navigation.close()
+            navigation.close()
+            self.assertIsNone(consumer._pointer_handler)
+            self.assertFalse(consumer._dispatch_viewport_event(wheel))
+        finally:
+            if navigation is not None:
+                navigation.close()
             consumer.close()
 
     def test_lightweight_overview_is_coarser_and_peak_selection_reuses_patch(self):

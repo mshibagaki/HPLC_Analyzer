@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-28 (Issue #124 delivery)
+Updated: 2026-08-28 (Issue #128 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -26,7 +26,7 @@ This tracked file is the source of truth for the original product requests. Upda
 | Priority | Requirement | Current boundary | Next coherent delivery |
 |---|---|---|---|
 | High | Spectrum-domain selection and retention labels | Chromatogram multi-selection/labels are complete, but there is no separate spectrum data model, importer, view, or shared chromatogram/spectrum selection contract | Specify supported spectrum source format and semantics, then add the persisted model/import/view before enabling common labels |
-| High | Replace the interactive Matplotlib screen renderer | Production-used scene covers all static content. The optional PyQtGraph consumer applies the shared X and independent Y1/Y2/B% view state plus the overview full/detail window, full overlays, and snapshot. Pointer input, hit targets, pan, bounded view history, and overview state use backend-neutral contracts; current Matplotlib patch mutation is isolated behind its adapter method. Interactive event wiring and MainWindow backend selection/fallback are not connected | Connect normalized pointer events and navigation actions to the consumer, then expose it behind an opt-in Windows 11 setting with automatic Matplotlib fallback; do not change the default until physical compatibility evidence exists |
+| High | Replace the interactive Matplotlib screen renderer | Production-used scene covers all static content. The optional PyQtGraph consumer applies the shared X and independent Y1/Y2/B% view state plus the overview full/detail window, maps Qt scene positions and axis regions into `ScreenPointerEvent`, and supports full overlays and snapshot. Hit targets, pan, bounded view history, and overview state use backend-neutral contracts; current Matplotlib patch mutation is isolated behind its adapter method. Widget event subscription/action routing and MainWindow backend selection/fallback are not connected | Route Qt press/move/release/wheel events through the new consumer mapping into navigation actions, then expose it behind an opt-in Windows 11 setting with automatic Matplotlib fallback; do not change the default until physical compatibility evidence exists |
 | Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
 
 The following are useful extensions, but are not gaps in the original requested minimum: a shared analyte master library beyond the persisted Run snapshot, multi-peak deconvolution/curved baseline fitting beyond Gaussian/EMG single-peak fitting, and the long-term TraceLab platform split.

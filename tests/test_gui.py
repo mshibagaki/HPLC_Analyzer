@@ -301,6 +301,16 @@ class GuiTests(unittest.TestCase):
                 ),
             )
             pixmap = consumer.snapshot()
+            left_button = getattr(
+                getattr(consumer.qt_core.Qt, "MouseButton", consumer.qt_core.Qt),
+                "LeftButton",
+            )
+            plot_event = consumer.pointer_event(
+                consumer.primary.vb.sceneBoundingRect().center(),
+                button=left_button,
+                double_click=True,
+                key="ctrl",
+            )
             self.assertEqual(evidence["counts"]["traces"], 2)
             self.assertEqual(evidence["counts"]["gradients"], 1)
             self.assertEqual(evidence["counts"]["peak_overlays"], 1)
@@ -319,6 +329,31 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(view_evidence["overview_detail_x"], (4.0, 22.0))
             self.assertFalse(pixmap.isNull())
             self.assertGreater(pixmap.width(), 0)
+            self.assertIsInstance(plot_event, ScreenPointerEvent)
+            self.assertEqual(plot_event.button, 1)
+            self.assertEqual(plot_event.axis_role, "y1")
+            self.assertEqual(plot_event.hit_region, "plot")
+            self.assertTrue(plot_event.double_click)
+            self.assertEqual(plot_event.key, "ctrl")
+            self.assertIsNotNone(plot_event.data_for("y1")[0])
+            self.assertIsNotNone(plot_event.data_for("y2")[1])
+            self.assertIsNotNone(plot_event.data_for("gradient")[1])
+            overview_event = consumer.pointer_event(
+                consumer.overview.vb.sceneBoundingRect().center()
+            )
+            self.assertEqual(overview_event.axis_role, "overview_y1")
+            self.assertEqual(overview_event.hit_region, "x")
+            for axis, role, region in (
+                (consumer.primary.getAxis("bottom"), "y1", "x"),
+                (consumer.primary.getAxis("left"), "y1", "y1"),
+                (consumer.primary.getAxis("right"), "y2", "y2"),
+                (consumer.gradient_axis, "gradient", "gradient"),
+            ):
+                axis_event = consumer.pointer_event(
+                    axis.sceneBoundingRect().center()
+                )
+                self.assertEqual(axis_event.axis_role, role)
+                self.assertEqual(axis_event.hit_region, region)
             hidden_overview = consumer.apply_view_state(
                 ScreenViewState(x=(4.0, 22.0), y1=(-0.1, 0.2)),
                 compose_overview_state(

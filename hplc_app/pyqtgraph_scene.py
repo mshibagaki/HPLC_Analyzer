@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 
+from .screen_events import ScreenPointerEvent
 from .screen_navigation import ScreenOverviewState, ScreenViewState
 
 
@@ -84,6 +85,76 @@ class PyQtGraphSceneConsumer:
 
     def _view(self, axis_id):
         return self.secondary if axis_id == "y2" else self.primary
+
+    @staticmethod
+    def _button_value(button):
+        return getattr(button, "value", button)
+
+    @staticmethod
+    def _point_in_rect(scene_position, rectangle, padding=0.0):
+        x_value = float(scene_position.x())
+        y_value = float(scene_position.y())
+        return (
+            float(rectangle.left()) - padding
+            <= x_value
+            <= float(rectangle.right()) + padding
+            and float(rectangle.top()) - padding
+            <= y_value
+            <= float(rectangle.bottom()) + padding
+        )
+
+    def _pointer_region(self, scene_position):
+        if self.overview.isVisible() and self._point_in_rect(
+            scene_position, self.overview.vb.sceneBoundingRect()
+        ):
+            return "overview_y1", "x"
+
+        axis_regions = (
+            (self.primary.getAxis("bottom"), "y1", "x"),
+            (self.primary.getAxis("left"), "y1", "y1"),
+            (self.primary.getAxis("right"), "y2", "y2"),
+            (self.gradient_axis, "gradient", "gradient"),
+        )
+        for axis, role, region in axis_regions:
+            if self._point_in_rect(scene_position, axis.sceneBoundingRect(), 2.0):
+                return role, region
+        if self._point_in_rect(
+            scene_position, self.primary.vb.sceneBoundingRect()
+        ):
+            return "y1", "plot"
+        return "outside", ""
+
+    def pointer_event(
+        self,
+        scene_position,
+        button=None,
+        double_click=False,
+        key="",
+    ):
+        """Map a Qt scene position into the shared pointer-event contract."""
+        axis_role, hit_region = self._pointer_region(scene_position)
+        widget_position = self.widget.mapFromScene(scene_position)
+        coordinates = []
+        views = (
+            ("y1", self.primary.vb),
+            ("y2", self.secondary),
+            ("gradient", self.gradient),
+        )
+        if self.overview.isVisible():
+            views += (("overview_y1", self.overview.vb),)
+        for role, view in views:
+            point = view.mapSceneToView(scene_position)
+            coordinates.append((role, float(point.x()), float(point.y())))
+        return ScreenPointerEvent(
+            button=self._button_value(button),
+            axis_role=axis_role,
+            hit_region=hit_region,
+            canvas_x=float(widget_position.x()),
+            canvas_y=float(widget_position.y()),
+            data_coordinates=tuple(coordinates),
+            double_click=bool(double_click),
+            key=str(key or ""),
+        )
 
     def _add(self, item, axis_id="y1"):
         self._view(axis_id).addItem(item)

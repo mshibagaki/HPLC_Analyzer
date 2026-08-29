@@ -273,11 +273,17 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
             owner._navigate_view_history("home")
 
     def configure_subplots(self):
-        self._axis_pan_owner._stop_screen_preview(unsupported=True)
+        owner = self._axis_pan_owner
+        if owner is not None and getattr(owner, "_screen_preview", None) is not None:
+            owner.edit_axis_labels()
+            return
         return super().configure_subplots()
 
     def edit_parameters(self):
-        self._axis_pan_owner._stop_screen_preview(unsupported=True)
+        owner = self._axis_pan_owner
+        if owner is not None and getattr(owner, "_screen_preview", None) is not None:
+            owner.edit_axis_labels()
+            return
         return super().edit_parameters()
 
     def back(self, *args):

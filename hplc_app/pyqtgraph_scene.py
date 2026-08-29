@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import weakref
 
+from .rendering import minmax_decimate, screen_point_budget
 from .screen_events import ScreenPointerEvent
 from .screen_navigation import (
     ScreenOverviewState, ScreenViewState, compose_overview_state,
@@ -136,6 +137,7 @@ class PyQtGraphSceneConsumer:
         self._zoom_view = self.primary.vb
         self.zoom_rectangle.hide()
         self.last_evidence = {}
+        self._rendered_scene = None
         self._connections = {}
         self._next_connection_id = 1
         self._closed = False
@@ -449,7 +451,96 @@ class PyQtGraphSceneConsumer:
         self.items.append(item)
         return item
 
+    @staticmethod
+    def _trace_only(scene):
+        return (
+            scene.gradient is None
+            and not scene.peak_overlays
+            and not scene.vertical_markers
+            and not scene.fraction_regions
+            and not scene.text_annotations
+        )
+
+    def _can_reuse_trace_items(self, scene):
+        previous = self._rendered_scene
+        if previous is None or not self._trace_only(previous) or not self._trace_only(scene):
+            return False
+        previous_axes = {
+            trace.dataset_id: trace.axis_id for trace in previous.traces
+        }
+        current_axes = {trace.dataset_id: trace.axis_id for trace in scene.traces}
+        return previous_axes == current_axes and set(current_axes) == set(self.trace_items)
+
+    def _trace_screen_data(self, trace, *, overview=False):
+        width = max(1, int(self.widget.viewport().width()))
+        budget = screen_point_budget(width, overview=overview)
+        return minmax_decimate(trace.x_values, trace.y_values, budget)
+
+    def _finish_render(self, scene, counts, *, reused_traces=False):
+        self.primary.enableAutoRange()
+        self.secondary.enableAutoRange()
+        self.overview.enableAutoRange()
+        self.overview_secondary.enableAutoRange()
+        self.gradient.setYRange(0.0, 100.0, padding=0.0)
+        self._sync_auxiliary_views()
+        self.application.processEvents()
+        primary_range = self.primary.viewRange()
+        secondary_range = self.secondary.viewRange()
+        gradient_range = self.gradient.viewRange()
+        self.overview_state = compose_overview_state(
+            False, primary_range[0], primary_range[0]
+        )
+        self._rendered_scene = scene
+        self.last_evidence = {
+            "counts": counts,
+            "shared_x": all(
+                abs(current[index] - primary_range[0][index]) < 0.01
+                for current in (secondary_range[0], gradient_range[0])
+                for index in (0, 1)
+            ),
+            "gradient_range": tuple(gradient_range[1]),
+            "reused_traces": bool(reused_traces),
+            "source_trace_points": sum(
+                len(trace.x_values) for trace in scene.traces
+            ),
+            "rendered_trace_points": sum(
+                len(item.getData()[0]) for item in self.trace_items.values()
+            ),
+        }
+        return dict(self.last_evidence)
+
+    def _reuse_trace_items(self, scene):
+        for trace in scene.traces:
+            x_values, y_values = self._trace_screen_data(trace)
+            item = self.trace_items[trace.dataset_id]
+            item.setData(
+                x_values,
+                y_values,
+                pen=self.pg.mkPen(trace.color, width=trace.line_width),
+                name=trace.label,
+            )
+            overview_x, overview_y = self._trace_screen_data(
+                trace, overview=True
+            )
+            overview = self.overview_trace_items[trace.dataset_id]
+            overview.setData(
+                overview_x,
+                overview_y,
+                pen=self.pg.mkPen(trace.color, width=trace.line_width),
+            )
+        counts = {
+            "traces": len(scene.traces),
+            "gradients": 0,
+            "peak_overlays": 0,
+            "vertical_markers": 0,
+            "fraction_regions": 0,
+            "text_annotations": 0,
+        }
+        return self._finish_render(scene, counts, reused_traces=True)
+
     def render(self, scene):
+        if self._can_reuse_trace_items(scene):
+            return self._reuse_trace_items(scene)
         # Repeated application refreshes replace the scene, not append copies.
         for item in self.items:
             for view in (self.primary.vb, self.secondary) + tuple(layer[0] for layer in self.gradient_layers):
@@ -482,17 +573,21 @@ class PyQtGraphSceneConsumer:
             "text_annotations": 0,
         }
         for trace in scene.traces:
+            x_values, y_values = self._trace_screen_data(trace)
             item = self.pg.PlotCurveItem(
-                trace.x_values,
-                trace.y_values,
+                x_values,
+                y_values,
                 pen=self.pg.mkPen(trace.color, width=trace.line_width),
                 name=trace.label,
             )
             self._add(item, trace.axis_id)
             self.trace_items[trace.dataset_id] = item
+            overview_x, overview_y = self._trace_screen_data(
+                trace, overview=True
+            )
             overview_item = self.pg.PlotCurveItem(
-                trace.x_values,
-                trace.y_values,
+                overview_x,
+                overview_y,
                 pen=self.pg.mkPen(trace.color, width=trace.line_width),
             )
             overview_view = self.overview_secondary if trace.axis_id == "y2" else self.overview
@@ -633,29 +728,7 @@ class PyQtGraphSceneConsumer:
             self.annotation_items[annotation.annotation_id] = text
             counts["text_annotations"] += 1
 
-        self.primary.enableAutoRange()
-        self.secondary.enableAutoRange()
-        self.overview.enableAutoRange()
-        self.overview_secondary.enableAutoRange()
-        self.gradient.setYRange(0.0, 100.0, padding=0.0)
-        self._sync_auxiliary_views()
-        self.application.processEvents()
-        primary_range = self.primary.viewRange()
-        secondary_range = self.secondary.viewRange()
-        gradient_range = self.gradient.viewRange()
-        self.overview_state = compose_overview_state(
-            False, primary_range[0], primary_range[0]
-        )
-        self.last_evidence = {
-            "counts": counts,
-            "shared_x": all(
-                abs(current[index] - primary_range[0][index]) < 0.01
-                for current in (secondary_range[0], gradient_range[0])
-                for index in (0, 1)
-            ),
-            "gradient_range": tuple(gradient_range[1]),
-        }
-        return dict(self.last_evidence)
+        return self._finish_render(scene, counts)
 
     @staticmethod
     def _range_tuple(view_range):

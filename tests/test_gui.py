@@ -1018,6 +1018,72 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_pyqtgraph_reuses_high_density_trace_items_without_touching_raw_data(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional PyQtGraph dependency is not installed")
+        window = self.make_window()
+        window.project.method.show_gradient_b = False
+        window.project.method.show_integration_areas = False
+        window.project.method.show_retention_labels = False
+        time_values = np.linspace(0.0, 30.0, 12000)
+        for index, dataset in enumerate(window.project.datasets):
+            dataset.time_min = time_values.copy()
+            dataset.intensity_uv = np.sin(time_values + index).astype(float)
+        raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+        window._plot()
+        consumer = PyQtGraphSceneConsumer(size=(800, 500))
+        try:
+            first = consumer.render(window._screen_scene)
+            detail_items = dict(consumer.trace_items)
+            overview_items = dict(consumer.overview_trace_items)
+            self.assertFalse(first["reused_traces"])
+            self.assertLess(
+                first["rendered_trace_points"], first["source_trace_points"]
+            )
+            self.assertLessEqual(
+                first["rendered_trace_points"], 5000 * len(raw)
+            )
+
+            window.project.datasets[0].offset = 2.5
+            window.project.datasets[0].color = "#123456"
+            window.project.datasets[0].label = "Updated benchmark"
+            window.project.method.line_width = 2.25
+            window._plot()
+            second = consumer.render(window._screen_scene)
+            self.assertTrue(second["reused_traces"])
+            self.assertEqual(
+                set(consumer.trace_items), set(detail_items)
+            )
+            for dataset_id in detail_items:
+                self.assertIs(consumer.trace_items[dataset_id], detail_items[dataset_id])
+                self.assertIs(
+                    consumer.overview_trace_items[dataset_id],
+                    overview_items[dataset_id],
+                )
+            self.assertAlmostEqual(
+                float(np.max(consumer.trace_items[window.project.datasets[0].id].getData()[1])),
+                float(np.max(window._screen_scene.traces[0].y_values)),
+            )
+            updated_item = consumer.trace_items[window.project.datasets[0].id]
+            self.assertEqual(updated_item.name(), window._screen_scene.traces[0].label)
+            self.assertEqual(updated_item.opts["pen"].color().name(), "#123456")
+            self.assertAlmostEqual(updated_item.opts["pen"].widthF(), 2.25)
+
+            window.project.datasets[1].visible = False
+            window._plot()
+            rebuilt = consumer.render(window._screen_scene)
+            self.assertFalse(rebuilt["reused_traces"])
+            self.assertEqual(len(consumer.trace_items), 1)
+            self.assertEqual(len(consumer.overview_trace_items), 1)
+            self.assertEqual(len(consumer.items), 1)
+            self.assertEqual(len(consumer.overview_items), 1)
+            for dataset, values in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            consumer.close()
+            window.project.dirty = False
+            window.close()
+
     def test_pyqtgraph_viewport_dispatches_and_disconnects_shared_events(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional PyQtGraph dependency is not installed")

@@ -2623,7 +2623,8 @@ class GuiTests(unittest.TestCase):
                     self.assertEqual(state.x, (10.0, 20.0) if mode in ("x", "both") else initial.x)
                     if mode in ("y", "both"):
                         self.assertEqual(getattr(state, role), (100.0, 500.0))
-                    self.assertGreater(window._view_history.count, before_count)
+                    self.assertEqual(window._view_history.count, before_count)
+                    self.assertTrue(window.toolbar._actions["back"].isEnabled())
                     window.toolbar._actions["back"].trigger()
                     self.assertEqual(window._screen_view_state(), initial)
                     window.toolbar._actions["forward"].trigger()

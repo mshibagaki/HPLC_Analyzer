@@ -5574,6 +5574,69 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_preview_toolbar_configuration_reuses_persisted_axis_dialog(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            original_label = window.project.method.x_axis_label
+            undo_count = len(window._undo_stack)
+
+            class AcceptedDialog:
+                def apply_to_method(self, method):
+                    method.x_axis_label = "Native configured X"
+
+            with patch("hplc_app.gui.AxisLabelsDialog", return_value=AcceptedDialog()), \
+                    patch("hplc_app.gui.dialog_exec", return_value=True):
+                window.toolbar.edit_parameters()
+            self.assertIs(window._screen_preview, preview)
+            self.assertEqual(window.project.method.x_axis_label, "Native configured X")
+            self.assertEqual(len(window._undo_stack), undo_count + 1)
+            self.assertTrue(window.project.dirty)
+            self.assertEqual(
+                window._screen_preview.consumer.primary.getAxis("bottom").labelText,
+                "Native configured X",
+            )
+            window.undo()
+            self.assertEqual(window.project.method.x_axis_label, original_label)
+            self.assertIsNotNone(window._screen_preview)
+
+            class SubplotDialog:
+                def apply_to_method(self, method):
+                    method.x_axis_label = "Native subplot entry"
+
+            with patch("hplc_app.gui.AxisLabelsDialog", return_value=SubplotDialog()), \
+                    patch("hplc_app.gui.dialog_exec", return_value=True):
+                window.toolbar.configure_subplots()
+            self.assertEqual(window.project.method.x_axis_label, "Native subplot entry")
+            self.assertIsNotNone(window._screen_preview)
+
+            before = deepcopy(window.project.method)
+            before_undo = len(window._undo_stack)
+            window.project.dirty = False
+            with patch("hplc_app.gui.AxisLabelsDialog", return_value=SubplotDialog()), \
+                    patch("hplc_app.gui.dialog_exec", return_value=False):
+                window.toolbar.edit_parameters()
+            self.assertEqual(window.project.method, before)
+            self.assertEqual(len(window._undo_stack), before_undo)
+            self.assertFalse(window.project.dirty)
+            self.assertIsNotNone(window._screen_preview)
+
+            window.screen_preview_checkbox.setChecked(False)
+            with patch("hplc_app.gui.NavigationToolbar.edit_parameters",
+                       return_value="legacy-edit") as legacy_edit:
+                self.assertEqual(window.toolbar.edit_parameters(), "legacy-edit")
+            with patch("hplc_app.gui.NavigationToolbar.configure_subplots",
+                       return_value="legacy-layout") as legacy_layout:
+                self.assertEqual(window.toolbar.configure_subplots(), "legacy-layout")
+            legacy_edit.assert_called_once_with()
+            legacy_layout.assert_called_once_with()
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_retention_labels_are_drawn_for_every_selected_chromatogram(self):
         window = self.make_window()
         first, second = window.project.datasets

@@ -734,7 +734,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not enabled:
             self._stop_screen_preview()
             return
-        controls = (self.toolbar._actions["zoom"],)
+        controls = ()
         if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
             return
@@ -1320,8 +1320,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 action.triggered.connect(self._toolbar_navigation_triggered)
 
     def _toolbar_navigation_triggered(self, *_args):
-        if self.toolbar._actions["zoom"].isChecked():
-            self._stop_screen_preview(unsupported=True)
+        if (not self.toolbar._actions["zoom"].isChecked()
+                and self._screen_preview is not None):
+            self._screen_preview.cancel_zoom_drag()
         for control in (
             self.integrate_button,
             self.edit_peak_button,
@@ -2590,6 +2591,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_screen_preview", None) is not None:
             self._screen_preview.cancel_move_drag()
             self._screen_preview.cancel_annotation_drag()
+            self._screen_preview.cancel_zoom_drag()
         view_state = self._capture_view_state() if preserve_view else None
         self._clear_span_selector()
         self._interaction_cursor = None

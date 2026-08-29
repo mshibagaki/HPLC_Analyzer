@@ -43,6 +43,7 @@ class PyQtGraphSceneConsumer:
                 "PyQtGraph is not installed in this environment"
             ) from exc
         self.application = qt_widgets.QApplication.instance()
+        self.qt_widgets = qt_widgets
         if self.application is None:
             self.application = qt_widgets.QApplication([])
         self.widget = self.pg.GraphicsLayoutWidget(show=False)
@@ -128,6 +129,12 @@ class PyQtGraphSceneConsumer:
         self.primary.addItem(self.span_selection, ignoreBounds=True)
         self._span_view = self.primary.vb
         self.span_selection.hide()
+        self.zoom_rectangle = qt_widgets.QGraphicsRectItem()
+        self.zoom_rectangle.setPen(self.pg.mkPen("#2563eb", width=1.0))
+        self.zoom_rectangle.setBrush(self._brush("#2563eb", 0.12))
+        self.primary.vb.addItem(self.zoom_rectangle, ignoreBounds=True)
+        self._zoom_view = self.primary.vb
+        self.zoom_rectangle.hide()
         self.last_evidence = {}
         self._connections = {}
         self._next_connection_id = 1
@@ -416,6 +423,27 @@ class PyQtGraphSceneConsumer:
         if item is not None:
             item.setPos(float(x_value), float(y_value))
 
+    def set_zoom_rectangle(self, start=None, end=None, axis_id="y1", mode="both"):
+        if start is None or end is None:
+            self.zoom_rectangle.hide()
+            return
+        view = self.secondary if self.split_y_axes and axis_id == "y2" else self.primary.vb
+        if view is not self._zoom_view:
+            self._zoom_view.removeItem(self.zoom_rectangle)
+            view.addItem(self.zoom_rectangle, ignoreBounds=True)
+            self._zoom_view = view
+        x1, y1 = start
+        x2, y2 = end
+        current = view.viewRange()
+        if mode == "x":
+            y1, y2 = current[1]
+        elif mode == "y":
+            x1, x2 = current[0]
+        self.zoom_rectangle.setRect(self.qt_core.QRectF(
+            min(x1, x2), min(y1, y2), abs(x2 - x1), abs(y2 - y1)
+        ))
+        self.zoom_rectangle.show()
+
     def _add(self, item, axis_id="y1"):
         self._view(axis_id).addItem(item)
         self.items.append(item)
@@ -441,6 +469,7 @@ class PyQtGraphSceneConsumer:
         self._annotation_specs = scene.text_annotations
         self.set_pointer_cursor()
         self.set_span_selection()
+        self.set_zoom_rectangle()
         for view, axis, _host in self.gradient_layers:
             view.setVisible(scene.gradient is not None)
             axis.setVisible(scene.gradient is not None)

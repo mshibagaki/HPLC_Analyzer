@@ -368,8 +368,10 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         try:
             window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
             window.toolbar._actions["zoom"].trigger()
-            self.assertIsNone(window._screen_preview)
+            self.assertIs(window._screen_preview, preview)
+            self.assertTrue(window.toolbar._actions["zoom"].isChecked())
             window.toolbar._actions["zoom"].trigger()
             window.screen_preview_checkbox.setChecked(True)
             window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
@@ -2580,6 +2582,73 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(window._move_drag)
         window.project.dirty = False
         window.close()
+
+    def test_preview_rectangle_zoom_modes_history_and_cancellation(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            initial = window._screen_view_state()
+            for configured, role in (("x", "y1"), ("y", "y2"), ("both", "y1"),
+                                     ("auto", "y2")):
+                with self.subTest(configured=configured, role=role):
+                    window._apply_view_state(initial)
+                    consumer.apply_view_state(initial, consumer.overview_state)
+                    window._view_history.clear()
+                    window._view_history.ensure_home(initial)
+                    window.toolbar.set_history_buttons()
+                    window.zoom_axis_combo.setCurrentIndex(
+                        window.zoom_axis_combo.findData(configured))
+                    if not window.toolbar._actions["zoom"].isChecked():
+                        window.toolbar._actions["zoom"].trigger()
+                    def event(x, y, pixel_x, pixel_y):
+                        return ScreenPointerEvent(
+                            button=1, axis_role=role,
+                            hit_region="plot_y2" if role == "y2" else "plot_y1",
+                            canvas_x=pixel_x, canvas_y=pixel_y,
+                            data_coordinates=((role, x, y),),
+                        )
+                    before_count = window._view_history.count
+                    preview.handle_event("button_press_event", event(10.0, 100.0, 100.0, 100.0))
+                    preview.handle_event("motion_notify_event", event(20.0, 500.0, 300.0, 300.0))
+                    self.assertTrue(consumer.zoom_rectangle.isVisible())
+                    preview.handle_event("button_release_event", event(20.0, 500.0, 300.0, 300.0))
+                    state = window._screen_view_state()
+                    mode = "both" if configured == "auto" else configured
+                    self.assertEqual(state.x, (10.0, 20.0) if mode in ("x", "both") else initial.x)
+                    if mode in ("y", "both"):
+                        self.assertEqual(getattr(state, role), (100.0, 500.0))
+                    self.assertGreater(window._view_history.count, before_count)
+                    window.toolbar._actions["back"].trigger()
+                    self.assertEqual(window._screen_view_state(), initial)
+                    window.toolbar._actions["forward"].trigger()
+                    self.assertEqual(window._screen_view_state(), state)
+            # Click-only, wrong-button and Escape do not change the view/history.
+            before = window._screen_view_state()
+            count = window._view_history.count
+            sample = ScreenPointerEvent(button=1, axis_role="y1", hit_region="plot_y1",
+                                        canvas_x=10.0, canvas_y=10.0,
+                                        data_coordinates=(("y1", 12.0, 200.0),))
+            preview.handle_event("button_press_event", sample)
+            preview.handle_event("button_release_event", sample)
+            self.assertEqual(window._screen_view_state(), before)
+            preview.handle_event("button_press_event", sample)
+            escape = consumer.qt_gui.QKeyEvent(
+                consumer.qt_core.QEvent.Type.KeyPress, consumer.qt_core.Qt.Key.Key_Escape,
+                consumer.qt_core.Qt.KeyboardModifier.NoModifier)
+            self.app.sendEvent(consumer.widget.viewport(), escape)
+            self.assertIsNone(preview._zoom_drag)
+            self.assertEqual(window._view_history.count, count)
+        finally:
+            if window.toolbar._actions["zoom"].isChecked():
+                window.toolbar._actions["zoom"].trigger()
+            window.project.dirty = False
+            window.close()
 
     def test_preview_text_label_drag_hit_testing_and_persistence(self):
         if QT_API != 6 or not pyqtgraph_scene_available():

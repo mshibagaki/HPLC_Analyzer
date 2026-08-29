@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import fields, is_dataclass
 import importlib
 import weakref
+
+import numpy as np
 
 from .rendering import minmax_decimate, screen_point_budget
 from .screen_events import ScreenPointerEvent
@@ -451,19 +454,9 @@ class PyQtGraphSceneConsumer:
         self.items.append(item)
         return item
 
-    @staticmethod
-    def _trace_only(scene):
-        return (
-            scene.gradient is None
-            and not scene.peak_overlays
-            and not scene.vertical_markers
-            and not scene.fraction_regions
-            and not scene.text_annotations
-        )
-
     def _can_reuse_trace_items(self, scene):
         previous = self._rendered_scene
-        if previous is None or not self._trace_only(previous) or not self._trace_only(scene):
+        if previous is None:
             return False
         previous_axes = {
             trace.dataset_id: trace.axis_id for trace in previous.traces
@@ -471,12 +464,49 @@ class PyQtGraphSceneConsumer:
         current_axes = {trace.dataset_id: trace.axis_id for trace in scene.traces}
         return previous_axes == current_axes and set(current_axes) == set(self.trace_items)
 
+    @classmethod
+    def _scene_values_equal(cls, left, right):
+        if type(left) is not type(right):
+            return False
+        if isinstance(left, np.ndarray):
+            return np.array_equal(left, right, equal_nan=True)
+        if is_dataclass(left):
+            return all(
+                cls._scene_values_equal(
+                    getattr(left, field.name), getattr(right, field.name)
+                )
+                for field in fields(left)
+            )
+        if isinstance(left, (tuple, list)):
+            return len(left) == len(right) and all(
+                cls._scene_values_equal(first, second)
+                for first, second in zip(left, right)
+            )
+        return left == right
+
+    def _can_reuse_static_items(self, scene):
+        previous = self._rendered_scene
+        if previous is None:
+            return False
+        return all(
+            self._scene_values_equal(old, new)
+            for old, new in (
+                (previous.gradient, scene.gradient),
+                (previous.peak_overlays, scene.peak_overlays),
+                (previous.vertical_markers, scene.vertical_markers),
+                (previous.fraction_regions, scene.fraction_regions),
+                (previous.text_annotations, scene.text_annotations),
+            )
+        )
+
     def _trace_screen_data(self, trace, *, overview=False):
         width = max(1, int(self.widget.viewport().width()))
         budget = screen_point_budget(width, overview=overview)
         return minmax_decimate(trace.x_values, trace.y_values, budget)
 
-    def _finish_render(self, scene, counts, *, reused_traces=False):
+    def _finish_render(
+        self, scene, counts, *, reused_traces=False, reused_static=False
+    ):
         self.primary.enableAutoRange()
         self.secondary.enableAutoRange()
         self.overview.enableAutoRange()
@@ -500,6 +530,7 @@ class PyQtGraphSceneConsumer:
             ),
             "gradient_range": tuple(gradient_range[1]),
             "reused_traces": bool(reused_traces),
+            "reused_static": bool(reused_static),
             "source_trace_points": sum(
                 len(trace.x_values) for trace in scene.traces
             ),
@@ -509,7 +540,7 @@ class PyQtGraphSceneConsumer:
         }
         return dict(self.last_evidence)
 
-    def _reuse_trace_items(self, scene):
+    def _update_trace_items(self, scene):
         for trace in scene.traces:
             x_values, y_values = self._trace_screen_data(trace)
             item = self.trace_items[trace.dataset_id]
@@ -528,32 +559,66 @@ class PyQtGraphSceneConsumer:
                 overview_y,
                 pen=self.pg.mkPen(trace.color, width=trace.line_width),
             )
-        counts = {
-            "traces": len(scene.traces),
-            "gradients": 0,
-            "peak_overlays": 0,
-            "vertical_markers": 0,
-            "fraction_regions": 0,
-            "text_annotations": 0,
-        }
-        return self._finish_render(scene, counts, reused_traces=True)
 
-    def render(self, scene):
-        if self._can_reuse_trace_items(scene):
-            return self._reuse_trace_items(scene)
-        # Repeated application refreshes replace the scene, not append copies.
-        for item in self.items:
-            for view in (self.primary.vb, self.secondary) + tuple(layer[0] for layer in self.gradient_layers):
+    def _remove_from_scene_views(self, items):
+        views = (
+            (self.primary.vb, self.secondary)
+            + tuple(layer[0] for layer in self.gradient_layers)
+        )
+        for item in items:
+            for view in views:
                 if item in view.addedItems:
                     view.removeItem(item)
-        for item in self.overview_items:
-            view = (self.overview_secondary if item in self.overview_secondary.addedItems
-                    else self.overview)
-            view.removeItem(item)
-        self.items.clear()
-        self.overview_items.clear()
-        self.trace_items.clear()
-        self.overview_trace_items.clear()
+
+    def render(self, scene):
+        reuse_traces = self._can_reuse_trace_items(scene)
+        reuse_static = reuse_traces and self._can_reuse_static_items(scene)
+        if reuse_static:
+            self._update_trace_items(scene)
+            self._marker_specs = scene.vertical_markers
+            self._annotation_specs = scene.text_annotations
+            counts = {
+                "traces": len(scene.traces),
+                "gradients": (
+                    len(self.gradient_layers) if scene.gradient is not None else 0
+                ),
+                "peak_overlays": len(scene.peak_overlays),
+                "vertical_markers": len(scene.vertical_markers),
+                "fraction_regions": len(scene.fraction_regions),
+                "text_annotations": len(scene.text_annotations),
+            }
+            return self._finish_render(
+                scene,
+                counts,
+                reused_traces=True,
+                reused_static=True,
+            )
+        if reuse_traces:
+            detail_traces = tuple(self.trace_items.values())
+            static_items = [
+                item for item in self.items
+                if not any(item is trace for trace in detail_traces)
+            ]
+            self._remove_from_scene_views(static_items)
+            self.items = [
+                self.trace_items[trace.dataset_id] for trace in scene.traces
+            ]
+            self._update_trace_items(scene)
+        else:
+            # Trace topology or axis ownership changed: replace everything.
+            self._remove_from_scene_views(self.items)
+            for item in self.overview_items:
+                view = (
+                    self.overview_secondary
+                    if item in self.overview_secondary.addedItems
+                    else self.overview
+                )
+                view.removeItem(item)
+            self.items.clear()
+            self.overview_items.clear()
+            self.trace_items.clear()
+            self.overview_trace_items.clear()
+
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
         self.annotation_items.clear()
@@ -565,36 +630,40 @@ class PyQtGraphSceneConsumer:
             view.setVisible(scene.gradient is not None)
             axis.setVisible(scene.gradient is not None)
         counts = {
-            "traces": 0,
+            "traces": len(scene.traces),
             "gradients": 0,
             "peak_overlays": 0,
             "vertical_markers": 0,
             "fraction_regions": 0,
             "text_annotations": 0,
         }
-        for trace in scene.traces:
-            x_values, y_values = self._trace_screen_data(trace)
-            item = self.pg.PlotCurveItem(
-                x_values,
-                y_values,
-                pen=self.pg.mkPen(trace.color, width=trace.line_width),
-                name=trace.label,
-            )
-            self._add(item, trace.axis_id)
-            self.trace_items[trace.dataset_id] = item
-            overview_x, overview_y = self._trace_screen_data(
-                trace, overview=True
-            )
-            overview_item = self.pg.PlotCurveItem(
-                overview_x,
-                overview_y,
-                pen=self.pg.mkPen(trace.color, width=trace.line_width),
-            )
-            overview_view = self.overview_secondary if trace.axis_id == "y2" else self.overview
-            overview_view.addItem(overview_item)
-            self.overview_items.append(overview_item)
-            self.overview_trace_items[trace.dataset_id] = overview_item
-            counts["traces"] += 1
+        if not reuse_traces:
+            for trace in scene.traces:
+                x_values, y_values = self._trace_screen_data(trace)
+                item = self.pg.PlotCurveItem(
+                    x_values,
+                    y_values,
+                    pen=self.pg.mkPen(trace.color, width=trace.line_width),
+                    name=trace.label,
+                )
+                self._add(item, trace.axis_id)
+                self.trace_items[trace.dataset_id] = item
+                overview_x, overview_y = self._trace_screen_data(
+                    trace, overview=True
+                )
+                overview_item = self.pg.PlotCurveItem(
+                    overview_x,
+                    overview_y,
+                    pen=self.pg.mkPen(trace.color, width=trace.line_width),
+                )
+                overview_view = (
+                    self.overview_secondary
+                    if trace.axis_id == "y2"
+                    else self.overview
+                )
+                overview_view.addItem(overview_item)
+                self.overview_items.append(overview_item)
+                self.overview_trace_items[trace.dataset_id] = overview_item
 
         for view, axis, _host in self.gradient_layers:
             if scene.gradient is None:
@@ -728,7 +797,12 @@ class PyQtGraphSceneConsumer:
             self.annotation_items[annotation.annotation_id] = text
             counts["text_annotations"] += 1
 
-        return self._finish_render(scene, counts)
+        return self._finish_render(
+            scene,
+            counts,
+            reused_traces=reuse_traces,
+            reused_static=False,
+        )
 
     @staticmethod
     def _range_tuple(view_range):

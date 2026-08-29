@@ -1011,6 +1011,65 @@ class GuiTests(unittest.TestCase):
                 ),
             )
             self.assertFalse(hidden_overview["overview_enabled"])
+
+            detail_traces = dict(consumer.trace_items)
+            overview_traces = dict(consumer.overview_trace_items)
+            old_marker = next(iter(consumer.marker_items.values()))
+            old_annotation = next(iter(consumer.annotation_items.values()))
+            old_items = tuple(consumer.items)
+            item_count = len(consumer.items)
+            window._plot()
+            stable = consumer.render(window._screen_scene)
+            self.assertTrue(stable["reused_traces"])
+            self.assertTrue(stable["reused_static"])
+            self.assertEqual(tuple(consumer.items), old_items)
+            self.assertIs(
+                next(iter(consumer.marker_items.values())), old_marker
+            )
+            self.assertIs(
+                next(iter(consumer.annotation_items.values())), old_annotation
+            )
+
+            window.project.datasets[0].offset += 0.5
+            window.project.vertical_markers[0].x_min = 13.0
+            window.project.annotations[0].text = "Updated scene"
+            window._plot()
+            refreshed = consumer.render(window._screen_scene)
+            self.assertTrue(refreshed["reused_traces"])
+            self.assertFalse(refreshed["reused_static"])
+            self.assertEqual(len(consumer.items), item_count)
+            for dataset_id, item in detail_traces.items():
+                self.assertIs(consumer.trace_items[dataset_id], item)
+                self.assertIs(
+                    consumer.overview_trace_items[dataset_id],
+                    overview_traces[dataset_id],
+                )
+            self.assertIsNot(
+                next(iter(consumer.marker_items.values())), old_marker
+            )
+            self.assertIsNot(
+                next(iter(consumer.annotation_items.values())), old_annotation
+            )
+
+            window.project.method.show_gradient_b = False
+            window.project.method.show_integration_areas = False
+            window.project.method.show_retention_labels = False
+            window.project.vertical_markers.clear()
+            window.project.fraction_regions.clear()
+            window.project.annotations.clear()
+            window._plot()
+            cleared = consumer.render(window._screen_scene)
+            self.assertTrue(cleared["reused_traces"])
+            self.assertEqual(cleared["counts"]["gradients"], 0)
+            self.assertEqual(cleared["counts"]["peak_overlays"], 0)
+            self.assertEqual(cleared["counts"]["vertical_markers"], 0)
+            self.assertEqual(cleared["counts"]["fraction_regions"], 0)
+            self.assertEqual(cleared["counts"]["text_annotations"], 0)
+            self.assertEqual(len(consumer.items), len(detail_traces))
+            self.assertEqual(consumer.marker_items, {})
+            self.assertEqual(consumer.annotation_items, {})
+            for item in detail_traces.values():
+                self.assertIn(item, consumer.items)
             for trace, original in zip(window._screen_scene.traces, source_before):
                 self.assertTrue(np.array_equal(trace.x_values, original))
         finally:

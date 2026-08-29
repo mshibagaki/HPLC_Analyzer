@@ -5637,6 +5637,107 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_preview_matches_persisted_legend_axis_and_tick_styles(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            method = window.project.method
+            method.x_axis_label = "Configured X"
+            method.gradient_axis_label = "Configured B (%)"
+            method.axis_label_font_family = "Arial"
+            method.axis_label_font_size = 13.0
+            method.axis_label_color = "#123456"
+            method.tick_label_font_family = "Arial"
+            method.tick_label_font_size = 8.0
+            method.tick_label_color = "#654321"
+            method.legend_font_family = "Arial"
+            method.legend_font_size = 11.0
+            method.legend_font_color = "#abcdef"
+            method.x_tick_mode = "manual"
+            method.x_major_tick_min = 2.0
+            method.x_minor_tick_min = 0.5
+            method.legend_location = "outside right"
+            raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
+            window._plot()
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+
+            bottom = consumer.primary.getAxis("bottom")
+            self.assertEqual(bottom.labelText, "Configured X")
+            self.assertEqual(bottom.labelStyle["font-family"], "Arial")
+            self.assertEqual(bottom.labelStyle["font-size"], "13pt")
+            self.assertEqual(bottom.labelStyle["color"], "#123456")
+            self.assertEqual(bottom._tickSpacing, [(2.0, 0), (0.5, 0)])
+            self.assertEqual(bottom.style["tickFont"].family(), "Arial")
+            self.assertAlmostEqual(bottom.style["tickFont"].pointSizeF(), 8.0)
+            self.assertEqual(bottom.textPen().color().name(), "#654321")
+            gradient_axis = consumer.gradient_layers[0][1]
+            self.assertEqual(gradient_axis.labelText, "Configured B (%)")
+            self.assertEqual(gradient_axis.labelStyle["font-family"], "Arial")
+            self.assertTrue(preview._legend_outside)
+            self.assertIn(preview._legend, consumer.widget.ci.items)
+            self.assertFalse(window._current_view_pixmap().isNull())
+            for _sample, label in preview._legend.items:
+                self.assertEqual(label.opts["family"], "Arial")
+                self.assertEqual(label.opts["size"], "11pt")
+                self.assertEqual(label.opts["color"], "#abcdef")
+
+            anchors = {
+                "best": ((1, 0), (1, 0), (-10, 10)),
+                "upper right": ((1, 0), (1, 0), (-10, 10)),
+                "upper left": ((0, 0), (0, 0), (10, 10)),
+                "lower right": ((1, 1), (1, 1), (-10, -10)),
+                "lower left": ((0, 1), (0, 1), (10, -10)),
+            }
+            for location, expected in anchors.items():
+                with self.subTest(location=location):
+                    method.legend_location = location
+                    window._plot()
+                    legend = window._screen_preview._legend
+                    self.assertFalse(window._screen_preview._legend_outside)
+                    self.assertIs(legend.parentItem(), window._screen_preview.consumer.primary.vb)
+                    self.assertEqual(
+                        legend._GraphicsWidgetAnchor__itemAnchor, expected[0]
+                    )
+                    self.assertEqual(
+                        legend._GraphicsWidgetAnchor__parentAnchor, expected[1]
+                    )
+                    self.assertEqual(
+                        legend._GraphicsWidgetAnchor__offset, expected[2]
+                    )
+
+            method.legend_location = "outside right"
+            window._plot()
+            self.assertTrue(window._screen_preview._legend_outside)
+            self.assertIn(
+                window._screen_preview._legend,
+                window._screen_preview.consumer.widget.ci.items,
+            )
+            method.x_tick_mode = "auto"
+            window._plot()
+            self.assertIsNone(
+                window._screen_preview.consumer.primary.getAxis("bottom")._tickSpacing
+            )
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("split_y_axes")
+            )
+            split = window._screen_preview.consumer
+            self.assertTrue(window._screen_preview._legend_outside)
+            self.assertIn(window._screen_preview._legend, split.widget.ci.items)
+            self.assertEqual(split.primary.getAxis("bottom").labelText, "")
+            self.assertEqual(split.secondary_plot.getAxis("bottom").labelText,
+                             "Configured X")
+            self.assertEqual(split.secondary_plot.getAxis("bottom").labelStyle["font-family"],
+                             "Arial")
+            self.assertIsNone(split.secondary_plot.getAxis("bottom")._tickSpacing)
+            for dataset, values in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_retention_labels_are_drawn_for_every_selected_chromatogram(self):
         window = self.make_window()
         first, second = window.project.datasets

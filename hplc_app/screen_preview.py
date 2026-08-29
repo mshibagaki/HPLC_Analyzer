@@ -29,6 +29,8 @@ class ExperimentalScreenPreview:
         self._move_target = None
         self._annotation_target = None
         self._zoom_drag = None
+        self._legend = None
+        self._legend_outside = False
         try:
             self.consumer.widget.setBackground("w")
             self.consumer.primary.setMenuEnabled(False)
@@ -109,15 +111,8 @@ class ExperimentalScreenPreview:
                 self._update_legend(scene)
             primary = self.consumer.primary
             lower = self.consumer.secondary_plot
-            primary.setLabel("bottom", "" if lower is not None else escape(owner.axes.get_xlabel()))
-            primary.setLabel("left", escape(owner.axes.get_ylabel()))
-            if lower is not None:
-                lower.setLabel("bottom", escape(owner.axes_right.get_xlabel()))
-                lower.setLabel("left", escape(owner.axes_right.get_ylabel()))
-            else:
+            if lower is None:
                 primary.showAxis("right", owner.axes_right is not None)
-            if lower is None and owner.axes_right is not None:
-                primary.setLabel("right", escape(owner.axes_right.get_ylabel()))
             for _view, axis, _host in self.consumer.gradient_layers:
                 axis.setVisible(owner.axes_gradient is not None)
             primary.showGrid(
@@ -127,6 +122,18 @@ class ExperimentalScreenPreview:
             if lower is not None:
                 lower.showGrid(x=owner.project.method.show_major_grid,
                                y=owner.project.method.show_major_grid, alpha=0.2)
+            x_axes = [primary.getAxis("bottom")]
+            if lower is not None:
+                x_axes.append(lower.getAxis("bottom"))
+            if owner.project.method.x_tick_mode == "manual":
+                for axis in x_axes:
+                    axis.setTickSpacing(
+                        owner.project.method.x_major_tick_min,
+                        owner.project.method.x_minor_tick_min,
+                    )
+            else:
+                for axis in x_axes:
+                    axis.setTickSpacing()
             axes = [primary.getAxis("bottom"), primary.getAxis("left")]
             axes.extend(layer[1] for layer in self.consumer.gradient_layers)
             if lower is None:
@@ -145,6 +152,9 @@ class ExperimentalScreenPreview:
                     metrics = self.consumer.qt_gui.QFontMetricsF(font)
                     axis.setWidth(max(80, metrics.horizontalAdvance("-12345.6789")
                                       + metrics.height() + 16))
+            # AxisItem.setTextPen also changes its title color. Reapply title
+            # styles after setting the independent tick-label pen.
+            self._apply_axis_labels(primary, lower, scene)
             if lower is not None:
                 # Both panels have equally sized B% axes; no placeholder margin.
                 for plot in (primary, lower):
@@ -162,22 +172,80 @@ class ExperimentalScreenPreview:
         finally:
             self._busy = False
 
+    def _apply_axis_labels(self, primary, lower, scene):
+        owner = self.owner
+        self._set_axis_label(
+            primary.getAxis("bottom"),
+            "" if lower is not None else owner.axes.get_xlabel(),
+        )
+        self._set_axis_label(primary.getAxis("left"), owner.axes.get_ylabel())
+        if lower is not None:
+            self._set_axis_label(lower.getAxis("bottom"), owner.axes_right.get_xlabel())
+            self._set_axis_label(lower.getAxis("left"), owner.axes_right.get_ylabel())
+        elif owner.axes_right is not None:
+            self._set_axis_label(primary.getAxis("right"), owner.axes_right.get_ylabel())
+        gradient_text = scene.gradient.axis_label if scene.gradient is not None else ""
+        for _view, axis, _host in self.consumer.gradient_layers:
+            self._set_axis_label(axis, gradient_text)
+
+    def _set_axis_label(self, axis, text):
+        method = self.owner.project.method
+        axis.setLabel(
+            escape(text or ""),
+            **{
+                "color": method.axis_label_color or "#000000",
+                "font-family": (
+                    method.axis_label_font_family
+                    or self.consumer.application.font().family()
+                ),
+                "font-size": "%gpt" % method.axis_label_font_size,
+            },
+        )
+
     def _update_legend(self, scene):
         method = self.owner.project.method
-        legend = self.consumer.primary.addLegend(
-            labelTextColor=method.legend_font_color or "#000000",
-            labelTextSize="%gpt" % method.legend_font_size,
-        )
+        if self._legend is None:
+            self._legend = self.consumer.pg.LegendItem(frame=False)
+            self._legend.setParentItem(self.consumer.primary.vb)
+            # Preserve PlotItem.addLegend's public access pattern for existing
+            # preview consumers while allowing outside-layout reparenting.
+            self.consumer.primary.legend = self._legend
+        legend = self._legend
         legend.clear()
         for item, trace in zip(self.consumer.items, scene.traces):
             legend.addItem(item, escape(trace.label))
         if scene.gradient is not None:
             legend.addItem(self.consumer.items[len(scene.traces)], escape(scene.gradient.label))
+        color = method.legend_font_color or "#000000"
+        size = "%gpt" % method.legend_font_size
+        family = method.legend_font_family or self.consumer.application.font().family()
+        legend.setLabelTextColor(color)
+        legend.setLabelTextSize(size)
+        for _sample, label in legend.items:
+            label.setText(label.text, color=color, size=size, family=family)
         location = method.legend_location
-        right = "left" not in location
-        bottom = "lower" in location
-        corner = (int(right), int(bottom))
-        legend.anchor(corner, corner, offset=(-10 if right else 10, -10 if bottom else 10))
+        outside = location == "outside right"
+        if outside and not self._legend_outside:
+            legend.setParentItem(None)
+            self.consumer.widget.ci.addItem(
+                legend, row=1, col=1,
+                rowspan=2 if self.consumer.split_y_axes else 1,
+            )
+        elif not outside and self._legend_outside:
+            self.consumer.widget.ci.removeItem(legend)
+            legend.setParentItem(self.consumer.primary.vb)
+        self._legend_outside = outside
+        if outside:
+            return
+        anchors = {
+            "upper left": ((0, 0), (0, 0), (10, 10)),
+            "lower left": ((0, 1), (0, 1), (10, -10)),
+            "lower right": ((1, 1), (1, 1), (-10, -10)),
+        }
+        item_pos, parent_pos, offset = anchors.get(
+            location, ((1, 0), (1, 0), (-10, 10))
+        )
+        legend.anchor(item_pos, parent_pos, offset=offset)
 
     def cancel_span_drag(self):
         self._span_drag = None

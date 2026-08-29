@@ -162,8 +162,8 @@ def validate_version_and_artifacts(root):
             errors.append("{0} does not use the canonical artifact version".format(filename))
     helper = (root / "scripts" / "build_installer.bat").read_text(encoding="utf-8")
     for fragment in (
-        "--define=AppVersion=%APP_VERSION%",
-        "--define=AppVersionNumeric=%APP_VERSION_NUMERIC%",
+        "/DAppVersion=%APP_VERSION%",
+        "/DAppVersionNumeric=%APP_VERSION_NUMERIC%",
     ):
         if fragment not in helper:
             errors.append("installer build is missing {0}".format(fragment))

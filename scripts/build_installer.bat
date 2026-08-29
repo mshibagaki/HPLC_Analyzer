@@ -57,7 +57,7 @@ if not defined ISCC_EXE (
 )
 
 echo [INFO] Installer compiler: %ISCC_EXE%
-"%ISCC_EXE%" "--define=AppVersion=%APP_VERSION%" "--define=AppVersionNumeric=%APP_VERSION_NUMERIC%" "--define=ArtifactBaseName=%ARTIFACT_BASE_NAME%" "%ISS_FILE%"
+"%ISCC_EXE%" "/DAppVersion=%APP_VERSION%" "/DAppVersionNumeric=%APP_VERSION_NUMERIC%" "/DArtifactBaseName=%ARTIFACT_BASE_NAME%" "%ISS_FILE%"
 if errorlevel 1 exit /b 1
 
 "%PYTHON_EXE%" scripts\verify_installer.py --target "%TARGET%" --script "%ISS_FILE%" --setup "%SETUP_FILE%" --version "%APP_VERSION%"

@@ -5,6 +5,7 @@ renderer selection does not change persistent settings.
 """
 
 from copy import deepcopy
+from dataclasses import replace
 from html import escape
 from math import isfinite
 
@@ -27,6 +28,7 @@ class ExperimentalScreenPreview:
         self._span_drag = None
         self._move_target = None
         self._annotation_target = None
+        self._zoom_drag = None
         try:
             self.consumer.widget.setBackground("w")
             self.consumer.primary.setMenuEnabled(False)
@@ -60,16 +62,19 @@ class ExperimentalScreenPreview:
                         preview.cancel_span_drag()
                         preview.cancel_move_drag()
                         preview.cancel_annotation_drag()
+                        preview.cancel_zoom_drag()
                     if event.type() == core.QEvent.Type.Leave:
                         preview.consumer.set_pointer_cursor()
                     if (event.type() == core.QEvent.Type.KeyPress
                             and event.key() == core.Qt.Key.Key_Escape
                             and (preview._span_drag is not None
                                  or preview._move_target is not None
-                                 or preview._annotation_target is not None)):
+                                 or preview._annotation_target is not None
+                                 or preview._zoom_drag is not None)):
                         preview.cancel_span_drag()
                         preview.cancel_move_drag()
                         preview.cancel_annotation_drag()
+                        preview.cancel_zoom_drag()
                         event.accept()
                         return True
                     if (event.type() == core.QEvent.Type.KeyPress
@@ -177,6 +182,65 @@ class ExperimentalScreenPreview:
     def cancel_span_drag(self):
         self._span_drag = None
         self.consumer.set_span_selection()
+
+    def cancel_zoom_drag(self):
+        self._zoom_drag = None
+        try:
+            self.consumer.set_zoom_rectangle()
+        except Exception:
+            # The scene may already be partially torn down after a preview
+            # renderer failure. Clearing the pending interaction is enough.
+            pass
+
+    def _handle_zoom_event(self, name, event):
+        owner = self.owner
+        if not owner.toolbar._actions["zoom"].isChecked():
+            if self._zoom_drag is not None:
+                self.cancel_zoom_drag()
+            return False
+        in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
+        role = event.axis_role if event.axis_role in ("y1", "y2") else "y1"
+        values = event.data_for(role)
+        valid = (in_plot and all(value is not None and isfinite(value) for value in values)
+                 and event.canvas_x is not None and event.canvas_y is not None)
+        drag = self._zoom_drag
+        if drag is not None:
+            if name == "scroll_event":
+                return True
+            if not valid or role != drag["role"] or event.button != 1:
+                self.cancel_zoom_drag()
+                return True
+            if name == "motion_notify_event":
+                self.consumer.set_zoom_rectangle(drag["start"], values, role, drag["mode"])
+            elif name == "button_release_event":
+                self.cancel_zoom_drag()
+                dx = abs(event.canvas_x - drag["pixel"][0])
+                dy = abs(event.canvas_y - drag["pixel"][1])
+                mode = drag["mode"]
+                if ((mode == "x" and dx < 3) or (mode == "y" and dy < 3)
+                        or (mode == "both" and (dx < 3 or dy < 3))):
+                    return True
+                state = self.consumer.capture_view_state()
+                changes = {}
+                if mode in ("x", "both"):
+                    changes["x"] = tuple(sorted((drag["start"][0], values[0])))
+                if mode in ("y", "both"):
+                    changes[role] = tuple(sorted((drag["start"][1], values[1])))
+                self.navigation._record_and_apply(replace(state, **changes))
+                owner._apply_view_state(self.consumer.capture_view_state())
+                owner.toolbar.set_history_buttons()
+            return True
+        if (name == "button_press_event" and event.button == 1 and valid
+                and not event.double_click):
+            configured = owner.project.method.zoom_axis
+            mode = "both" if configured == "auto" else configured
+            self._zoom_drag = {
+                "start": values, "role": role, "mode": mode,
+                "pixel": (event.canvas_x, event.canvas_y),
+            }
+            self.consumer.set_zoom_rectangle(values, values, role, mode)
+            return True
+        return name == "button_press_event" and in_plot
 
     def cancel_move_drag(self):
         target = self._move_target
@@ -410,6 +474,8 @@ class ExperimentalScreenPreview:
                 return True
             if self._handle_span_event(name, event):
                 return True
+            if self._handle_zoom_event(name, event):
+                return True
             if self._handle_split_event(name, event):
                 return True
             if self._handle_move_event(name, event):
@@ -456,6 +522,7 @@ class ExperimentalScreenPreview:
         self._span_drag = None
         self.cancel_move_drag()
         self.cancel_annotation_drag()
+        self.cancel_zoom_drag()
         if self._key_filter is not None:
             self.consumer.widget.removeEventFilter(self._key_filter)
             self.consumer.widget.viewport().removeEventFilter(self._key_filter)

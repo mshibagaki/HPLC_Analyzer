@@ -94,6 +94,15 @@ def benchmark(workload: RendererWorkload):
                     len(axis.lines) for axis in window.figure.axes
                 ),
                 "native_counts": dict(preview.consumer.last_evidence["counts"]),
+                "native_reused_traces": preview.consumer.last_evidence.get(
+                    "reused_traces", False
+                ),
+                "native_source_trace_points": preview.consumer.last_evidence.get(
+                    "source_trace_points", 0
+                ),
+                "native_rendered_trace_points": preview.consumer.last_evidence.get(
+                    "rendered_trace_points", 0
+                ),
             }
         finally:
             if window is not None:

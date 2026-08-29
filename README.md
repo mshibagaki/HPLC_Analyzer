@@ -31,7 +31,7 @@ Windows 11向けのQt 6環境では、グラフ上部の「PyQtGraph表示（実
 - 表示画面のコピー・印刷は表示中の描画を使用します。PNG/SVG/PDFの図保存・解析レポートは従来のMatplotlib経路を維持します。
 - PyQtGraph未導入・初期化／描画エラー時も従来画面へ戻ります。Win7では選択できず、依存追加もしません。
 
-これは移行途中の試験表示です。試験表示中の通常再描画では、Matplotlib側は軸と表示範囲の骨格だけを保持し、非表示のデータ線・B%線・積分表示・縦線・注釈・概要線・凡例は構築しません。PNG/SVG/PDF保存時だけ高品質Matplotlib図を一時的に再構築し、試験表示を閉じた場合や描画エラー時は完全なMatplotlib画面へ戻します。PyQtGraphのデータ線は元配列を変更せず、画面専用のピーク保持min/max envelopeへ減らします。系列IDと軸構成が同じ再描画ではdetail/overviewアイテムを再利用し、追加・削除・軸変更やoverlay構成が変わった場合は安全のため再構築します。実機でのDPI・日本語フォント・ポインター・印刷を含む最終確認は引き続き必要です。
+これは移行途中の試験表示です。試験表示中の通常再描画では、Matplotlib側は軸と表示範囲の骨格だけを保持し、非表示のデータ線・B%線・積分表示・縦線・注釈・概要線・凡例は構築しません。PNG/SVG/PDF保存時だけ高品質Matplotlib図を一時的に再構築し、試験表示を閉じた場合や描画エラー時は完全なMatplotlib画面へ戻します。PyQtGraphのデータ線は元配列を変更せず、画面専用のピーク保持min/max envelopeへ減らします。系列IDと軸構成が同じ再描画ではdetail/overviewアイテムを再利用し、B%・積分表示・縦線・フラクション・注釈も内容が同じなら保持します。内容変更時は非系列アイテムだけを入れ替え、系列の追加・削除・軸変更時は全体を安全に再構築します。実機でのDPI・日本語フォント・ポインター・印刷を含む最終確認は引き続き必要です。
 
 ## 開発者向けクイックスタート
 
@@ -166,6 +166,7 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 ```text
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json
 python scripts\benchmark_integrated_screen.py --traces 8 --points 100000 --repeats 3 --output integrated-screen-benchmark.json
+python scripts\benchmark_integrated_screen.py --traces 8 --points 100000 --repeats 3 --decorated --output integrated-decorated-benchmark.json
 python scripts\probe_pyqtgraph_parity.py
 ```
 

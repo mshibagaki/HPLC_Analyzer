@@ -19,7 +19,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hplc_app.gui import MainWindow
-from hplc_app.models import Dataset, Project
+from hplc_app.analysis import recalculate_dataset_peaks
+from hplc_app.models import (
+    Dataset,
+    FractionRegion,
+    GradientPoint,
+    PeakRegion,
+    Project,
+    TextAnnotation,
+    VerticalMarker,
+)
 from hplc_app.qt_compat import QT_API, QtCore, QtWidgets
 from hplc_app.renderer_benchmark import (
     RendererWorkload,
@@ -29,7 +38,7 @@ from hplc_app.renderer_benchmark import (
 from hplc_app.pyqtgraph_scene import pyqtgraph_scene_available
 
 
-def _project_for(workload: RendererWorkload):
+def _project_for(workload: RendererWorkload, *, decorated=False):
     x_values, traces = synthetic_chromatograms(workload)
     datasets = []
     for index, values in enumerate(traces):
@@ -41,7 +50,30 @@ def _project_for(workload: RendererWorkload):
             time_min=x_values.copy(),
             intensity_uv=values.copy(),
         ))
-    return Project(datasets=datasets), x_values, traces
+    project = Project(datasets=datasets)
+    if decorated:
+        first = project.datasets[0]
+        first.measurement.gradient = [
+            GradientPoint(0.0, 90.0, 10.0, 0.0, 0.0),
+            GradientPoint(30.0, 10.0, 90.0, 0.0, 0.0),
+        ]
+        first.peaks = [PeakRegion(start_min=3.5, end_min=4.5)]
+        recalculate_dataset_peaks(first)
+        project.method.show_gradient_b = True
+        project.method.show_integration_areas = True
+        project.method.show_retention_labels = True
+        project.vertical_markers.append(VerticalMarker(x_min=12.0, y_axis=2))
+        project.fraction_regions.append(FractionRegion(
+            start_min=15.0, end_min=18.0, interval_min=1.0
+        ))
+        project.annotations.append(TextAnnotation(
+            text="Benchmark annotation",
+            x_min=20.0,
+            y_value=0.5,
+            dataset_id=project.datasets[1].id,
+            y_axis=2,
+        ))
+    return project, x_values, traces
 
 
 def _measure(window, application, repeats: int):
@@ -54,7 +86,7 @@ def _measure(window, application, repeats: int):
     return durations
 
 
-def benchmark(workload: RendererWorkload):
+def benchmark(workload: RendererWorkload, *, decorated=False):
     if QT_API != 6 or not pyqtgraph_scene_available():
         raise RuntimeError("The integrated benchmark requires Qt 6 and PyQtGraph")
 
@@ -62,7 +94,9 @@ def benchmark(workload: RendererWorkload):
     original_format = QtCore.QSettings.defaultFormat()
     ini_format = QtCore.QSettings.Format.IniFormat
     user_scope = QtCore.QSettings.Scope.UserScope
-    project, x_values, traces = _project_for(workload)
+    project, x_values, traces = _project_for(
+        workload, decorated=decorated
+    )
     digest_before = arrays_digest(x_values, traces)
 
     with tempfile.TemporaryDirectory() as settings_directory:
@@ -96,6 +130,9 @@ def benchmark(workload: RendererWorkload):
                 "native_counts": dict(preview.consumer.last_evidence["counts"]),
                 "native_reused_traces": preview.consumer.last_evidence.get(
                     "reused_traces", False
+                ),
+                "native_reused_static": preview.consumer.last_evidence.get(
+                    "reused_static", False
                 ),
                 "native_source_trace_points": preview.consumer.last_evidence.get(
                     "source_trace_points", 0
@@ -132,6 +169,7 @@ def benchmark(workload: RendererWorkload):
             "points_per_trace": workload.point_count,
             "repeats": workload.repeats,
             "seed": workload.seed,
+            "decorated": bool(decorated),
         },
         "legacy_matplotlib_seconds": legacy,
         "native_preview_seconds": native,
@@ -151,14 +189,22 @@ def main() -> int:
     parser.add_argument("--points", type=int, default=100000)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=1729)
+    parser.add_argument(
+        "--decorated",
+        action="store_true",
+        help="Include B%, a peak overlay, marker, fraction, and annotation.",
+    )
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
-    payload = benchmark(RendererWorkload(
-        trace_count=arguments.traces,
-        point_count=arguments.points,
-        repeats=arguments.repeats,
-        seed=arguments.seed,
-    ))
+    payload = benchmark(
+        RendererWorkload(
+            trace_count=arguments.traces,
+            point_count=arguments.points,
+            repeats=arguments.repeats,
+            seed=arguments.seed,
+        ),
+        decorated=arguments.decorated,
+    )
     rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     if arguments.output is None:
         print(rendered)

@@ -734,7 +734,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not enabled:
             self._stop_screen_preview()
             return
-        controls = (self.annotation_action, self.toolbar._actions["zoom"])
+        controls = (self.toolbar._actions["zoom"],)
         if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
             return
@@ -2589,6 +2589,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if getattr(self, "_screen_preview", None) is not None:
             self._screen_preview.cancel_move_drag()
+            self._screen_preview.cancel_annotation_drag()
         view_state = self._capture_view_state() if preserve_view else None
         self._clear_span_selector()
         self._interaction_cursor = None
@@ -3205,7 +3206,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_annotation_mode(self, enabled: bool):
         if enabled:
-            self._stop_screen_preview(unsupported=True)
             if not self.project.datasets:
                 QtWidgets.QMessageBox.information(
                     self, APP_NAME, self.translator("no_dataset")
@@ -3221,6 +3221,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pointer_button.setChecked(False)
             self.statusBar().showMessage(self.translator("text_annotation_hint"))
         else:
+            if self._screen_preview is not None:
+                self._screen_preview.cancel_annotation_drag()
             self.statusBar().clearMessage()
 
     def _split_selected_peak_at(self, displayed_time: float):

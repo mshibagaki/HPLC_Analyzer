@@ -711,8 +711,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ))
         messages = {
             "active": (
-                "閲覧・縦線・手動積分・積分範囲修正・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
-                "Viewing, vertical markers, manual integration, peak range editing, fractions and split view. Other editing returns to Matplotlib.",
+                "閲覧・縦線・手動積分・積分範囲修正／分割・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
+                "Viewing, vertical markers, manual integration, peak range editing/splitting, fractions and split view. Other editing returns to Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
@@ -734,8 +734,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not enabled:
             self._stop_screen_preview()
             return
-        controls = (self.split_peak_button,
-                    self.move_trace_button,
+        controls = (self.move_trace_button,
                     self.annotation_action, self.toolbar._actions["zoom"])
         if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
@@ -3091,7 +3090,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_split_mode(self, enabled: bool):
         if enabled:
-            self._stop_screen_preview(unsupported=True)
             dataset = self._selected_dataset()
             row = self.peak_table.currentRow()
             if dataset is None or not (0 <= row < len(dataset.peaks)):
@@ -3239,6 +3237,7 @@ class MainWindow(QtWidgets.QMainWindow):
             dataset.peaks[row : row + 1] = [left, right]
             recalculate_dataset_peaks(dataset)
         except ValueError as exc:
+            self._restore_analysis_state(before)
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), str(exc))
             return
         self._push_undo_snapshot(

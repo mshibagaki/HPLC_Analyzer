@@ -2583,6 +2583,248 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_preview_peak_split_matches_existing_calculation(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        from hplc_app.analysis import split_peak_region
+        from hplc_app.project_io import load_project, save_project
+        window = self.make_window()
+        try:
+            window.show()
+            raw = [(d.time_min.copy(), d.intensity_uv.copy()) for d in window.project.datasets]
+            cases = (("single", "linear", 0), ("overview_detail", "edge_average", 1),
+                     ("split_y_axes", "constant_start", 1), ("single", "manual", 1),
+                     ("split_y_axes", "zero", 0))
+            for mode, baseline, row in cases:
+                with self.subTest(mode=mode, baseline=baseline):
+                    selected = window.project.datasets[row]
+                    selected.x_shift_min = 3.25
+                    selected.offset = 1000.0
+                    selected.peaks = [PeakRegion(start_min=5.0, end_min=10.0,
+                                                baseline_mode=baseline, notes="keep me",
+                                                integration_source="auto"),
+                                      PeakRegion(start_min=15.0, end_min=20.0)]
+                    if baseline == "manual":
+                        selected.peaks[0].baseline_start_uv = 12.5
+                        selected.peaks[0].baseline_end_uv = 24.5
+                    recalculate_dataset_peaks(selected)
+                    parent = deepcopy(selected.peaks[0])
+                    window.dataset_table.selectRow(row)
+                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+                    window._refresh_peak_table([parent.id])
+                    window._plot()
+                    window.split_peak_button.setChecked(True)
+                    window.screen_preview_checkbox.setChecked(True)
+                    preview = window._screen_preview
+                    self.assertIsNotNone(preview)
+                    consumer = preview.consumer
+                    core, gui = consumer.qt_core, consumer.qt_gui
+                    role = "y2" if mode == "split_y_axes" and row else "y1"
+                    view = consumer.secondary if role == "y2" else consumer.primary.vb
+                    viewport = consumer.widget.viewport()
+                    def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
+                              held=core.Qt.MouseButton.NoButton):
+                        self.app.sendEvent(viewport, gui.QMouseEvent(
+                            kind, core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                            button, held, core.Qt.KeyboardModifier.NoModifier))
+                    # Repeat on the selected right child, preserving its split group.
+                    for time in (10.75, 11.75):
+                        parent = deepcopy(selected.peaks[window.peak_table.currentRow()])
+                        position = consumer.widget.mapFromScene(view.mapViewToScene(
+                            core.QPointF(time, sum(view.viewRange()[1]) / 2)))
+                        event = consumer.pointer_event(consumer.widget.mapToScene(position))
+                        expected = deepcopy(selected)
+                        index = window.peak_table.currentRow()
+                        children = split_peak_region(expected, expected.peaks[index],
+                                                     event.data_for(role)[0] - selected.x_shift_min)
+                        expected.peaks[index:index + 1] = children
+                        before = deepcopy(selected.peaks)
+                        untouched = deepcopy(window.project.datasets[1 - row].peaks)
+                        undo_count = len(window._undo_stack)
+                        state = window._screen_view_state()
+                        window.project.dirty = False
+                        mouse(core.QEvent.Type.MouseMove, position)
+                        self.assertTrue(consumer.pointer_cursor.isVisible())
+                        self.assertEqual(selected.peaks, before)
+                        self.assertFalse(window.project.dirty)
+                        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                            mouse(core.QEvent.Type.MouseButtonPress, position,
+                                  core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                            mouse(core.QEvent.Type.MouseButtonRelease, position, core.Qt.MouseButton.LeftButton)
+                        warning.assert_not_called()
+                        self.assertIs(window._screen_preview, preview)
+                        self.assertTrue(window.split_peak_button.isChecked())
+                        self.assertEqual(len(window._undo_stack), undo_count + 1)
+                        new = sorted((p for p in selected.peaks if p.id not in {b.id for b in before}),
+                                     key=lambda p: p.start_min)
+                        self.assertEqual(len(new), 2)
+                        for child, actual in zip(children, new):
+                            child.id = actual.id
+                            self.assertEqual(actual.split_group_id, parent.split_group_id or parent.id)
+                            self.assertEqual(actual.notes, parent.notes)
+                            self.assertEqual(actual.integration_source, parent.integration_source)
+                        recalculate_dataset_peaks(expected)
+                        self.assertEqual(selected.peaks, expected.peaks)
+                        self.assertLess(abs(sum(p.raw_area_uv_sec for p in new)
+                                            - parent.raw_area_uv_sec), 0.01)
+                        self.assertEqual(window.project.datasets[1 - row].peaks, untouched)
+                        self.assertEqual(window._screen_view_state(), state)
+                        self.assertEqual(window._selected_peak_ids(), [new[1].id])
+                        self.assertTrue({p.id for p in new}.issubset(
+                            {p.peak_id for p in window._screen_scene.peak_overlays}))
+                        window.undo()
+                        self.assertEqual(selected.peaks, before)
+                        window.redo()
+                        self.assertEqual(selected.peaks, expected.peaks)
+                        window._refresh_peak_table([new[1].id])
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "native-split.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+                self.assertEqual([d.peaks for d in restored.datasets], [d.peaks for d in window.project.datasets])
+                with patch.object(window.canvas.callbacks, "exception_handler",
+                                  side_effect=AssertionError("Unexpected render callback error")):
+                    output = Path(directory) / "split.svg"
+                    window._save_figure_file(str(output))
+                self.assertGreater(output.stat().st_size, 0)
+            for dataset, (times, values) in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.time_min, times)
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_peak_split_target_and_input_guards(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.peak_table.selectRow(0)
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window.screen_preview_checkbox.setChecked(True)
+            window.split_peak_button.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core = consumer.qt_core
+            def event(time=7.5, role="y1", **changes):
+                view = consumer.secondary if role == "y2" else consumer.primary.vb
+                position = view.mapViewToScene(core.QPointF(time, sum(view.viewRange()[1]) / 2))
+                return ScreenPointerEvent(**dict(vars(consumer.pointer_event(position, button=1)), **changes))
+            dataset = window.project.datasets[0]
+            original = deepcopy(dataset.peaks)
+            window.project.dirty = False
+            undo_count = len(window._undo_stack)
+            state = window._screen_view_state()
+            with patch.object(QtWidgets.QMessageBox, "warning") as unexpected_warning:
+                for invalid in (event(role="y2"), event(hit_region="x"), event(button=3),
+                                event(double_click=True), event(hit_region="overview"),
+                                event(data_coordinates=(("y1", float("nan"), 0.0),))):
+                    with patch.object(preview.navigation, "handle_event") as navigation:
+                        preview.handle_event("button_press_event", invalid)
+                    navigation.assert_not_called()
+                preview.handle_event("motion_notify_event", event())
+                self.assertTrue(consumer.pointer_cursor.isVisible())
+                preview.handle_event("motion_notify_event", event(role="y2"))
+                self.assertFalse(consumer.pointer_cursor.isVisible())
+                dataset.visible = False
+                preview.handle_event("button_press_event", event())
+                dataset.visible = True
+                window.peak_table.clearSelection()
+                preview.handle_event("button_press_event", event())
+                window.peak_table.selectRow(0)
+                # Stale table identity must not accidentally split a replaced peak.
+                old_id = dataset.peaks[0].id
+                dataset.peaks[0].id = "replacement"
+                preview.handle_event("button_press_event", event())
+                dataset.peaks[0].id = old_id
+                removed = dataset.peaks.pop()
+                preview.handle_event("button_press_event", event())
+                dataset.peaks.append(removed)
+                window.dataset_table.selectRow(1)
+                preview.handle_event("button_press_event", event(role="y2"))
+                window.dataset_table.selectRow(0)
+                window.peak_table.selectRow(0)
+                window.toolbar.pan()
+                preview.handle_event("button_press_event", event())
+                preview.handle_event("button_release_event", event())
+                window.toolbar.pan()
+            unexpected_warning.assert_not_called()
+            self.assertEqual(dataset.peaks, original)
+            self.assertFalse(window.project.dirty)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertEqual(window._screen_view_state(), state)
+            # Split clicks bypass marker/annotation hit handlers, but no double split.
+            window.split_peak_button.setChecked(True)
+            with patch.object(window, "_split_selected_peak_at") as split:
+                preview.handle_event("button_press_event", event(hit_kind="vertical_marker", hit_id="marker"))
+                preview.handle_event("button_press_event", event(double_click=True))
+                preview.handle_event("button_release_event", event())
+            split.assert_called_once()
+            window.screen_preview_checkbox.setChecked(False)
+            self.assertTrue(window.split_peak_button.isChecked())
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            with patch.object(consumer, "set_pointer_cursor", side_effect=RuntimeError("cursor failure")):
+                preview.handle_event("motion_notify_event", event())
+            self.assertIsNone(window._screen_preview)
+            self.assertTrue(window.split_peak_button.isChecked())
+            self.assertEqual(dataset.peaks, original)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_peak_split_invalid_and_recalculation_failure_are_atomic(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            dataset = window.project.datasets[0]
+            for native in (False, True):
+                with self.subTest(native=native):
+                    window.screen_preview_checkbox.setChecked(native)
+                    with patch.object(QtWidgets.QMessageBox, "information") as information:
+                        window.split_peak_button.setChecked(False)
+                        window.peak_table.setCurrentCell(-1, -1)
+                        window.split_peak_button.setChecked(True)
+                    information.assert_called_once()
+                    self.assertFalse(window.split_peak_button.isChecked())
+                    for failure in ("narrow", "recalculation"):
+                        dataset.peaks = [PeakRegion(start_min=5.0, end_min=10.0)]
+                        if failure == "narrow":
+                            dataset.peaks[0].start_min = float(dataset.time_min[20])
+                            dataset.peaks[0].end_min = float(dataset.time_min[22])
+                        recalculate_dataset_peaks(dataset)
+                        window._refresh_peak_table([dataset.peaks[0].id])
+                        window._plot()
+                        window.split_peak_button.setChecked(True)
+                        before = deepcopy(dataset.peaks)
+                        undo_count = len(window._undo_stack)
+                        window.project.dirty = False
+                        def click():
+                            if native:
+                                window._screen_preview.handle_event("button_press_event", ScreenPointerEvent(
+                                    button=1, axis_role="y1", hit_region="plot",
+                                    data_coordinates=(("y1", 7.5, 0.0),)))
+                            else:
+                                window._split_selected_peak_at(7.5)
+                        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                            if failure == "recalculation":
+                                with patch("hplc_app.gui.recalculate_dataset_peaks", side_effect=ValueError("failure")):
+                                    click()
+                            else:
+                                click()
+                        warning.assert_called_once()
+                        self.assertEqual(dataset.peaks, before)
+                        self.assertEqual(len(window._undo_stack), undo_count)
+                        self.assertFalse(window.project.dirty)
+                        if native:
+                            self.assertIsNotNone(window._screen_preview)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_peak_range_edit_matches_existing_calculation(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")

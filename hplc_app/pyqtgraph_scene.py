@@ -103,6 +103,8 @@ class PyQtGraphSceneConsumer:
         self._sync_auxiliary_views()
         self.items = []
         self.overview_items = []
+        self.trace_items = {}
+        self.overview_trace_items = {}
         self.marker_items = {}
         self._marker_specs = ()
         self.pointer_cursor = self.pg.InfiniteLine(
@@ -392,6 +394,15 @@ class PyQtGraphSceneConsumer:
         self.span_selection.setRegion(sorted((float(start), float(end))))
         self.span_selection.show()
 
+    def set_trace_translation(self, dataset_id, x_delta=0.0, y_delta=0.0):
+        """Move one rendered trace transiently without touching scene data."""
+        item = self.trace_items.get(dataset_id)
+        overview = self.overview_trace_items.get(dataset_id)
+        if item is not None:
+            item.setPos(float(x_delta), float(y_delta))
+        if overview is not None:
+            overview.setPos(float(x_delta), float(y_delta))
+
     def _add(self, item, axis_id="y1"):
         self._view(axis_id).addItem(item)
         self.items.append(item)
@@ -409,6 +420,8 @@ class PyQtGraphSceneConsumer:
             view.removeItem(item)
         self.items.clear()
         self.overview_items.clear()
+        self.trace_items.clear()
+        self.overview_trace_items.clear()
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
         self.set_pointer_cursor()
@@ -432,6 +445,7 @@ class PyQtGraphSceneConsumer:
                 name=trace.label,
             )
             self._add(item, trace.axis_id)
+            self.trace_items[trace.dataset_id] = item
             overview_item = self.pg.PlotCurveItem(
                 trace.x_values,
                 trace.y_values,
@@ -440,6 +454,7 @@ class PyQtGraphSceneConsumer:
             overview_view = self.overview_secondary if trace.axis_id == "y2" else self.overview
             overview_view.addItem(overview_item)
             self.overview_items.append(overview_item)
+            self.overview_trace_items[trace.dataset_id] = overview_item
             counts["traces"] += 1
 
         for view, axis, _host in self.gradient_layers:

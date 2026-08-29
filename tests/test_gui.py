@@ -77,6 +77,14 @@ from hplc_app.screen_navigation import (
     ScreenViewState,
     compose_overview_state,
 )
+
+
+def _trace_edit_state(datasets):
+    return [
+        (item.id, item.visible, item.y_axis, item.x_shift_min, item.offset,
+         deepcopy(item.peaks))
+        for item in datasets
+    ]
 from hplc_app.settings_store import ApplicationSettings
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from hplc_app.update_ui import UpdateDownloadDialog, UpdateDownloadWorker
@@ -359,8 +367,7 @@ class GuiTests(unittest.TestCase):
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
-            for control in (window.move_trace_button,
-                            window.annotation_action):
+            for control in (window.annotation_action,):
                 window.screen_preview_checkbox.setChecked(True)
                 self.assertIsNotNone(window._screen_preview)
                 control.setChecked(True)
@@ -2582,6 +2589,230 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(window._move_drag)
         window.project.dirty = False
         window.close()
+
+    def test_preview_trace_move_matches_existing_callback_and_persistence(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        from hplc_app.project_io import load_project, save_project
+        window = self.make_window()
+        try:
+            window.show()
+            raw = [(d.time_min.copy(), d.intensity_uv.copy()) for d in window.project.datasets]
+            cases = (("single", "both", 0, 0.75, 650.0),
+                     ("overview_detail", "x", 0, -0.5, 0.0),
+                     ("split_y_axes", "y", 1, 0.0, -425.0))
+            for mode, direction, row, dx, dy in cases:
+                with self.subTest(mode=mode, direction=direction):
+                    window.dataset_table.selectRow(row)
+                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+                    window.move_axis_combo.setCurrentIndex(window.move_axis_combo.findData(direction))
+                    window._plot()
+                    selected = window.project.datasets[row]
+                    before = deepcopy(selected)
+                    other = _trace_edit_state([window.project.datasets[1 - row]])
+                    window.move_trace_button.setChecked(True)
+                    window.screen_preview_checkbox.setChecked(True)
+                    preview = window._screen_preview
+                    consumer = preview.consumer
+                    core, gui = consumer.qt_core, consumer.qt_gui
+                    role = "y2" if mode == "split_y_axes" and row else "y1"
+                    view = consumer.secondary if role == "y2" else consumer.primary.vb
+                    viewport = consumer.widget.viewport()
+                    x0, y0 = 8.0, sum(view.viewRange()[1]) / 2.0
+                    def point(x, y):
+                        return consumer.widget.mapFromScene(view.mapViewToScene(core.QPointF(x, y)))
+                    start, end = point(x0, y0), point(x0 + dx, y0 + dy)
+                    start_event = consumer.pointer_event(consumer.widget.mapToScene(start))
+                    end_event = consumer.pointer_event(consumer.widget.mapToScene(end))
+                    effective_dx = (end_event.data_for(role)[0] - start_event.data_for(role)[0]
+                                    if direction in ("x", "both") else 0.0)
+                    effective_dy = (end_event.data_for(role)[1] - start_event.data_for(role)[1]
+                                    if direction in ("y", "both") else 0.0)
+                    expected = deepcopy(selected)
+                    expected.x_shift_min += effective_dx
+                    expected.offset += effective_dy
+                    recalculate_dataset_peaks(expected)
+                    item = consumer.trace_items[selected.id]
+                    overview_item = consumer.overview_trace_items[selected.id]
+                    undo_count = len(window._undo_stack)
+                    state = window._screen_view_state()
+                    window.project.dirty = False
+                    def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
+                              held=core.Qt.MouseButton.NoButton):
+                        self.app.sendEvent(viewport, gui.QMouseEvent(
+                            kind, core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                            button, held, core.Qt.KeyboardModifier.NoModifier))
+                    mouse(core.QEvent.Type.MouseButtonPress, start,
+                          core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                    mouse(core.QEvent.Type.MouseMove, end, held=core.Qt.MouseButton.LeftButton)
+                    self.assertIsNotNone(preview._move_target)
+                    self.assertAlmostEqual(selected.x_shift_min, expected.x_shift_min, places=6)
+                    self.assertAlmostEqual(selected.offset, expected.offset, places=5)
+                    self.assertAlmostEqual(item.pos().x(), effective_dx, places=6)
+                    self.assertAlmostEqual(item.pos().y(), effective_dy, places=5)
+                    self.assertAlmostEqual(overview_item.pos().x(), effective_dx, places=6)
+                    self.assertEqual(len(window._undo_stack), undo_count)
+                    self.assertFalse(window.project.dirty)
+                    mouse(core.QEvent.Type.MouseButtonRelease, end, core.Qt.MouseButton.LeftButton)
+                    self.assertIs(window._screen_preview, preview)
+                    self.assertIsNone(preview._move_target)
+                    self.assertIsNone(window._move_drag)
+                    self.assertEqual(len(window._undo_stack), undo_count + 1)
+                    self.assertEqual(selected.peaks, expected.peaks)
+                    self.assertEqual(_trace_edit_state([window.project.datasets[1 - row]]), other)
+                    self.assertEqual(window._screen_view_state(), state)
+                    self.assertAlmostEqual(
+                        float(window.dataset_table.item(row, DATASET_X_SHIFT_COLUMN).text()),
+                        selected.x_shift_min, places=4,
+                    )
+                    window.undo()
+                    self.assertEqual(selected.x_shift_min, before.x_shift_min)
+                    self.assertEqual(selected.offset, before.offset)
+                    window.redo()
+                    self.assertAlmostEqual(selected.x_shift_min, expected.x_shift_min, places=6)
+                    self.assertAlmostEqual(selected.offset, expected.offset, places=5)
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "native-moved.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+                self.assertEqual([(d.x_shift_min, d.offset, d.peaks) for d in restored.datasets],
+                                 [(d.x_shift_min, d.offset, d.peaks) for d in window.project.datasets])
+                with patch.object(window.canvas.callbacks, "exception_handler",
+                                  side_effect=AssertionError("Unexpected render callback error")):
+                    output = Path(directory) / "moved.svg"
+                    window._save_figure_file(str(output))
+                self.assertGreater(output.stat().st_size, 0)
+            for dataset, (times, values) in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.time_min, times)
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_trace_move_cancellation_and_target_guards(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window.screen_preview_checkbox.setChecked(True)
+            window.move_trace_button.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            def event(x, y=100.0, role="y1", **changes):
+                view = consumer.secondary if role == "y2" else consumer.primary.vb
+                position = view.mapViewToScene(core.QPointF(x, y))
+                return ScreenPointerEvent(**dict(vars(consumer.pointer_event(position, button=1)), **changes))
+            def begin():
+                window.move_trace_button.setChecked(True)
+                preview.handle_event("button_press_event", event(1.0))
+                self.assertIsNotNone(preview._move_target)
+                preview.handle_event("motion_notify_event", event(1.5, 1100.0))
+            original = _trace_edit_state(window.project.datasets)
+            undo_count = len(window._undo_stack)
+            window.project.dirty = False
+            for invalid in (event(1.0, role="y2"), event(1.0, hit_region="x"),
+                            event(1.0, button=3), event(1.0, double_click=True),
+                            event(1.0, hit_kind="vertical_marker", hit_id="m")):
+                preview.handle_event("button_press_event", invalid)
+                self.assertIsNone(preview._move_target)
+            for cancel in (core.QEvent(core.QEvent.Type.FocusOut),
+                           gui.QKeyEvent(core.QEvent.Type.KeyPress, core.Qt.Key.Key_Escape,
+                                         core.Qt.KeyboardModifier.NoModifier)):
+                begin()
+                self.app.sendEvent(consumer.widget.viewport(), cancel)
+                self.assertIsNone(preview._move_target)
+                self.assertEqual(_trace_edit_state(window.project.datasets), original)
+            for finish in (event(2.0, role="y2"), event(2.0, hit_region=""),
+                           event(2.0, button=3)):
+                begin()
+                preview.handle_event("button_release_event", finish)
+                self.assertIsNone(preview._move_target)
+                self.assertEqual(_trace_edit_state(window.project.datasets), original)
+            for change in ("dataset", "direction", "visibility", "mode", "plot"):
+                begin()
+                if change == "dataset":
+                    window.dataset_table.selectRow(1)
+                elif change == "direction":
+                    window.move_axis_combo.setCurrentIndex(window.move_axis_combo.findData("x"))
+                    preview.handle_event("motion_notify_event", event(2.0))
+                elif change == "visibility":
+                    window.project.datasets[0].visible = False
+                    preview.handle_event("motion_notify_event", event(2.0))
+                elif change == "mode":
+                    window.move_trace_button.setChecked(False)
+                else:
+                    window._plot()
+                self.assertIsNone(preview._move_target)
+                self.assertEqual(_trace_edit_state(window.project.datasets), original)
+                window.dataset_table.selectRow(0)
+                window.project.datasets[0].visible = True
+                window.move_axis_combo.setCurrentIndex(window.move_axis_combo.findData("both"))
+                window._plot()
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertFalse(window.project.dirty)
+            # A click without movement is not an edit.
+            window.move_trace_button.setChecked(True)
+            preview.handle_event("button_press_event", event(1.0))
+            preview.handle_event("button_release_event", event(1.0))
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertFalse(window.project.dirty)
+            begin()
+            window.screen_preview_checkbox.setChecked(False)
+            self.assertEqual(_trace_edit_state(window.project.datasets), original)
+            self.assertTrue(window.move_trace_button.isChecked())
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            begin()
+            with patch.object(consumer, "set_trace_translation", side_effect=RuntimeError("move failure")):
+                preview.handle_event("motion_notify_event", event(2.0))
+            self.assertIsNone(window._screen_preview)
+            self.assertEqual(_trace_edit_state(window.project.datasets), original)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_trace_move_recalculation_failure_is_atomic_in_both_renderers(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            for native in (False, True):
+                with self.subTest(native=native):
+                    window.screen_preview_checkbox.setChecked(native)
+                    window.dataset_table.selectRow(0)
+                    window.move_trace_button.setChecked(True)
+                    dataset = window.project.datasets[0]
+                    before = _trace_edit_state(window.project.datasets)
+                    undo_count = len(window._undo_stack)
+                    window.project.dirty = False
+                    press = ScreenPointerEvent(button=1, axis_role="y1", hit_region="plot",
+                                               data_coordinates=(("y1", 1.0, 100.0),))
+                    motion = ScreenPointerEvent(button=1, axis_role="y1", hit_region="plot",
+                                                data_coordinates=(("y1", 1.5, 1100.0),))
+                    release = ScreenPointerEvent(button=1, axis_role="y1", hit_region="plot",
+                                                 data_coordinates=(("y1", 1.5, 1100.0),))
+                    handler = window._screen_preview.handle_event if native else None
+                    (handler("button_press_event", press) if native else window._on_canvas_press(press))
+                    (handler("motion_notify_event", motion) if native else window._on_canvas_motion(motion))
+                    with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                        with patch("hplc_app.gui.recalculate_dataset_peaks",
+                                   side_effect=ValueError("failure")):
+                            (handler("button_release_event", release)
+                             if native else window._on_canvas_release(release))
+                    warning.assert_called_once()
+                    self.assertEqual(_trace_edit_state(window.project.datasets), before)
+                    self.assertEqual(len(window._undo_stack), undo_count)
+                    self.assertFalse(window.project.dirty)
+                    self.assertIsNone(window._move_drag)
+                    if native:
+                        self.assertIsNotNone(window._screen_preview)
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_preview_peak_split_matches_existing_calculation(self):
         if QT_API != 6 or not pyqtgraph_scene_available():

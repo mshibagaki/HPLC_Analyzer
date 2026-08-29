@@ -711,8 +711,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ))
         messages = {
             "active": (
-                "閲覧・縦線・手動積分・積分範囲修正／分割・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
-                "Viewing, vertical markers, manual integration, peak range editing/splitting, fractions and split view. Other editing returns to Matplotlib.",
+                "閲覧・縦線・積分編集・トレース移動・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
+                "Viewing, vertical markers, integration editing, trace movement, fractions and split view. Other editing returns to Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
@@ -734,8 +734,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not enabled:
             self._stop_screen_preview()
             return
-        controls = (self.move_trace_button,
-                    self.annotation_action, self.toolbar._actions["zoom"])
+        controls = (self.annotation_action, self.toolbar._actions["zoom"])
         if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
             return
@@ -2588,6 +2587,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _plot(self, preserve_view: bool = True):
         if not hasattr(self, "axes"):
             return
+        if getattr(self, "_screen_preview", None) is not None:
+            self._screen_preview.cancel_move_drag()
         view_state = self._capture_view_state() if preserve_view else None
         self._clear_span_selector()
         self._interaction_cursor = None
@@ -3157,7 +3158,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_move_mode(self, enabled: bool):
         if enabled:
-            self._stop_screen_preview(unsupported=True)
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
                 self.move_trace_button.setChecked(False)
@@ -3171,6 +3171,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.annotation_action.setChecked(False)
             self.statusBar().showMessage(self.translator("move_hint"))
         else:
+            if self._screen_preview is not None:
+                self._screen_preview.cancel_move_drag()
             self._move_drag = None
             if not (
                 self.integrate_button.isChecked()
@@ -3609,12 +3611,22 @@ class MainWindow(QtWidgets.QMainWindow):
             or dataset.offset != self._move_drag["initial_offset"]
         )
         self._move_drag = None
-        if changed:
+        if not changed:
+            return
+        try:
             recalculate_dataset_peaks(dataset)
+        except ValueError as exc:
             if undo_state is not None:
-                self._push_undo_snapshot(
-                    undo_state, self._history_label("スペクトル移動", "Move trace")
-                )
+                self._restore_analysis_state(undo_state)
+            QtWidgets.QMessageBox.warning(
+                self, self.translator("warning"), str(exc)
+            )
+            self._plot()
+            return
+        if undo_state is not None:
+            self._push_undo_snapshot(
+                undo_state, self._history_label("スペクトル移動", "Move trace")
+            )
         self.project.dirty = True
         row = next((i for i, item in enumerate(self.project.datasets) if item.id == dataset.id), -1)
         if row >= 0:

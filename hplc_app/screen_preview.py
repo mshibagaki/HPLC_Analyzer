@@ -25,6 +25,7 @@ class ExperimentalScreenPreview:
         self._busy = False
         self._key_filter = None
         self._span_drag = None
+        self._move_target = None
         try:
             self.consumer.widget.setBackground("w")
             self.consumer.primary.setMenuEnabled(False)
@@ -56,12 +57,15 @@ class ExperimentalScreenPreview:
                     if event.type() in (core.QEvent.Type.Leave, core.QEvent.Type.FocusOut,
                                         core.QEvent.Type.Resize):
                         preview.cancel_span_drag()
+                        preview.cancel_move_drag()
                     if event.type() == core.QEvent.Type.Leave:
                         preview.consumer.set_pointer_cursor()
                     if (event.type() == core.QEvent.Type.KeyPress
                             and event.key() == core.Qt.Key.Key_Escape
-                            and preview._span_drag is not None):
+                            and (preview._span_drag is not None
+                                 or preview._move_target is not None)):
                         preview.cancel_span_drag()
+                        preview.cancel_move_drag()
                         event.accept()
                         return True
                     if (event.type() == core.QEvent.Type.KeyPress
@@ -170,6 +174,70 @@ class ExperimentalScreenPreview:
         self._span_drag = None
         self.consumer.set_span_selection()
 
+    def cancel_move_drag(self):
+        target = self._move_target
+        self._move_target = None
+        if target is None:
+            return
+        drag = self.owner._move_drag
+        if drag is not None and drag.get("undo_state") is not None:
+            self.owner._restore_analysis_state(drag["undo_state"])
+        self.owner._move_drag = None
+        self.owner.project.dirty = target["dirty"]
+        self.consumer.set_trace_translation(target["dataset_id"])
+
+    def _handle_move_event(self, name, event):
+        owner = self.owner
+        if not owner.move_trace_button.isChecked() or str(owner.toolbar.mode):
+            if self._move_target is not None:
+                self.cancel_move_drag()
+            return False
+        selected = owner._selected_dataset()
+        role = "y2" if selected is not None and selected.y_axis == 2 else "y1"
+        in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
+        coordinates = event.data_for(role)
+        valid = (selected is not None and selected.visible
+                 and any(trace.dataset_id == selected.id for trace in self._scene.traces)
+                 and in_plot and (not self.consumer.split_y_axes or event.axis_role == role)
+                 and all(value is not None and isfinite(value) for value in coordinates))
+        target = self._move_target
+        if target is not None:
+            current = (selected.id if selected else "", role, owner.move_axis_combo.currentData())
+            if current != target["identity"]:
+                self.cancel_move_drag()
+                return True
+            if name == "scroll_event":
+                return True
+            if (not valid or event.axis_role != target["role"] or event.button != 1):
+                self.cancel_move_drag()
+                return True
+            if name == "motion_notify_event":
+                owner._on_canvas_motion(event)
+                drag = owner._move_drag
+                self.consumer.set_trace_translation(
+                    target["dataset_id"],
+                    selected.x_shift_min - drag["initial_x_shift"],
+                    selected.offset - drag["initial_offset"],
+                )
+            elif name == "button_release_event":
+                self._move_target = None
+                owner._on_canvas_release(event)
+            return True
+        if (name == "button_press_event" and event.button == 1 and valid
+                and not event.double_click and not event.hit_kind):
+            owner._on_canvas_press(event)
+            if owner._move_drag is not None:
+                self.consumer.widget.setFocus(
+                    self.consumer.qt_core.Qt.FocusReason.MouseFocusReason
+                )
+                self._move_target = {
+                    "dataset_id": selected.id, "role": role,
+                    "identity": (selected.id, role, owner.move_axis_combo.currentData()),
+                    "dirty": owner.project.dirty,
+                }
+            return True
+        return name == "button_press_event" and in_plot
+
     def _handle_span_event(self, name, event):
         owner = self.owner
         mode = ("integrate" if owner.integrate_button.isChecked() else
@@ -275,6 +343,8 @@ class ExperimentalScreenPreview:
                 return True
             if self._handle_split_event(name, event):
                 return True
+            if self._handle_move_event(name, event):
+                return True
             if name == "motion_notify_event":
                 x_value = (event.data_for("y1")[0]
                            if (owner.pointer_action.isChecked() or owner.fraction_button.isChecked()
@@ -312,6 +382,7 @@ class ExperimentalScreenPreview:
 
     def close(self):
         self._span_drag = None
+        self.cancel_move_drag()
         if self._key_filter is not None:
             self.consumer.widget.removeEventFilter(self._key_filter)
             self.consumer.widget.viewport().removeEventFilter(self._key_filter)

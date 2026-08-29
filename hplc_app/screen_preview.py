@@ -10,6 +10,7 @@ from math import isfinite
 
 from .pyqtgraph_navigation import PyQtGraphNavigationController
 from .pyqtgraph_scene import PyQtGraphSceneConsumer
+from .qt_compat import USER_ROLE
 from .screen_navigation import compose_overview_state
 
 
@@ -236,6 +237,33 @@ class ExperimentalScreenPreview:
         # clicks; do not reinterpret them as marker selection or history back.
         return name == "button_press_event" and in_plot
 
+    def _handle_split_event(self, name, event):
+        owner = self.owner
+        if not owner.split_peak_button.isChecked() or str(owner.toolbar.mode):
+            return False
+        if name not in ("button_press_event", "button_release_event", "motion_notify_event"):
+            return False
+        selected = owner._selected_dataset()
+        row = owner.peak_table.currentRow()
+        item = owner.peak_table.item(row, 0) if row >= 0 else None
+        # Check the table's stable ID too: stale/reordered rows must not edit a
+        # different peak. Splitting is immediate, with no pending drag target.
+        valid = (selected is not None and selected.visible
+                 and 0 <= row < len(selected.peaks) and item is not None
+                 and item.isSelected() and item.data(USER_ROLE) == selected.peaks[row].id
+                 and any(trace.dataset_id == selected.id for trace in self._scene.traces)
+                 and event.hit_region in ("plot", "plot_y1", "plot_y2")
+                 and (not self.consumer.split_y_axes
+                      or event.axis_role == ("y2" if selected.y_axis == 2 else "y1")))
+        time = event.data_for(event.axis_role)[0]
+        valid = valid and time is not None and isfinite(time)
+        self.consumer.set_pointer_cursor(time if valid else None, event.axis_role)
+        if name == "button_press_event" and valid and event.button == 1 and not event.double_click:
+            self.consumer.widget.setFocus(self.consumer.qt_core.Qt.FocusReason.MouseFocusReason)
+            owner._split_selected_peak_at(time)
+        # Split-tool clicks must not select markers/annotations or navigate back.
+        return True
+
     def handle_event(self, name, event):
         if self._busy:
             return True
@@ -244,6 +272,8 @@ class ExperimentalScreenPreview:
             if not owner._view_initialized:
                 return True
             if self._handle_span_event(name, event):
+                return True
+            if self._handle_split_event(name, event):
                 return True
             if name == "motion_notify_event":
                 x_value = (event.data_for("y1")[0]

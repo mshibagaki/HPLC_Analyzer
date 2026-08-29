@@ -516,6 +516,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._screen_pan_session = None
         self._screen_preview = None
         self._screen_preview_notice = ""
+        self._force_matplotlib_screen_plot = False
+        self._matplotlib_screen_complete = True
         self._pending_series_refresh = False
         self._draw_timer = None
         self._build_ui()
@@ -755,6 +757,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.plot_stack.setCurrentWidget(self._screen_preview.consumer.widget)
             self._screen_preview_notice = "active"
             self._update_screen_preview_notice()
+            # The constructor initially mirrors the existing complete figure.
+            # Once the native widget is live, retain only Matplotlib axes/view
+            # state until a full-quality export or fallback needs its artists.
+            self._plot()
         except Exception:
             self._stop_screen_preview(failed=True)
 
@@ -768,6 +774,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.plot_stack.setCurrentWidget(self.canvas)
         if preview is not None:
             preview.close()
+        if not self._matplotlib_screen_complete:
+            self._plot()
         if ((self.integrate_button.isChecked() or self.edit_peak_button.isChecked()
              or self.fraction_button.isChecked())
                 and self._span_selector is None
@@ -922,15 +930,22 @@ class MainWindow(QtWidgets.QMainWindow):
         """Temporarily rebuild screen artists from full arrays for figure export."""
 
         original_quality = self._render_quality
-        if original_quality != LIGHTWEIGHT:
+        original_force = self._force_matplotlib_screen_plot
+        needs_rebuild = (
+            original_quality == LIGHTWEIGHT
+            or not self._matplotlib_screen_complete
+        )
+        if not needs_rebuild:
             yield
             return
         try:
+            self._force_matplotlib_screen_plot = True
             self._render_quality = HIGH_QUALITY
             self._set_figure_layout_quality()
             self._plot()
             yield
         finally:
+            self._force_matplotlib_screen_plot = original_force
             self._render_quality = original_quality
             self._set_figure_layout_quality()
             self._plot()
@@ -2591,6 +2606,116 @@ class MainWindow(QtWidgets.QMainWindow):
                 alpha=region.line_alpha,
             )
 
+    @staticmethod
+    def _scene_y_limits(scene, axis_id: str):
+        values = []
+        for trace in scene.traces:
+            if trace.axis_id != axis_id:
+                continue
+            finite = np.asarray(trace.y_values, dtype=float)
+            finite = finite[np.isfinite(finite)]
+            if finite.size:
+                values.append(finite)
+        if not values:
+            return (0.0, 1.0)
+        minimum = min(float(np.min(item)) for item in values)
+        maximum = max(float(np.max(item)) for item in values)
+        span = maximum - minimum
+        padding = span * 0.05 if span > 0.0 else max(abs(minimum) * 0.05, 1.0)
+        return (minimum - padding, maximum + padding)
+
+    def _prepare_matplotlib_screen_skeleton(self, scene, view_state):
+        """Keep only axes/view state while the native screen owns rendering."""
+
+        x_label, y_label = self._axis_labels()
+        x_axis = self.axes_right if self._split_y_axes else self.axes
+        x_axis.set_xlabel(self.project.method.x_axis_label.strip() or x_label)
+        self.axes.set_ylabel(
+            self.project.method.y_axis_1_label.strip()
+            or "%s — Y axis 1" % y_label
+        )
+        if self.axes_right is not None:
+            self.axes_right.set_ylabel(
+                self.project.method.y_axis_2_label.strip()
+                or "%s — Y axis 2" % y_label
+            )
+        if scene.gradient is not None:
+            for gradient_axis in (
+                self.axes_gradient,
+                self.axes_gradient_secondary,
+            ):
+                if gradient_axis is not None:
+                    gradient_axis.set_ylabel(scene.gradient.axis_label)
+                    gradient_axis.set_ylim(0.0, 100.0)
+
+        if self.project.method.show_major_grid:
+            self.axes.grid(
+                True,
+                which="major",
+                color="#d1d5db",
+                linewidth=0.6,
+                alpha=0.75,
+            )
+        else:
+            self.axes.grid(False, which="major")
+        if self.axes_overview is not None:
+            if self.project.method.show_major_grid:
+                self.axes_overview.grid(
+                    True,
+                    which="major",
+                    color="#d1d5db",
+                    linewidth=0.5,
+                    alpha=0.6,
+                )
+            else:
+                self.axes_overview.grid(False, which="major")
+
+        has_times = bool(scene.time_candidates)
+        if not has_times:
+            has_times = any(dataset.time_min.size for dataset in self.project.datasets)
+        if has_times:
+            full_bounds = self._full_x_bounds()
+            self.axes.set_xlim(*full_bounds)
+            self.axes.margins(x=0)
+            if self._split_y_axes and self.axes_right is not None:
+                self.axes_right.margins(x=0)
+            if self.axes_overview is not None:
+                self.axes_overview.set_xlim(*full_bounds)
+                self.axes_overview.margins(x=0)
+                self.axes_overview.tick_params(
+                    axis="both", which="both", labelleft=False, labelbottom=False
+                )
+                if self.axes_overview_right is not None:
+                    self.axes_overview_right.tick_params(
+                        axis="both", which="both", labelright=False, labelbottom=False
+                    )
+
+        if view_state is None:
+            self.axes.set_ylim(*self._scene_y_limits(scene, "y1"))
+            if self.axes_right is not None:
+                self.axes_right.set_ylim(*self._scene_y_limits(scene, "y2"))
+        else:
+            self.axes.set_xlim(*view_state.x)
+            self.axes.set_ylim(*view_state.y1)
+            if self.axes_right is not None and view_state.y2 is not None:
+                self.axes_right.set_ylim(*view_state.y2)
+            if self.axes_gradient is not None and view_state.gradient is not None:
+                self.axes_gradient.set_ylim(*view_state.gradient)
+
+        self._set_dynamic_x_ticks()
+        self._apply_plot_text_styles()
+        self._connect_axes_callbacks()
+        self._overview_window_state = compose_overview_state(
+            enabled=self.axes_overview is not None,
+            full_x=self._full_x_bounds(),
+            detail_x=tuple(self.axes.get_xlim()),
+        )
+        self._view_initialized = has_times
+        if self._view_initialized:
+            self._view_history.ensure_home(self._screen_view_state())
+        self._matplotlib_screen_complete = False
+        self._request_canvas_draw()
+
     def _plot(self, preserve_view: bool = True):
         if not hasattr(self, "axes"):
             return
@@ -2690,6 +2815,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.axes_gradient_secondary.sharey(self.axes_gradient)
             if self.axes_right is not None and not self._split_y_axes:
                 self.axes_gradient.spines["right"].set_position(("outward", 62))
+
+        if (
+            self._screen_preview is not None
+            and not self._force_matplotlib_screen_plot
+        ):
+            self._prepare_matplotlib_screen_skeleton(base_scene, view_state)
+            return
 
         plotted = 0
         for dataset in self.project.datasets:
@@ -2969,6 +3101,7 @@ class MainWindow(QtWidgets.QMainWindow):
             or self.pointer_button.isChecked()
         ):
             self._ensure_interaction_cursor()
+        self._matplotlib_screen_complete = True
 
     def _clear_span_selector(self):
         if self._span_selector is not None:

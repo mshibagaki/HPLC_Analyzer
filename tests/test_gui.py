@@ -258,6 +258,13 @@ class GuiTests(unittest.TestCase):
             window.screen_preview_checkbox.setChecked(True)
             preview = window._screen_preview
             self.assertIsNotNone(preview)
+            self.assertFalse(window._matplotlib_screen_complete)
+            self.assertEqual(window._dataset_lines, {})
+            self.assertEqual(window._peak_overlay_artists, {})
+            self.assertEqual(window._annotation_artists, {})
+            self.assertEqual(window._vertical_marker_artists, {})
+            self.assertTrue(all(not axis.lines for axis in window.figure.axes))
+            self.assertTrue(all(axis.get_legend() is None for axis in window.figure.axes))
             self.assertIs(window.plot_stack.currentWidget(), preview.consumer.widget)
             self.assertEqual(preview.consumer.capture_view_state(), initial)
             self.assertIs(preview.navigation.history, window._view_history)
@@ -341,15 +348,36 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(pixmap.size(), consumer.widget.size())
             with tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "preview-export.png"
-                window._save_figure_file(str(path))
+                savefig = window.figure.savefig
+                export_evidence = {}
+
+                def inspect_export(*args, **kwargs):
+                    export_evidence["complete"] = window._matplotlib_screen_complete
+                    export_evidence["dataset_lines"] = len(window._dataset_lines)
+                    return savefig(*args, **kwargs)
+
+                with patch.object(window.figure, "savefig", side_effect=inspect_export):
+                    window._save_figure_file(str(path))
                 self.assertGreater(path.stat().st_size, 0)
+                self.assertTrue(export_evidence["complete"])
+                self.assertEqual(
+                    export_evidence["dataset_lines"],
+                    sum(dataset.visible for dataset in window.project.datasets),
+                )
                 self.assertIs(window._screen_preview, preview)
+                self.assertFalse(window._matplotlib_screen_complete)
+                self.assertEqual(window._dataset_lines, {})
             for dataset, values in zip(window.project.datasets, raw):
                 np.testing.assert_array_equal(dataset.intensity_uv, values)
             current = window._screen_view_state()
             window.screen_preview_checkbox.setChecked(False)
             self.assertIsNone(window._screen_preview)
             self.assertTrue(consumer._closed)
+            self.assertTrue(window._matplotlib_screen_complete)
+            self.assertEqual(
+                len(window._dataset_lines),
+                sum(dataset.visible for dataset in window.project.datasets),
+            )
             self.assertEqual(window._screen_view_state(), current)
             self.assertIs(window.plot_stack.currentWidget(), window.canvas)
             window.screen_preview_checkbox.setChecked(True)
@@ -393,6 +421,8 @@ class GuiTests(unittest.TestCase):
                 window._request_canvas_draw()
             self.assertIsNone(window._screen_preview)
             self.assertTrue(preview.consumer._closed)
+            self.assertTrue(window._matplotlib_screen_complete)
+            self.assertGreater(len(window._dataset_lines), 0)
             self.assertEqual(window.plot_stack.count(), 1)
             window.screen_preview_checkbox.setChecked(True)
             preview = window._screen_preview
@@ -609,13 +639,17 @@ class GuiTests(unittest.TestCase):
                         axes = (window.axes_gradient, window.axes_gradient_secondary)
                         self.assertEqual([axis is not None for axis in axes], [expected is not None] * 2)
                         if expected is not None:
-                            for axis in axes:
-                                self.assertEqual(len(axis.lines), 1)
-                                np.testing.assert_array_equal(axis.lines[0].get_ydata(), expected)
-                                self.assertEqual(axis.get_xlim(), window.axes.get_xlim())
-                                self.assertEqual(axis.get_ylim(), window.axes_gradient.get_ylim())
-                            labels = [text.get_text() for text in window.axes.get_legend().get_texts()]
-                            self.assertEqual(sum(label.startswith("%B") for label in labels), 1)
+                            if use_preview:
+                                self.assertTrue(all(not axis.lines for axis in axes))
+                                self.assertIsNone(window.axes.get_legend())
+                            else:
+                                for axis in axes:
+                                    self.assertEqual(len(axis.lines), 1)
+                                    np.testing.assert_array_equal(axis.lines[0].get_ydata(), expected)
+                                    self.assertEqual(axis.get_xlim(), window.axes.get_xlim())
+                                    self.assertEqual(axis.get_ylim(), window.axes_gradient.get_ylim())
+                                labels = [text.get_text() for text in window.axes.get_legend().get_texts()]
+                                self.assertEqual(sum(label.startswith("%B") for label in labels), 1)
                         if use_preview:
                             self.assertIsNotNone(window._screen_preview)
                             consumer = window._screen_preview.consumer
@@ -3626,8 +3660,12 @@ class GuiTests(unittest.TestCase):
                     self.assertEqual(selected.peaks, expected_dataset.peaks)
                     self.assertEqual(window.project.datasets[1 - row].peaks, untouched)
                     self.assertEqual(window._screen_view_state(), state)
-                    self.assertIn(new_peak.id, window._peak_overlay_artists)
+                    self.assertEqual(window._peak_overlay_artists, {})
                     self.assertIn(new_peak.id, {p.peak_id for p in window._screen_scene.peak_overlays})
+                    self.assertEqual(
+                        consumer.last_evidence["counts"]["peak_overlays"],
+                        len(window._screen_scene.peak_overlays),
+                    )
                     window.undo()
                     self.assertEqual({p.id for p in window.project.datasets[row].peaks}, before_ids)
                     window.redo()

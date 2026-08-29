@@ -31,7 +31,7 @@ Windows 11向けのQt 6環境では、グラフ上部の「PyQtGraph表示（実
 - 表示画面のコピー・印刷は表示中の描画を使用します。PNG/SVG/PDFの図保存・解析レポートは従来のMatplotlib経路を維持します。
 - PyQtGraph未導入・初期化／描画エラー時も従来画面へ戻ります。Win7では選択できず、依存追加もしません。
 
-これは移行途中の試験表示です。再描画時には互換・図保存用のMatplotlibオブジェクトも構築するため、完全なMatplotlib画面処理の除去とアプリ全体の高速化は未完了です。実機でのDPI・日本語フォント・ポインター・印刷を含む最終的な見た目の確認も必要です。
+これは移行途中の試験表示です。試験表示中の通常再描画では、Matplotlib側は軸と表示範囲の骨格だけを保持し、非表示のデータ線・B%線・積分表示・縦線・注釈・概要線・凡例は構築しません。PNG/SVG/PDF保存時だけ高品質Matplotlib図を一時的に再構築し、試験表示を閉じた場合や描画エラー時は完全なMatplotlib画面へ戻します。高密度データではPyQtGraphアイテムの全再構築自体がまだ律速であり、アプリ全体の高速化は未完了です。実機でのDPI・日本語フォント・ポインター・印刷を含む最終確認も必要です。
 
 ## 開発者向けクイックスタート
 
@@ -165,12 +165,13 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 
 ```text
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json
+python scripts\benchmark_integrated_screen.py --traces 8 --points 100000 --repeats 3 --output integrated-screen-benchmark.json
 python scripts\probe_pyqtgraph_parity.py
 ```
 
-Windows 11のoptional consumerを検証する環境だけ、通常requirementsに加えて`pip install -r requirements-win11-pyqtgraph.txt`を実行します。この依存は通常buildやWindows 7 offline buildには含めません。consumerはproduction sceneの全static要素とQt snapshotを描画できますが、event・navigation・fallback接続が未完了のため、まだMainWindowの選択肢には表示しません。
+Windows 11のoptional consumerを検証する環境だけ、通常requirementsに加えて`pip install -r requirements-win11-pyqtgraph.txt`を実行します。この依存は通常buildやWindows 7 offline buildには含めません。consumerはproduction sceneのstatic要素、Qt snapshot、navigationと編集eventを扱い、`MainWindow`からセッション限定でopt-inできます。失敗時はMatplotlibへ戻り、保存設定やWin7依存は変更しません。
 
-結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
+結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。統合benchmarkは実際の`MainWindow._plot()`を両経路で測り、試験表示中のMatplotlib線数とnative scene要素数も記録します。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
 
 Win11の隔離probeでは、primary trace、Y2軸、split panel、zoom/pan、integration region、retention/fixed-size text、vertical marker、curve picking、snapshotを再現できました。gradientはcustom AxisItemとViewBoxを追加し、Y2と同時にB%用の第三独立scaleとして共有X軸上へ重ねられることも確認済みです。
 

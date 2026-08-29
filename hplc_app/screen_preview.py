@@ -26,6 +26,7 @@ class ExperimentalScreenPreview:
         self._key_filter = None
         self._span_drag = None
         self._move_target = None
+        self._annotation_target = None
         try:
             self.consumer.widget.setBackground("w")
             self.consumer.primary.setMenuEnabled(False)
@@ -58,14 +59,17 @@ class ExperimentalScreenPreview:
                                         core.QEvent.Type.Resize):
                         preview.cancel_span_drag()
                         preview.cancel_move_drag()
+                        preview.cancel_annotation_drag()
                     if event.type() == core.QEvent.Type.Leave:
                         preview.consumer.set_pointer_cursor()
                     if (event.type() == core.QEvent.Type.KeyPress
                             and event.key() == core.Qt.Key.Key_Escape
                             and (preview._span_drag is not None
-                                 or preview._move_target is not None)):
+                                 or preview._move_target is not None
+                                 or preview._annotation_target is not None)):
                         preview.cancel_span_drag()
                         preview.cancel_move_drag()
+                        preview.cancel_annotation_drag()
                         event.accept()
                         return True
                     if (event.type() == core.QEvent.Type.KeyPress
@@ -185,6 +189,71 @@ class ExperimentalScreenPreview:
         self.owner._move_drag = None
         self.owner.project.dirty = target["dirty"]
         self.consumer.set_trace_translation(target["dataset_id"])
+
+    def cancel_annotation_drag(self):
+        target = self._annotation_target
+        self._annotation_target = None
+        if target is None:
+            return
+        drag = self.owner._annotation_drag
+        if drag is not None:
+            self.owner._restore_analysis_state(drag["undo_state"])
+        self.owner._annotation_drag = None
+        self.owner.project.dirty = target["dirty"]
+        try:
+            self.consumer.set_annotation_position(
+                target["annotation_id"], target["initial_x"], target["initial_y"]
+            )
+        except Exception:
+            # Model restoration is authoritative during renderer teardown.
+            pass
+
+    def _handle_annotation_event(self, name, event):
+        owner = self.owner
+        editing = owner.annotation_action.isChecked() or event.hit_kind == "annotation"
+        target = self._annotation_target
+        if target is not None:
+            annotation = next((item for item in owner.project.annotations
+                               if item.id == target["annotation_id"]), None)
+            if annotation is None:
+                self.cancel_annotation_drag()
+                return True
+            coordinates = event.data_for(target["role"])
+            valid = (event.hit_region in ("plot", "plot_y1", "plot_y2")
+                     and (not self.consumer.split_y_axes or event.axis_role == target["role"])
+                     and all(value is not None and isfinite(value) for value in coordinates))
+            if name == "scroll_event":
+                return True
+            if (not valid or event.button != 1):
+                self.cancel_annotation_drag()
+                return True
+            if name == "motion_notify_event":
+                owner._on_canvas_motion(event)
+                self.consumer.set_annotation_position(
+                    annotation.id, annotation.x_min, annotation.y_value
+                )
+            elif name == "button_release_event":
+                self._annotation_target = None
+                owner._on_canvas_release(event)
+            return True
+        if not editing or str(owner.toolbar.mode):
+            return False
+        in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
+        if (name == "button_press_event" and event.button == 1 and in_plot):
+            owner._on_canvas_press(event)
+            drag = owner._annotation_drag
+            if drag is not None:
+                annotation = drag["annotation"]
+                self.consumer.widget.setFocus(
+                    self.consumer.qt_core.Qt.FocusReason.MouseFocusReason
+                )
+                self._annotation_target = {
+                    "annotation_id": annotation.id, "role": drag["axis_role"],
+                    "initial_x": drag["initial_x"], "initial_y": drag["initial_y"],
+                    "dirty": owner.project.dirty,
+                }
+            return True
+        return name == "button_press_event" and in_plot
 
     def _handle_move_event(self, name, event):
         owner = self.owner
@@ -345,6 +414,8 @@ class ExperimentalScreenPreview:
                 return True
             if self._handle_move_event(name, event):
                 return True
+            if self._handle_annotation_event(name, event):
+                return True
             if name == "motion_notify_event":
                 x_value = (event.data_for("y1")[0]
                            if (owner.pointer_action.isChecked() or owner.fraction_button.isChecked()
@@ -355,7 +426,8 @@ class ExperimentalScreenPreview:
             if (name == "button_press_event" and event.button == 1
                     and not str(owner.toolbar.mode)):
                 if event.hit_region in ("plot", "plot_y1", "plot_y2") and (
-                    owner.pointer_action.isChecked() or event.hit_kind == "vertical_marker"
+                    owner.pointer_action.isChecked()
+                    or event.hit_kind in ("vertical_marker", "annotation")
                 ):
                     self.consumer.widget.setFocus(self.consumer.qt_core.Qt.FocusReason.MouseFocusReason)
                     owner._on_canvas_press(event)
@@ -383,6 +455,7 @@ class ExperimentalScreenPreview:
     def close(self):
         self._span_drag = None
         self.cancel_move_drag()
+        self.cancel_annotation_drag()
         if self._key_filter is not None:
             self.consumer.widget.removeEventFilter(self._key_filter)
             self.consumer.widget.viewport().removeEventFilter(self._key_filter)

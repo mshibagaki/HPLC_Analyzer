@@ -367,15 +367,6 @@ class GuiTests(unittest.TestCase):
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
-            for control in (window.annotation_action,):
-                window.screen_preview_checkbox.setChecked(True)
-                self.assertIsNotNone(window._screen_preview)
-                control.setChecked(True)
-                self.assertIsNone(window._screen_preview)
-                self.assertFalse(window.screen_preview_checkbox.isChecked())
-                self.assertTrue(control.isChecked())
-                self.assertEqual(window._screen_preview_notice, "unsupported")
-                control.setChecked(False)
             window.screen_preview_checkbox.setChecked(True)
             window.toolbar._actions["zoom"].trigger()
             self.assertIsNone(window._screen_preview)
@@ -2589,6 +2580,218 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(window._move_drag)
         window.project.dirty = False
         window.close()
+
+    def test_preview_text_label_drag_hit_testing_and_persistence(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        from hplc_app.project_io import load_project, save_project
+        window = self.make_window()
+        try:
+            first, second = window.project.datasets
+            annotations = [
+                TextAnnotation(text="Y1 label", x_min=7.0, y_value=1000.0,
+                               dataset_id=first.id, y_axis=1, font_size=13.0),
+                TextAnnotation(text="Y2 label", x_min=8.0, y_value=1500.0,
+                               dataset_id=second.id, y_axis=2, font_size=11.0),
+            ]
+            window.project.annotations = annotations
+            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
+            window._plot()
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            viewport = consumer.widget.viewport()
+            raw = [d.intensity_uv.copy() for d in window.project.datasets]
+            for source_annotation, role in zip(annotations, ("y1", "y2")):
+                with self.subTest(role=role):
+                    preview = window._screen_preview
+                    consumer = preview.consumer
+                    annotation = next(
+                        item for item in window.project.annotations
+                        if item.id == source_annotation.id
+                    )
+                    item = consumer.annotation_items[annotation.id]
+                    rect = item.sceneBoundingRect()
+                    start_scene = rect.center()
+                    hit = consumer.pointer_event(start_scene, button=1)
+                    self.assertEqual((hit.hit_kind, hit.hit_id), ("annotation", annotation.id))
+                    view = consumer.secondary if role == "y2" else consumer.primary.vb
+                    start_data = hit.data_for(role)
+                    end_scene = view.mapViewToScene(core.QPointF(
+                        start_data[0] + 0.75, start_data[1] + 325.0
+                    ))
+                    start = consumer.widget.mapFromScene(start_scene)
+                    end = consumer.widget.mapFromScene(end_scene)
+                    end_event = consumer.pointer_event(end_scene)
+                    dx = end_event.data_for(role)[0] - start_data[0]
+                    dy = end_event.data_for(role)[1] - start_data[1]
+                    before = deepcopy(annotation)
+                    undo_count = len(window._undo_stack)
+                    window.project.dirty = False
+                    def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
+                              held=core.Qt.MouseButton.NoButton):
+                        self.app.sendEvent(viewport, gui.QMouseEvent(
+                            kind, core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
+                            button, held, core.Qt.KeyboardModifier.NoModifier))
+                    if role == "y1":
+                        mouse(core.QEvent.Type.MouseButtonPress, start,
+                              core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+                    else:
+                        preview.handle_event("button_press_event", hit)
+                    self.assertIsNotNone(preview._annotation_target)
+                    if role == "y1":
+                        mouse(core.QEvent.Type.MouseMove, end, held=core.Qt.MouseButton.LeftButton)
+                    else:
+                        preview.handle_event("motion_notify_event", ScreenPointerEvent(
+                            **dict(vars(end_event), button=1)))
+                    self.assertNotEqual((annotation.x_min, annotation.y_value),
+                                        (before.x_min, before.y_value))
+                    self.assertAlmostEqual(item.pos().x(), annotation.x_min, places=6)
+                    self.assertEqual(len(window._undo_stack), undo_count)
+                    self.assertFalse(window.project.dirty)
+                    if role == "y1":
+                        mouse(core.QEvent.Type.MouseButtonRelease, end, core.Qt.MouseButton.LeftButton)
+                    else:
+                        preview.handle_event("button_release_event", ScreenPointerEvent(
+                            **dict(vars(end_event), button=1)))
+                    self.assertIs(window._screen_preview, preview)
+                    self.assertIsNone(preview._annotation_target)
+                    self.assertEqual(len(window._undo_stack), undo_count + 1)
+                    moved = (annotation.x_min, annotation.y_value)
+                    window.undo()
+                    restored_annotation = next(a for a in window.project.annotations if a.id == annotation.id)
+                    self.assertEqual((restored_annotation.x_min, restored_annotation.y_value),
+                                     (before.x_min, before.y_value))
+                    window.redo()
+                    annotation = next(a for a in window.project.annotations if a.id == annotation.id)
+                    self.assertAlmostEqual(annotation.x_min, moved[0], places=6)
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "native-labels.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+                self.assertEqual(restored.annotations, window.project.annotations)
+                output = Path(directory) / "labels.svg"
+                window._save_figure_file(str(output))
+                self.assertGreater(output.stat().st_size, 0)
+            for dataset, values in zip(window.project.datasets, raw):
+                np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_text_label_create_edit_delete_and_cancel(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            view = consumer.primary.vb
+            def event_at(x, y, **changes):
+                scene = view.mapViewToScene(core.QPointF(x, y))
+                return ScreenPointerEvent(**dict(vars(consumer.pointer_event(scene, button=1)), **changes))
+            def accept_create(dialog):
+                dialog.annotation.text = "Native label"
+                dialog.annotation.font_size = 14.0
+                dialog.annotation.background_color = "#ffffcc"
+                return 1
+            window.annotation_action.setChecked(True)
+            with patch("hplc_app.gui.dialog_exec", side_effect=accept_create):
+                preview.handle_event("button_press_event", event_at(6.5, 750.0))
+            self.assertEqual(len(window.project.annotations), 1)
+            annotation = window.project.annotations[0]
+            self.assertEqual(annotation.text, "Native label")
+            self.assertFalse(window.annotation_action.isChecked())
+            self.assertIn(annotation.id, consumer.annotation_items)
+            undo_count = len(window._undo_stack)
+            item = consumer.annotation_items[annotation.id]
+            hit = consumer.pointer_event(item.sceneBoundingRect().center(), button=1,
+                                         double_click=True)
+            def accept_edit(dialog):
+                dialog.annotation.text = "Edited native label"
+                dialog.annotation.color = "#123456"
+                return 1
+            with patch("hplc_app.gui.dialog_exec", side_effect=accept_edit):
+                preview.handle_event("button_press_event", hit)
+            self.assertEqual(annotation.text, "Edited native label")
+            self.assertEqual(len(window._undo_stack), undo_count + 1)
+            window.undo()
+            annotation = window.project.annotations[0]
+            self.assertEqual(annotation.text, "Native label")
+            window.redo()
+            annotation = window.project.annotations[0]
+            self.assertEqual(annotation.text, "Edited native label")
+            # Escape/focus loss restore a live drag without history or dirty changes.
+            preview = window._screen_preview
+            consumer = preview.consumer
+            item = consumer.annotation_items[annotation.id]
+            start = consumer.pointer_event(item.sceneBoundingRect().center(), button=1)
+            original = deepcopy(annotation)
+            undo_count = len(window._undo_stack)
+            window.project.dirty = False
+            preview.handle_event("button_press_event", start)
+            preview.handle_event("motion_notify_event", event_at(annotation.x_min + 1.0,
+                                                                  annotation.y_value + 500.0))
+            self.assertNotEqual((annotation.x_min, annotation.y_value),
+                                (original.x_min, original.y_value))
+            escape = gui.QKeyEvent(core.QEvent.Type.KeyPress, core.Qt.Key.Key_Escape,
+                                   core.Qt.KeyboardModifier.NoModifier)
+            self.app.sendEvent(consumer.widget.viewport(), escape)
+            annotation = window.project.annotations[0]
+            self.assertEqual(annotation, original)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertFalse(window.project.dirty)
+            # Renderer failure restores the transient model before fallback.
+            preview = window._screen_preview
+            consumer = preview.consumer
+            item = consumer.annotation_items[annotation.id]
+            start = consumer.pointer_event(item.sceneBoundingRect().center(), button=1)
+            original = deepcopy(annotation)
+            preview.handle_event("button_press_event", start)
+            with patch.object(consumer, "set_annotation_position",
+                              side_effect=RuntimeError("label failure")):
+                preview.handle_event("motion_notify_event", event_at(
+                    annotation.x_min + 1.0, annotation.y_value + 500.0
+                ))
+            self.assertIsNone(window._screen_preview)
+            annotation = window.project.annotations[0]
+            self.assertEqual(annotation, original)
+            window.screen_preview_checkbox.setChecked(True)
+            # Marker hit testing retains precedence where both targets overlap.
+            window.project.vertical_markers = [VerticalMarker(x_min=annotation.x_min)]
+            window._plot()
+            preview = window._screen_preview
+            item = preview.consumer.annotation_items[annotation.id]
+            overlap_scene = preview.consumer.primary.vb.mapViewToScene(
+                core.QPointF(annotation.x_min, annotation.y_value)
+            )
+            overlap = preview.consumer.pointer_event(overlap_scene, button=1)
+            self.assertEqual(overlap.hit_kind, "vertical_marker")
+            window.project.vertical_markers = []
+            window._plot()
+            preview = window._screen_preview
+            consumer = preview.consumer
+            item = consumer.annotation_items[annotation.id]
+            delete_hit = consumer.pointer_event(item.sceneBoundingRect().center(), button=1,
+                                                double_click=True)
+            def accept_delete(dialog):
+                dialog.delete_requested = True
+                return 1
+            with patch("hplc_app.gui.dialog_exec", side_effect=accept_delete):
+                preview.handle_event("button_press_event", delete_hit)
+            self.assertEqual(window.project.annotations, [])
+            window.undo()
+            self.assertEqual(len(window.project.annotations), 1)
+            window.redo()
+            self.assertEqual(window.project.annotations, [])
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_preview_trace_move_matches_existing_callback_and_persistence(self):
         if QT_API != 6 or not pyqtgraph_scene_available():

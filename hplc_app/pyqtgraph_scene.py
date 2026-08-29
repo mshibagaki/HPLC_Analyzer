@@ -107,6 +107,8 @@ class PyQtGraphSceneConsumer:
         self.overview_trace_items = {}
         self.marker_items = {}
         self._marker_specs = ()
+        self.annotation_items = {}
+        self._annotation_specs = ()
         self.pointer_cursor = self.pg.InfiniteLine(
             angle=90, movable=False,
             pen=self.pg.mkPen("#2563eb", width=1.0, style=getattr(
@@ -347,9 +349,9 @@ class PyQtGraphSceneConsumer:
             data_coordinates=tuple(coordinates),
             double_click=bool(double_click),
             key=str(key or ""),
-        ).with_hit_target(*self._marker_hit_target(scene_position))
+        ).with_hit_target(*self._editing_hit_target(scene_position))
 
-    def _marker_hit_target(self, scene_position):
+    def _editing_hit_target(self, scene_position):
         """Use viewport pixels, so selection tolerance is independent of zoom."""
         pointer_x = self.widget.mapFromScene(scene_position).x()
         for marker in reversed(self._marker_specs):
@@ -363,6 +365,12 @@ class PyQtGraphSceneConsumer:
             marker_x = self.widget.mapFromScene(marker_scene).x()
             if abs(pointer_x - marker_x) <= 6:
                 return "vertical_marker", marker.marker_id
+        for annotation in reversed(self._annotation_specs):
+            item = self.annotation_items.get(annotation.annotation_id)
+            if item is not None and item.isVisible() and self._point_in_rect(
+                scene_position, item.sceneBoundingRect(), 3.0
+            ):
+                return "annotation", annotation.annotation_id
         return "", ""
 
     def set_pointer_cursor(self, x_value=None, axis_id="y1"):
@@ -403,6 +411,11 @@ class PyQtGraphSceneConsumer:
         if overview is not None:
             overview.setPos(float(x_delta), float(y_delta))
 
+    def set_annotation_position(self, annotation_id, x_value, y_value):
+        item = self.annotation_items.get(annotation_id)
+        if item is not None:
+            item.setPos(float(x_value), float(y_value))
+
     def _add(self, item, axis_id="y1"):
         self._view(axis_id).addItem(item)
         self.items.append(item)
@@ -424,6 +437,8 @@ class PyQtGraphSceneConsumer:
         self.overview_trace_items.clear()
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
+        self.annotation_items.clear()
+        self._annotation_specs = scene.text_annotations
         self.set_pointer_cursor()
         self.set_span_selection()
         for view, axis, _host in self.gradient_layers:
@@ -586,6 +601,7 @@ class PyQtGraphSceneConsumer:
             text.setFont(font)
             text.setPos(annotation.x_value, annotation.y_value)
             self._add(text, annotation.axis_id)
+            self.annotation_items[annotation.annotation_id] = text
             counts["text_annotations"] += 1
 
         self.primary.enableAutoRange()

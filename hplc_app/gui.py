@@ -4461,9 +4461,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ),
         ))
 
-    def _import_chromatogram_paths(
-        self, paths, group_label="", show_progress=False, group_labels=None
-    ) -> int:
+    def _import_chromatogram_paths(self, paths, show_progress=False) -> int:
         paths = [str(path) for path in paths]
         if not paths:
             return 0
@@ -4494,11 +4492,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
             try:
                 dataset = load_chromatogram_file(path)
-                normalized_group = str(
-                    group_labels[index] if group_labels is not None else group_label
-                ).strip()
-                if normalized_group:
-                    dataset.measurement.group = normalized_group
                 wavelength = dataset.measurement.wavelength_nm
                 same_wavelength_count = sum(
                     1
@@ -4579,7 +4572,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._settings.set(LAST_IMPORT_DIRECTORY, str(directory), sync=True)
         imported = self._import_chromatogram_paths(
             dialog.files,
-            group_label=dialog.group_label,
             show_progress=True,
         )
         self._register_work_directory(
@@ -4699,7 +4691,6 @@ class MainWindow(QtWidgets.QMainWindow):
         return self._import_chromatogram_paths(
             [path for path, _label in candidates],
             show_progress=True,
-            group_labels=[label for _path, label in candidates],
         )
 
     @staticmethod

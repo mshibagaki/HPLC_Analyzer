@@ -6657,7 +6657,7 @@ class GuiTests(unittest.TestCase):
             self.assertIn("No TXT/GCD", warning.call_args.args[2])
             empty_dialog.close()
 
-    def test_directory_import_sets_group_order_and_last_directory(self):
+    def test_directory_import_keeps_group_blank_and_registers_directory_label(self):
         window = self.make_window()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -6703,7 +6703,7 @@ class GuiTests(unittest.TestCase):
                     dataset.measurement.group
                     for dataset in window.project.datasets[-2:]
                 ],
-                ["pac1", "pac1"],
+                ["", ""],
             )
             self.assertEqual(
                 self.settings.value("paths/last_import_directory"),
@@ -6796,12 +6796,11 @@ class GuiTests(unittest.TestCase):
 
             imported = window._import_chromatogram_paths(
                 [path for path, _label in candidates],
-                group_labels=[label for _path, label in candidates],
             )
             self.assertEqual(imported, 2)
             self.assertEqual(
                 [item.measurement.group for item in window.project.datasets],
-                ["pac1", "pac2"],
+                ["", ""],
             )
             candidates, duplicates, changed, errors, skipped_txt_count = (
                 window._work_directory_reload_candidates()
@@ -6860,7 +6859,6 @@ class GuiTests(unittest.TestCase):
         ) as loader:
             imported = window._import_chromatogram_paths(
                 paths,
-                group_label="cancel-group",
                 show_progress=True,
             )
 
@@ -6868,7 +6866,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(loader.call_count, 1)
         self.assertEqual(
             window.project.datasets[-1].measurement.group,
-            "cancel-group",
+            "",
         )
         self.assertIn("1", window.statusBar().currentMessage())
         self.assertTrue(FakeProgressDialog.instances[0].closed)

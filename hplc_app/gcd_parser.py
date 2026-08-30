@@ -9,11 +9,14 @@ files or depend on Windows COM.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 import math
 import struct
 from typing import Dict, Iterator, List
 
 import numpy as np
+
+from .timestamps import GCD_FILETIME_UTC_KEY
 
 
 CFB_SIGNATURE = bytes.fromhex("d0cf11e0a1b11ae1")
@@ -26,6 +29,30 @@ _PEAK_RECORD_SIZE = 236
 
 class GcdParseError(ValueError):
     pass
+
+
+_FILETIME_EPOCH = datetime(1601, 1, 1)
+_FILETIME_OFFSET_BY_VERSION = {
+    # Confirmed against six paired PACsolution GCD/TXT exports. Unknown file
+    # versions deliberately fall through to filename/file-mtime provenance.
+    "2.32.00": 506,
+}
+
+
+def _file_property_timestamp_utc(data: bytes, version: str) -> str:
+    offset = _FILETIME_OFFSET_BY_VERSION.get(version)
+    if offset is None or len(data) < offset + 8:
+        return ""
+    ticks = struct.unpack_from("<Q", data, offset)[0]
+    if ticks <= 0:
+        return ""
+    try:
+        value = _FILETIME_EPOCH + timedelta(microseconds=ticks // 10)
+    except OverflowError:
+        return ""
+    if value.year < 1980 or value.year > 2200:
+        return ""
+    return value.isoformat(timespec="seconds") + "Z"
 
 
 @dataclass
@@ -320,6 +347,9 @@ def parse_gcd_streams(streams: Dict[str, bytes]) -> ParsedGcd:
         version = _c_string(file_property[4:20])
         if version:
             metadata["GCD.File Version"] = version
+            filetime_utc = _file_property_timestamp_utc(file_property, version)
+            if filetime_utc:
+                metadata[GCD_FILETIME_UTC_KEY] = filetime_utc
     system = streams.get("System", b"")
     if system:
         instrument_name = _c_string(system[:32])

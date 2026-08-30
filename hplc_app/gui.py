@@ -24,7 +24,9 @@ from .analysis import (
     recalculate_dataset_peaks,
     split_peak_region,
 )
+from .auto_peak_settings import apply_auto_peak_thresholds
 from .dialogs import (
+    AutoPeakDetectionDialog,
     AxisLabelsDialog,
     BatchMetadataDialog,
     DirectoryImportDialog,
@@ -108,6 +110,7 @@ from .rendering import (
 )
 from .settings_store import (
     ApplicationSettings,
+    AUTO_PEAK_SENSITIVITY_PRESETS,
     AUTOMATIC_UPDATE_CHECK,
     DATASET_COLUMN_ORDER,
     DATABASE_PATH,
@@ -575,6 +578,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._render_quality = self._settings.get(RENDERING_QUALITY)
         self._screen_renderer_preference = self._settings.get(SCREEN_RENDERER)
         self._automatic_update_check = self._settings.get(AUTOMATIC_UPDATE_CHECK)
+        self._auto_peak_sensitivity_presets = self._settings.get(
+            AUTO_PEAK_SENSITIVITY_PRESETS
+        )
         self._update_check_thread = None
         self._update_check_worker = None
         self._automatic_update_timer = QtCore.QTimer(self)
@@ -5058,13 +5064,32 @@ class MainWindow(QtWidgets.QMainWindow):
         if dataset is None:
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
+        dialog = AutoPeakDetectionDialog(
+            self._selected_time_range,
+            self._application_language,
+            self,
+        )
+        if not dialog_exec(dialog):
+            return
         self.integrate_button.setChecked(False)
         self.split_peak_button.setChecked(False)
         self.move_trace_button.setChecked(False)
         before = self._capture_analysis_state()
+        thresholds = self._auto_peak_sensitivity_presets[dialog.sensitivity_id]
+        apply_auto_peak_thresholds(self.project.method, thresholds)
+        raw_time_range = (
+            tuple(value - float(dataset.x_shift_min) for value in dialog.time_range)
+            if dialog.time_range is not None
+            else None
+        )
         try:
-            candidates = detect_peaks(dataset, self.project.method)
+            candidates = detect_peaks(
+                dataset,
+                self.project.method,
+                time_range=raw_time_range,
+            )
         except Exception as exc:
+            self.project.method = deepcopy(before["method"])
             QtWidgets.QMessageBox.warning(self, self.translator("warning"), str(exc))
             return
         existing = [
@@ -5077,7 +5102,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if peak.retention_time_min is not None
             and all(abs(peak.retention_time_min - value) >= minimum_distance for value in existing)
         ]
-        if not added:
+        method_changed = self.project.method != before["method"]
+        if not added and not method_changed:
             QtWidgets.QMessageBox.information(
                 self,
                 APP_NAME,
@@ -5086,8 +5112,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 else "No new peak candidates matched the current settings.",
             )
             return
-        dataset.peaks.extend(added)
-        recalculate_dataset_peaks(dataset)
+        if added:
+            dataset.peaks.extend(added)
+            recalculate_dataset_peaks(dataset)
         self._push_undo_snapshot(
             before, self._history_label("自動ピーク検出", "Automatic peak detection")
         )
@@ -5095,9 +5122,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_peak_table([peak.id for peak in added])
         self._plot()
         self._update_title()
-        self.statusBar().showMessage(
-            self.translator("auto_detected", count=len(added)), 7000
-        )
+        if added:
+            self.statusBar().showMessage(
+                self.translator("auto_detected", count=len(added)), 7000
+            )
+        else:
+            QtWidgets.QMessageBox.information(
+                self,
+                APP_NAME,
+                "条件に一致する新しいピーク候補はありません。感度設定はMethodに適用しました。"
+                if self._application_language == "ja"
+                else "No new peak candidates matched. The sensitivity settings were applied to the Method.",
+            )
 
     def fit_selected_peak(self):
         dataset = self._selected_dataset()
@@ -5497,8 +5533,6 @@ class MainWindow(QtWidgets.QMainWindow):
         event.acceptProposedAction()
 
     def edit_preferences(self):
-        before = self._capture_analysis_state()
-        old_method = deepcopy(self.project.method)
         dialog = PreferencesDialog(
             self.project.method,
             self._import_directory,
@@ -5508,6 +5542,7 @@ class MainWindow(QtWidgets.QMainWindow):
             database_path=self._database_path,
             render_quality=self._render_quality,
             automatic_update_check=self._automatic_update_check,
+            auto_peak_sensitivity_presets=self._auto_peak_sensitivity_presets,
         )
         if not dialog_exec(dialog):
             return
@@ -5521,7 +5556,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 SAVE_DIRECTORY: self._save_directory,
                 DATABASE_PATH: self._database_path,
                 AUTOMATIC_UPDATE_CHECK: self._automatic_update_check,
+                AUTO_PEAK_SENSITIVITY_PRESETS: (
+                    dialog.auto_peak_sensitivity_presets_value
+                ),
             }
+        )
+        self._auto_peak_sensitivity_presets = deepcopy(
+            dialog.auto_peak_sensitivity_presets_value
         )
         if not self._automatic_update_check:
             self._automatic_update_timer.stop()
@@ -5539,17 +5580,6 @@ class MainWindow(QtWidgets.QMainWindow):
             persist=True,
             replot=False,
         )
-        for field, value in dialog.detection_values.items():
-            setattr(self.project.method, field, value)
-        if self.project.method != old_method:
-            self._push_undo_snapshot(
-                before,
-                self._history_label(
-                    "自動ピーク検出設定", "Automatic peak-detection settings"
-                ),
-            )
-            self.project.dirty = True
-            self._update_title()
         if render_quality_changed:
             self._plot()
 

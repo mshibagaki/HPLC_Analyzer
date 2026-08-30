@@ -35,6 +35,10 @@ from hplc_app.analysis import (
     split_peak_region,
     validate_gradient,
 )
+from hplc_app.auto_peak_settings import (
+    apply_auto_peak_thresholds,
+    default_auto_peak_sensitivity_presets,
+)
 from hplc_app.database import database_sections, export_database_csvs, sync_project_to_database
 from hplc_app.exporters import (
     export_chromatogram_csv,
@@ -166,6 +170,7 @@ from hplc_app.updater_download import (
 )
 from hplc_app.settings_store import (
     ApplicationSettings,
+    AUTO_PEAK_SENSITIVITY_PRESETS,
     AUTOMATIC_UPDATE_CHECK,
     DATASET_COLUMN_ORDER,
     DATABASE_PATH,
@@ -1551,6 +1556,64 @@ class AnalysisTests(unittest.TestCase):
         self.assertTrue(all(peak.integration_source == "auto" for peak in peaks))
         self.assertAlmostEqual(peaks[0].retention_time_min, 3.0, delta=0.03)
         self.assertAlmostEqual(peaks[1].retention_time_min, 7.0, delta=0.03)
+
+    def test_automatic_peak_detection_range_preserves_raw_arrays_and_full_result(self):
+        rng = np.random.default_rng(456)
+        time = np.linspace(0.0, 10.0, 10001)
+        values = (
+            100.0
+            + 900.0 * np.exp(-0.5 * ((time - 3.0) / 0.15) ** 2)
+            + 700.0 * np.exp(-0.5 * ((time - 7.0) / 0.22) ** 2)
+            + rng.normal(0.0, 1.0, time.size)
+        )
+        dataset = Dataset(time_min=time, intensity_uv=values, raw_bytes=b"synthetic")
+        method = AnalysisMethod(
+            auto_peak_snr_threshold=5.0,
+            auto_peak_min_prominence_uv=20.0,
+            auto_peak_smoothing_min=0.01,
+            auto_peak_min_width_min=0.02,
+            auto_peak_max_width_min=1.0,
+            auto_peak_min_distance_min=0.2,
+        )
+        time_before = dataset.time_min.copy()
+        values_before = dataset.intensity_uv.copy()
+        whole = detect_peaks(dataset, method)
+        explicit_whole = detect_peaks(dataset, method, (time[0], time[-1]))
+        ranged = detect_peaks(dataset, method, (4.5, 1.5))
+
+        def numeric_result(peaks):
+            return [
+                (peak.start_min, peak.end_min, peak.retention_time_min, peak.raw_area_uv_sec)
+                for peak in peaks
+            ]
+
+        self.assertEqual(numeric_result(whole), numeric_result(explicit_whole))
+        self.assertEqual(len(ranged), 1)
+        self.assertAlmostEqual(ranged[0].retention_time_min, 3.0, delta=0.03)
+        self.assertGreaterEqual(ranged[0].start_min, 1.5)
+        self.assertLessEqual(ranged[0].end_min, 4.5)
+        np.testing.assert_array_equal(dataset.time_min, time_before)
+        np.testing.assert_array_equal(dataset.intensity_uv, values_before)
+        with self.assertRaisesRegex(ValueError, "must be finite"):
+            detect_peaks(dataset, method, (float("nan"), 4.0))
+
+    def test_default_sensitivity_presets_produce_ordered_candidate_counts(self):
+        time = np.linspace(0.0, 10.0, 5001)
+        values = np.full_like(time, 100.0)
+        for center, height in ((2.0, 35.0), (5.0, 70.0), (8.0, 140.0)):
+            values += height * np.exp(-0.5 * ((time - center) / 0.08) ** 2)
+        dataset = Dataset(time_min=time, intensity_uv=values, raw_bytes=b"synthetic")
+        presets = default_auto_peak_sensitivity_presets()
+        counts = {}
+        for sensitivity in ("low", "medium", "high"):
+            method = AnalysisMethod()
+            apply_auto_peak_thresholds(method, presets[sensitivity])
+            counts[sensitivity] = len(detect_peaks(dataset, method))
+        self.assertEqual(counts, {"low": 1, "medium": 2, "high": 3})
+        self.assertEqual(
+            presets["medium"]["auto_peak_snr_threshold"],
+            AnalysisMethod().auto_peak_snr_threshold,
+        )
 
 
 class ProjectTests(unittest.TestCase):
@@ -3965,6 +4028,7 @@ class ApplicationSettingsTests(unittest.TestCase):
             "naming/author",
             "presets/conditions",
             "presets/gradients",
+            "analysis/auto_peak_sensitivity_presets",
         }
         self.assertEqual(set(SETTING_SPECS), expected_keys)
         backend = _FakeSettingsBackend()
@@ -3985,6 +4049,11 @@ class ApplicationSettingsTests(unittest.TestCase):
             NAMING_AUTHOR: "M Shiba",
             LEGACY_CONDITION_PRESETS: {"C4": {"wavelength_nm": 280.0}},
             LEGACY_GRADIENT_PRESETS: {"10-90 B": {"gradient": []}},
+            AUTO_PEAK_SENSITIVITY_PRESETS: {
+                "low": {"auto_peak_snr_threshold": 15.0},
+                "medium": {"auto_peak_snr_threshold": 7.0},
+                "high": {"auto_peak_snr_threshold": 3.0},
+            },
         }
         self.assertTrue(store.set_many(values))
         self.assertEqual(store.get(UI_LANGUAGE), "en")
@@ -4011,7 +4080,20 @@ class ApplicationSettingsTests(unittest.TestCase):
             store.get(LEGACY_GRADIENT_PRESETS),
             {"10-90 B": {"gradient": []}},
         )
+        self.assertEqual(
+            store.get(AUTO_PEAK_SENSITIVITY_PRESETS)["medium"][
+                "auto_peak_snr_threshold"
+            ],
+            7.0,
+        )
+        self.assertEqual(
+            store.get(AUTO_PEAK_SENSITIVITY_PRESETS)["medium"][
+                "auto_peak_max_count"
+            ],
+            200,
+        )
         self.assertIsInstance(backend.values[LEGACY_CONDITION_PRESETS], str)
+        self.assertIsInstance(backend.values[AUTO_PEAK_SENSITIVITY_PRESETS], str)
 
     def test_missing_corrupt_and_failed_settings_use_safe_fallbacks(self):
         backend = _FakeSettingsBackend(
@@ -4024,6 +4106,7 @@ class ApplicationSettingsTests(unittest.TestCase):
                 FIGURE_FORMAT: "bmp",
                 LEGACY_CONDITION_PRESETS: "not-json",
                 LEGACY_GRADIENT_PRESETS: "[]",
+                AUTO_PEAK_SENSITIVITY_PRESETS: '{"medium":{"auto_peak_snr_threshold":"bad"}}',
             }
         )
         store = ApplicationSettings(backend)
@@ -4037,6 +4120,10 @@ class ApplicationSettingsTests(unittest.TestCase):
         self.assertEqual(store.get(FIGURE_FORMAT), "png")
         self.assertEqual(store.get(LEGACY_CONDITION_PRESETS), {})
         self.assertEqual(store.get(LEGACY_GRADIENT_PRESETS), {})
+        self.assertEqual(
+            store.get(AUTO_PEAK_SENSITIVITY_PRESETS),
+            default_auto_peak_sensitivity_presets(),
+        )
         self.assertEqual(
             ApplicationSettings(_FakeSettingsBackend(fail_value=True)).get(
                 NAMING_AUTHOR

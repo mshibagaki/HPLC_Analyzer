@@ -164,9 +164,19 @@ Common exclusions include:
 
 Large Win7 offline installers/wheels should normally remain outside ordinary Git history unless explicitly required for the repository distribution strategy.
 
+## Shared agent documents
+Every assistant working in this repository follows the same documents. `CLAUDE.md` is only an index to them and holds no rules of its own.
+
+- `AGENTS.md` (this file) — repository rules; nothing below overrides it.
+- `REQUIREMENTS_STATUS.md` — the ledger of implemented and remaining requirements.
+- `VALIDATION_BLOCKERS.md` — external and physical validation gates.
+- `WIN11_FEEDBACK_WORKFLOW.md` — the current work plan for the Windows 11 field-feedback requests: batch definitions, order and dependencies, per-batch acceptance criteria, verification commands, and the technical findings collected before implementation.
+
+Do not create assistant-specific rule files. Repository rules belong here; current work-plan detail belongs in the workflow document.
+
 ## How to work on tasks
 For each task:
-1. Read `REQUIREMENTS_STATUS.md`, `VALIDATION_BLOCKERS.md`, and the relevant modules before editing. Treat the two tracked status files and current `main` as authoritative over local/untracked planning notes.
+1. Read `REQUIREMENTS_STATUS.md`, `VALIDATION_BLOCKERS.md`, `WIN11_FEEDBACK_WORKFLOW.md`, and the relevant modules before editing. Treat the tracked status files, the workflow document, and current `main` as authoritative over local/untracked planning notes.
 2. Identify compatibility-sensitive areas (Win7, project schema, numerical analysis).
 3. Implement the smallest safe change.
 4. Add/update tests where appropriate.

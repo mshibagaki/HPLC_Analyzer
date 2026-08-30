@@ -171,8 +171,10 @@ Every assistant working in this repository follows the same documents. `CLAUDE.m
 - `REQUIREMENTS_STATUS.md` — the ledger of implemented and remaining requirements.
 - `VALIDATION_BLOCKERS.md` — external and physical validation gates.
 - `WIN11_FEEDBACK_WORKFLOW.md` — the current work plan for the Windows 11 field-feedback requests: batch definitions, order and dependencies, per-batch acceptance criteria, verification commands, and the technical findings collected before implementation.
+- `CODEX_BRIEF.md` — the work order for those batches: what is startable now, the per-issue procedure, and the constraints worth repeating. A hand-off brief rather than a rule file; it applies to any assistant despite its name.
+- `ACKNOWLEDGEMENTS.md` — people whose original design, method, or algorithm became a feature. Keep it distinct from `THIRD_PARTY_NOTICES.txt`, which carries third-party software license notices. Confirm with the person before changing how their name is written.
 
-Do not create assistant-specific rule files. Repository rules belong here; current work-plan detail belongs in the workflow document.
+Do not create assistant-specific rule files. Repository rules belong here; current work-plan detail belongs in the workflow document; the current work order belongs in the brief.
 
 ## How to work on tasks
 For each task:

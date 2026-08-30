@@ -51,7 +51,11 @@ from .exporters import (
     export_peak_csv,
 )
 from .i18n import Translator
-from .import_batch import discover_chromatogram_files, discover_reload_candidates
+from .import_batch import (
+    discover_chromatogram_files,
+    discover_reload_candidates,
+    normalized_source_path,
+)
 from .models import (
     Dataset,
     FractionRegion,
@@ -59,6 +63,7 @@ from .models import (
     Project,
     TextAnnotation,
     VerticalMarker,
+    WorkDirectory,
     sanitize_condition_presets,
 )
 from .naming import (
@@ -4474,8 +4479,50 @@ class MainWindow(QtWidgets.QMainWindow):
             group_label=dialog.group_label,
             show_progress=True,
         )
+        self._register_work_directory(
+            directory,
+            dialog.group_label,
+            getattr(dialog, "recursive", False),
+        )
+        skipped_txt_count = getattr(dialog, "duplicate_txt_skip_count", 0)
+        QtWidgets.QMessageBox.information(
+            self,
+            APP_NAME,
+            "\n".join(
+                (
+                    self.translator("imported", count=imported),
+                    self.translator(
+                        "gcd_txt_skipped", count=skipped_txt_count
+                    ),
+                )
+            ),
+        )
         self._settings.set(LAST_IMPORT_DIRECTORY, str(directory), sync=True)
         return imported
+
+    def _register_work_directory(self, directory, label="", recursive=False):
+        path = str(Path(directory))
+        normalized = normalized_source_path(path)
+        if any(
+            normalized_source_path(entry.path) == normalized
+            for entry in self.project.work_directories
+        ):
+            return False
+        before_state = self._capture_analysis_state()
+        self.project.work_directories.append(
+            WorkDirectory(
+                path=path,
+                label=str(label or "").strip() or Path(path).name,
+                recursive=bool(recursive),
+            )
+        )
+        self._push_undo_snapshot(
+            before_state,
+            self._history_label("作業ディレクトリを登録", "Register work directory"),
+        )
+        self.project.dirty = True
+        self._update_title()
+        return True
 
     def edit_work_directories(self):
         before_state = self._capture_analysis_state()
@@ -4510,7 +4557,13 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.edit_work_directories()
             return 0
-        candidates, duplicate_count, changed, errors = self._work_directory_reload_candidates()
+        (
+            candidates,
+            duplicate_count,
+            changed,
+            errors,
+            skipped_txt_count,
+        ) = self._work_directory_reload_candidates()
         lines = [
             self.translator(
                 "work_directory_reload_summary",
@@ -4520,6 +4573,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 errors=len(errors),
             )
         ]
+        if skipped_txt_count:
+            lines.append(
+                self.translator("gcd_txt_skipped", count=skipped_txt_count)
+            )
         if changed:
             lines.append(self.translator("changed_files_held"))
             lines.extend("- " + path for path in changed[:10])

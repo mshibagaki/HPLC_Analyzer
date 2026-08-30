@@ -3,12 +3,18 @@
 from pathlib import Path
 import hashlib
 import os
+from typing import NamedTuple
 
 
 SUPPORTED_CHROMATOGRAM_SUFFIXES = {".gcd", ".txt"}
 
 
-def discover_chromatogram_files(directory, recursive=False):
+class ChromatogramDiscovery(NamedTuple):
+    files: list
+    skipped_txt_files: list
+
+
+def discover_chromatogram_files_with_report(directory, recursive=False):
     # Path("") silently means the current directory, which would scan wherever
     # the application happens to run from instead of failing.
     if not str(directory).strip():
@@ -31,13 +37,33 @@ def discover_chromatogram_files(directory, recursive=False):
             if path.is_file()
             and path.suffix.lower() in SUPPORTED_CHROMATOGRAM_SUFFIXES
         ]
-    return sorted(
+    files = sorted(
         files,
         key=lambda path: (
             path.relative_to(root).as_posix().casefold(),
             path.relative_to(root).as_posix(),
         ),
     )
+    gcd_keys = {
+        (path.parent, path.stem.casefold())
+        for path in files
+        if path.suffix.lower() == ".gcd"
+    }
+    preferred = []
+    skipped_txt_files = []
+    for path in files:
+        if (
+            path.suffix.lower() == ".txt"
+            and (path.parent, path.stem.casefold()) in gcd_keys
+        ):
+            skipped_txt_files.append(path)
+        else:
+            preferred.append(path)
+    return ChromatogramDiscovery(preferred, skipped_txt_files)
+
+
+def discover_chromatogram_files(directory, recursive=False):
+    return discover_chromatogram_files_with_report(directory, recursive).files
 
 
 def normalized_source_path(path):
@@ -65,15 +91,22 @@ def discover_reload_candidates(directories, existing_datasets):
     changed = []
     errors = []
     seen_paths = set()
+    preferred_txt_paths = set()
     for entry in directories:
         if not entry.enabled:
             continue
         try:
-            files = discover_chromatogram_files(entry.path, entry.recursive)
+            discovery = discover_chromatogram_files_with_report(
+                entry.path, entry.recursive
+            )
         except (OSError, ValueError) as exc:
             errors.append("%s: %s" % (entry.path, exc))
             continue
-        for path in files:
+        preferred_txt_paths.update(
+            normalized_source_path(path)
+            for path in discovery.skipped_txt_files
+        )
+        for path in discovery.files:
             normalized = normalized_source_path(path)
             if normalized in seen_paths:
                 continue
@@ -98,4 +131,4 @@ def discover_reload_candidates(directories, existing_datasets):
             else:
                 candidates.append((str(path), entry.label or Path(entry.path).name))
                 seen_hashes.add(digest)
-    return candidates, duplicate_count, changed, errors
+    return candidates, duplicate_count, changed, errors, len(preferred_txt_paths)

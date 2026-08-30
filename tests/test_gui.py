@@ -6253,10 +6253,12 @@ class GuiTests(unittest.TestCase):
             root = Path(directory)
             (root / "B.TXT").write_text("b", encoding="utf-8")
             (root / "a.gcd").write_text("a", encoding="utf-8")
+            (root / "A.txt").write_text("duplicate", encoding="utf-8")
             (root / "ignored.csv").write_text("ignored", encoding="utf-8")
             nested = root / "sub"
             nested.mkdir()
             (nested / "c.TXT").write_text("c", encoding="utf-8")
+            (nested / "a.txt").write_text("nested", encoding="utf-8")
 
             dialog = DirectoryImportDialog(str(root), "en")
             self.assertEqual(dialog.directory_path, root)
@@ -6269,6 +6271,8 @@ class GuiTests(unittest.TestCase):
                 ["a.gcd", "B.TXT"],
             )
             self.assertTrue(dialog.import_button.isEnabled())
+            self.assertIn(".gcd is preferred", dialog.preference_label.text())
+            self.assertIn("skipped 1", dialog.summary_label.text())
 
             dialog.recursive_checkbox.setChecked(True)
             self.app.processEvents()
@@ -6277,8 +6281,9 @@ class GuiTests(unittest.TestCase):
                     dialog.preview_list.item(index).text()
                     for index in range(dialog.preview_list.count())
                 ],
-                ["a.gcd", "B.TXT", "sub/c.TXT"],
+                ["a.gcd", "B.TXT", "sub/a.txt", "sub/c.TXT"],
             )
+            self.assertEqual(dialog.duplicate_txt_skip_count, 1)
             dialog.close()
 
         with tempfile.TemporaryDirectory() as empty_directory:
@@ -6303,6 +6308,8 @@ class GuiTests(unittest.TestCase):
                 directory_path=root,
                 group_label="pac1",
                 files=[earlier, later],
+                recursive=True,
+                duplicate_txt_skip_count=1,
             )
             FakeProgressDialog.cancel_after = None
             FakeProgressDialog.instances = []
@@ -6316,7 +6323,10 @@ class GuiTests(unittest.TestCase):
                 QtWidgets,
                 "QProgressDialog",
                 FakeProgressDialog,
-            ):
+            ), patch.object(
+                QtWidgets.QMessageBox,
+                "information",
+            ) as result_dialog:
                 imported = window.import_directory()
 
             self.assertEqual(imported, 2)
@@ -6340,6 +6350,63 @@ class GuiTests(unittest.TestCase):
             )
             self.assertEqual(FakeProgressDialog.instances[0].values, [0, 1, 2, 2])
             self.assertTrue(FakeProgressDialog.instances[0].closed)
+            self.assertEqual(
+                window.project.work_directories,
+                [
+                    WorkDirectory(
+                        path=str(root),
+                        label="pac1",
+                        recursive=True,
+                    )
+                ],
+            )
+            work_dialog = WorkDirectoriesDialog(
+                window.project.work_directories, "en"
+            )
+            self.assertEqual(work_dialog.table.rowCount(), 1)
+            self.assertEqual(work_dialog.table.item(0, 1).text(), "pac1")
+            work_dialog.close()
+            self.assertIn(
+                window.translator("gcd_txt_skipped", count=1),
+                result_dialog.call_args.args[2],
+            )
+            duplicate_dialog = SimpleNamespace(
+                directory_path=root,
+                group_label="duplicate",
+                files=[earlier, later],
+                recursive=False,
+                duplicate_txt_skip_count=0,
+            )
+            with patch(
+                "hplc_app.gui.DirectoryImportDialog",
+                return_value=duplicate_dialog,
+            ), patch(
+                "hplc_app.gui.dialog_exec",
+                return_value=True,
+            ), patch.object(
+                window,
+                "_import_chromatogram_paths",
+                return_value=0,
+            ), patch.object(
+                QtWidgets.QMessageBox,
+                "information",
+            ):
+                self.assertEqual(window.import_directory(), 0)
+            self.assertEqual(len(window.project.work_directories), 1)
+
+            window.undo()
+            self.assertEqual(window.project.work_directories, [])
+            self.assertEqual(len(window.project.datasets), 4)
+            window.redo()
+            self.assertEqual(len(window.project.work_directories), 1)
+            from hplc_app.project_io import load_project, save_project
+
+            project_path = root / "batch-import.hplcproj"
+            save_project(str(project_path), window.project)
+            restored = load_project(str(project_path))
+            self.assertEqual(
+                restored.work_directories, window.project.work_directories
+            )
         window.project.dirty = False
         window.close()
 
@@ -6356,7 +6423,7 @@ class GuiTests(unittest.TestCase):
                 WorkDirectory(path=second_directory, label="pac2"),
             ]
 
-            candidates, duplicates, changed, errors = (
+            candidates, duplicates, changed, errors, skipped_txt_count = (
                 window._work_directory_reload_candidates()
             )
             self.assertEqual(
@@ -6364,6 +6431,7 @@ class GuiTests(unittest.TestCase):
                 [(str(first), "pac1"), (str(second), "pac2")],
             )
             self.assertEqual((duplicates, changed, errors), (0, [], []))
+            self.assertEqual(skipped_txt_count, 0)
 
             imported = window._import_chromatogram_paths(
                 [path for path, _label in candidates],
@@ -6374,21 +6442,23 @@ class GuiTests(unittest.TestCase):
                 [item.measurement.group for item in window.project.datasets],
                 ["pac1", "pac2"],
             )
-            candidates, duplicates, changed, errors = (
+            candidates, duplicates, changed, errors, skipped_txt_count = (
                 window._work_directory_reload_candidates()
             )
             self.assertEqual(candidates, [])
             self.assertEqual(duplicates, 2)
             self.assertEqual((changed, errors), ([], []))
+            self.assertEqual(skipped_txt_count, 0)
 
             first.write_bytes((SAMPLES / "191720.TXT").read_bytes())
-            candidates, duplicates, changed, errors = (
+            candidates, duplicates, changed, errors, skipped_txt_count = (
                 window._work_directory_reload_candidates()
             )
             self.assertEqual(candidates, [])
             self.assertEqual(duplicates, 1)
             self.assertEqual(changed, [str(first)])
             self.assertEqual(errors, [])
+            self.assertEqual(skipped_txt_count, 0)
         window.project.dirty = False
         window.close()
 

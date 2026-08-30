@@ -4,7 +4,7 @@ Updated: 2026-08-30
 
 This file records work that source changes and automated CI cannot complete alone. An unavailable physical or external gate is `BLOCKED — evidence required`; it is never treated as passed or silently marked not applicable. Release execution remains governed by `.github/RELEASE_PROCESS.md` and `.github/RELEASE_CHECKLIST.md`.
 
-Version context: latest published Stable is `1.2.4`; current main development line is `1.3.0-dev.1`. No `1.3.0` tag or Release exists yet.
+Version context: `README.md` documents `1.2.4` as the latest Stable version; the current main development line is `1.3.0-dev.1`. No tag and no GitHub Release exist yet, so no asset is publicly downloadable. The distribution and update procedure that depends on them is written in `DISTRIBUTION.md`.
 
 ## Current hard blockers
 
@@ -12,6 +12,7 @@ Version context: latest published Stable is `1.2.4`; current main development li
 |---|---|---|---|
 | Public code-signing identity | BLOCKED — external account and identity required | Authenticode can be probed in code, but the project has no approved production certificate, subject, thumbprint, or timestamp service | Select Microsoft Artifact Signing where available, otherwise a public-CA OV Authenticode certificate; complete organization/identity verification; record expected signer subject/thumbprint and timestamp policy |
 | Updater installer launch | BLOCKED — signing identity and signed fixture required | Download, SHA-256, and Authenticode foundations exist, but launch is intentionally always disabled | Verify a signed installer and manifest produced by the release pipeline; pin the approved signer identity; approve the user-confirmed launch workflow |
+| Release distribution channel | BLOCKED — owner decision required | The repository is private, so Release assets require an authenticated account and the unauthenticated check in `hplc_app/update_check.py` receives 404; no source change can grant public read access | Choose a public repository or Releases endpoint, per-user private access, or a laboratory file-server/USB channel; record it in `DISTRIBUTION.md` with the resulting update-check behavior (Issue #190) |
 | Stable GitHub Release publication | BLOCKED — human release approval required | Tags and Releases are external publication actions and require completed evidence | Human approval of the exact verified commit, annotated tag, final assets, checksums, release notes, and signing status |
 
 ## Mandatory physical release gates not yet satisfied for the current candidate

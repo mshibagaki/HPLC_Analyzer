@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-30 (Issue #176 delivery)
+Updated: 2026-08-30 (Issue #190 distribution channel gate)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -33,7 +33,7 @@ The following are useful extensions, but are not gaps in the original requested 
 
 ## External and physical gates
 
-Code signing identity, signed updater launch, Stable publication approval, Windows 11 installer checks, physical Windows 7 SP1 x86/Core 2 offline checks, cross-OS project/upgrade preservation, physical printing, and published-asset re-download remain open. Their exact required evidence is maintained in `VALIDATION_BLOCKERS.md`; none is considered passed from CI or offscreen tests.
+Code signing identity, the release distribution channel decision, signed updater launch, Stable publication approval, Windows 11 installer checks, physical Windows 7 SP1 x86/Core 2 offline checks, cross-OS project/upgrade preservation, physical printing, and published-asset re-download remain open. Their exact required evidence is maintained in `VALIDATION_BLOCKERS.md`; none is considered passed from CI or offscreen tests.
 
 ## Maintenance rule
 

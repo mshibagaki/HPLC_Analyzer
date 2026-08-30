@@ -2,7 +2,7 @@
 
 リリース版は[GitHub Releases](https://github.com/mshibagaki/HPLC_Analyzer/releases)とSemVer tagで管理します。ソースディレクトリ名にはバージョン番号を含めません。最新の公開Stable版と現在の開発版は、後述の「バージョン番号とRelease運用」を参照してください。
 
-要求の実装状況と残作業は[`REQUIREMENTS_STATUS.md`](REQUIREMENTS_STATUS.md)、外部・実機律速は[`VALIDATION_BLOCKERS.md`](VALIDATION_BLOCKERS.md)を正本として管理しています。
+要求の実装状況と残作業は[`REQUIREMENTS_STATUS.md`](REQUIREMENTS_STATUS.md)、外部・実機律速は[`VALIDATION_BLOCKERS.md`](VALIDATION_BLOCKERS.md)を正本として管理しています。配布物の選び方、インストール、更新、アンインストールと、配布担当の1リリースあたりの手順は[`DISTRIBUTION.md`](DISTRIBUTION.md)にまとめています。
 
 島津 GCsolution / LCsolution / PACsolution のASCIIクロマトグラム、およびPACsolutionの`.gcd`を、元データを保持したまま管理・重ね描き・積分・定量・作図し、研究室内の測定履歴を共有データベースへ集約する研究用デスクトップソフトです。
 
@@ -386,6 +386,8 @@ Application settingsのキー、既定値、型変換、不正値fallback、保�
 SQLiteは単一ファイル内でトランザクション更新し、別PCの書き込み中は最大15秒待機します。OneDrive等が各PCで別コピーを同期するフォルダではなく、全員が同じ実体へアクセスするファイルサーバー／共有フォルダを使用してください。定期的にDBファイルをバックアップしてください。
 
 ## セットアップEXEでインストールする
+
+利用者向けの導入・更新手順と配布担当の運用手順は[`DISTRIBUTION.md`](DISTRIBUTION.md)が正本です。以下は同じ内容の要約です。
 
 配布先PCへは、対象OSに合う次のセットアップEXEを1本だけコピーします。Python、Qt、Inno Setup、ソースコード、インターネット接続は配布先PCには不要です。
 

@@ -544,6 +544,10 @@ class PyQtGraphSceneConsumer:
         for trace in scene.traces:
             x_values, y_values = self._trace_screen_data(trace)
             item = self.trace_items[trace.dataset_id]
+            # Native trace dragging uses item position only for transient
+            # feedback. Scene arrays already contain the committed shift and
+            # offset, so every scene refresh must clear that translation.
+            item.setPos(0.0, 0.0)
             item.setData(
                 x_values,
                 y_values,
@@ -554,6 +558,7 @@ class PyQtGraphSceneConsumer:
                 trace, overview=True
             )
             overview = self.overview_trace_items[trace.dataset_id]
+            overview.setPos(0.0, 0.0)
             overview.setData(
                 overview_x,
                 overview_y,

@@ -35,10 +35,13 @@ from hplc_app.dialogs import (
     WorkDirectoriesDialog,
 )
 from hplc_app.gui import (
+    DATASET_COLUMN_IDS,
+    DATASET_GROUP_COLUMN,
     DATASET_LABEL_COLUMN,
     DATASET_OFFSET_COLUMN,
     DATASET_COLUMN_NAME_COLUMN,
     DATASET_RUN_ID_COLUMN,
+    DATASET_SELECTED_COLUMN,
     DATASET_SOURCE_COLUMN,
     DATASET_TIMESTAMP_COLUMN,
     DATASET_WAVELENGTH_COLUMN,
@@ -73,6 +76,10 @@ from hplc_app.qt_compat import (
     QtPrintSupport,
     QtWidgets,
 )
+if QT_API == 6:
+    from PySide6 import QtTest
+else:
+    from PySide2 import QtTest
 from hplc_app.report import render_analysis_report_pages
 from hplc_app.screen_events import ScreenPointerEvent
 from hplc_app.screen_navigation import (
@@ -87,7 +94,12 @@ def _trace_edit_state(datasets):
          deepcopy(item.peaks))
         for item in datasets
     ]
-from hplc_app.settings_store import ApplicationSettings, SCREEN_RENDERER
+from hplc_app.settings_store import (
+    ApplicationSettings,
+    DATASET_COLUMN_ORDER,
+    DEFAULT_DATASET_COLUMN_ORDER,
+    SCREEN_RENDERER,
+)
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from hplc_app.update_ui import UpdateDownloadDialog, UpdateDownloadWorker
 from hplc_app.pyqtgraph_scene import (
@@ -5930,6 +5942,173 @@ class GuiTests(unittest.TestCase):
             [dataset.visible for dataset in window.project.datasets], visibility
         )
         self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_dataset_table_default_columns_hide_run_metadata_and_keep_it_available(self):
+        window = self.make_window()
+        timestamp = "2026-08-30T09:10:11+09:00"
+        window.project.run_for(window.project.datasets[0]).timestamp = timestamp
+        window.project.method.legend_components = ["timestamp"]
+        window._refresh_all(0)
+        header = window.dataset_table.horizontalHeader()
+        visible_order = [
+            DATASET_COLUMN_IDS[header.logicalIndex(position)]
+            for position in range(header.count())
+            if not window.dataset_table.isColumnHidden(
+                header.logicalIndex(position)
+            )
+        ]
+
+        self.assertTrue(header.sectionsMovable())
+        self.assertEqual(visible_order, list(DEFAULT_DATASET_COLUMN_ORDER))
+        self.assertTrue(window.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
+        self.assertTrue(window.dataset_table.isColumnHidden(DATASET_GROUP_COLUMN))
+        self.assertEqual(
+            window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).text(), timestamp
+        )
+        self.assertEqual(
+            window.project.datasets[0].measurement.acquisition_datetime, timestamp
+        )
+        self.assertTrue(
+            any(
+                timestamp in text.get_text()
+                for text in window.axes.get_legend().get_texts()
+            )
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_dataset_column_drag_order_persists_as_application_setting(self):
+        window = self.make_window()
+        header = window.dataset_table.horizontalHeader()
+        header.moveSection(
+            header.visualIndex(DATASET_SOURCE_COLUMN),
+            header.visualIndex(DATASET_SELECTED_COLUMN),
+        )
+        self.app.processEvents()
+        expected = ["source"] + [
+            column_id
+            for column_id in DEFAULT_DATASET_COLUMN_ORDER
+            if column_id != "source"
+        ]
+        self.assertEqual(window._current_dataset_column_order(), expected)
+        self.assertEqual(window._settings.get(DATASET_COLUMN_ORDER), expected)
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+        restored = self.make_window()
+        self.assertEqual(restored._current_dataset_column_order(), expected)
+        self.assertTrue(restored.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
+        restored.project.dirty = False
+        restored.close()
+
+    def test_dataset_selection_checkboxes_and_row_selection_stay_synchronized(self):
+        window = self.make_window()
+        third = load_ascii_file(str(SAMPLES / "191720.TXT"))
+        window.project.add_dataset(third)
+        window._refresh_all(0)
+        window.show()
+        self.app.processEvents()
+        visibility = [dataset.visible for dataset in window.project.datasets]
+
+        self.assertEqual(
+            [
+                window.dataset_table.item(row, DATASET_SELECTED_COLUMN).checkState()
+                for row in range(3)
+            ],
+            [CHECKED, UNCHECKED, UNCHECKED],
+        )
+        left_button = (
+            QtCore.Qt.MouseButton.LeftButton
+            if QT_API == 6
+            else QtCore.Qt.LeftButton
+        )
+
+        def click_selection_checkbox(row):
+            item = window.dataset_table.item(row, DATASET_SELECTED_COLUMN)
+            rect = window.dataset_table.visualItemRect(item)
+            QtTest.QTest.mouseClick(
+                window.dataset_table.viewport(),
+                left_button,
+                pos=QtCore.QPoint(rect.left() + 10, rect.center().y()),
+            )
+            self.app.processEvents()
+
+        click_selection_checkbox(1)
+        self.assertEqual(window._selected_dataset_rows(), [0, 1])
+        click_selection_checkbox(0)
+        self.assertEqual(window._selected_dataset_rows(), [1])
+
+        selection = window.dataset_table.selectionModel()
+        model = window.dataset_table.model()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+        selection.clearSelection()
+        selection.select(
+            QtCore.QItemSelection(
+                model.index(0, DATASET_SELECTED_COLUMN),
+                model.index(2, DATASET_SELECTED_COLUMN),
+            ),
+            select | rows,
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1, 2])
+        self.assertEqual(
+            [
+                window.dataset_table.item(row, DATASET_SELECTED_COLUMN).checkState()
+                for row in range(3)
+            ],
+            [CHECKED, CHECKED, CHECKED],
+        )
+        self.assertEqual(
+            [dataset.visible for dataset in window.project.datasets], visibility
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_dataset_buttons_are_grouped_in_the_requested_analysis_order(self):
+        window = self.make_window()
+        self.assertEqual(window.dataset_data_group.title(), "データ")
+        self.assertEqual(window.dataset_analysis_group.title(), "解析")
+        self.assertEqual(window.spectrum_display_group.title(), "スペクトル表示")
+        requested_order = (
+            window.metadata_button,
+            window.gradient_button,
+            window.batch_metadata_button,
+            window.color_button,
+            window.group_run_button,
+            window.ungroup_run_button,
+        )
+        for index, button in enumerate(requested_order):
+            self.assertIs(
+                window.dataset_analysis_layout.itemAtPosition(
+                    index // 2, index % 2
+                ).widget(),
+                button,
+            )
+        self.assertEqual(
+            [button.text() for button in requested_order],
+            [
+                "詳細・定量条件",
+                "グラジエント",
+                "一括入力",
+                "スペクトル",
+                "選択を同一Runへ",
+                "選択をRunから分離",
+            ],
+        )
+        window.set_language("en")
+        self.assertEqual(window.dataset_data_group.title(), "Data")
+        self.assertEqual(window.dataset_analysis_group.title(), "Analysis")
+        self.assertEqual(window.spectrum_display_group.title(), "Spectrum display")
+        window.project.dirty = False
         window.close()
 
     def test_run_group_and_ungroup_preserve_channel_values_and_are_undoable(self):

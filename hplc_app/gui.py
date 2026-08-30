@@ -101,7 +101,9 @@ from .rendering import (
 from .settings_store import (
     ApplicationSettings,
     AUTOMATIC_UPDATE_CHECK,
+    DATASET_COLUMN_ORDER,
     DATABASE_PATH,
+    DEFAULT_DATASET_COLUMN_ORDER,
     FIGURE_FORMAT,
     IMPORT_DIRECTORY,
     LAST_IMPORT_DIRECTORY,
@@ -198,7 +200,30 @@ DATASET_OFFSET_COLUMN = 9
 DATASET_COLOR_COLUMN = 10
 DATASET_COLUMN_NAME_COLUMN = 11
 DATASET_SOURCE_COLUMN = 12
-DATASET_COLUMN_COUNT = 13
+DATASET_SELECTED_COLUMN = 13
+DATASET_COLUMN_COUNT = 14
+
+DATASET_COLUMN_IDS = {
+    DATASET_VISIBLE_COLUMN: "visible",
+    DATASET_RUN_ID_COLUMN: "run_id",
+    DATASET_LABEL_COLUMN: "label",
+    DATASET_TIMESTAMP_COLUMN: "timestamp",
+    DATASET_WAVELENGTH_COLUMN: "wavelength",
+    DATASET_GROUP_COLUMN: "group",
+    DATASET_Y_AXIS_COLUMN: "y_axis",
+    DATASET_AUV_COLUMN: "auv",
+    DATASET_X_SHIFT_COLUMN: "x_shift",
+    DATASET_OFFSET_COLUMN: "offset",
+    DATASET_COLOR_COLUMN: "color",
+    DATASET_COLUMN_NAME_COLUMN: "column",
+    DATASET_SOURCE_COLUMN: "source",
+    DATASET_SELECTED_COLUMN: "selected",
+}
+DATASET_COLUMNS_BY_ID = {
+    column_id: logical_column
+    for logical_column, column_id in DATASET_COLUMN_IDS.items()
+}
+DATASET_HIDDEN_COLUMN_IDS = ("timestamp", "group")
 
 
 def _resolved_plot_font(family: str):
@@ -473,6 +498,10 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.translator = Translator(self._application_language)
         self._updating_table = False
+        self._dataset_column_order = self._settings.get(DATASET_COLUMN_ORDER)
+        self._dataset_header_update_guard = False
+        self._dataset_selection_sync_guard = False
+        self._dataset_checkbox_press = False
         self._span_selector = None
         self._span_selector_mode = None
         self._view_state = None
@@ -1109,6 +1138,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dataset_table.setSelectionMode(extended_selection)
         self.dataset_table.setWordWrap(False)
         self.dataset_table.verticalHeader().setVisible(False)
+        dataset_header = self.dataset_table.horizontalHeader()
+        dataset_header.setSectionsMovable(True)
+        dataset_header.sectionMoved.connect(self._dataset_header_section_moved)
         self.dataset_table.itemChanged.connect(self._dataset_item_changed)
         self.dataset_table.itemSelectionChanged.connect(self._dataset_selection_changed)
         self.dataset_table.rowMoveRequested.connect(self.move_dataset_to)
@@ -1116,8 +1148,10 @@ class MainWindow(QtWidgets.QMainWindow):
             DATASET_SOURCE_COLUMN, LeftElideDelegate(self.dataset_table)
         )
         self.dataset_table.viewport().installEventFilter(self)
+        for column_id in DATASET_HIDDEN_COLUMN_IDS:
+            self.dataset_table.setColumnHidden(DATASET_COLUMNS_BY_ID[column_id], True)
+        self._apply_dataset_column_order(self._dataset_column_order)
         left_layout.addWidget(self.dataset_table, 1)
-        button_grid = QtWidgets.QGridLayout()
         self.import_button = QtWidgets.QPushButton()
         self.remove_button = QtWidgets.QPushButton()
         self.metadata_button = QtWidgets.QPushButton()
@@ -1130,19 +1164,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self.move_dataset_down_button = QtWidgets.QPushButton()
         self.group_run_button = QtWidgets.QPushButton()
         self.ungroup_run_button = QtWidgets.QPushButton()
-        button_grid.addWidget(self.import_button, 0, 0)
-        button_grid.addWidget(self.remove_button, 0, 1)
-        button_grid.addWidget(self.metadata_button, 1, 0)
-        button_grid.addWidget(self.gradient_button, 1, 1)
-        button_grid.addWidget(self.color_button, 2, 0)
-        button_grid.addWidget(self.batch_metadata_button, 2, 1)
-        button_grid.addWidget(self.show_all_button, 3, 0)
-        button_grid.addWidget(self.hide_all_button, 3, 1)
-        button_grid.addWidget(self.move_dataset_up_button, 4, 0)
-        button_grid.addWidget(self.move_dataset_down_button, 4, 1)
-        button_grid.addWidget(self.group_run_button, 5, 0)
-        button_grid.addWidget(self.ungroup_run_button, 5, 1)
-        left_layout.addLayout(button_grid)
+
+        self.dataset_data_group = QtWidgets.QGroupBox()
+        data_buttons = QtWidgets.QHBoxLayout(self.dataset_data_group)
+        data_buttons.addWidget(self.import_button)
+        data_buttons.addWidget(self.remove_button)
+        left_layout.addWidget(self.dataset_data_group)
+
+        self.dataset_analysis_group = QtWidgets.QGroupBox()
+        self.dataset_analysis_layout = QtWidgets.QGridLayout(
+            self.dataset_analysis_group
+        )
+        analysis_buttons = (
+            self.metadata_button,
+            self.gradient_button,
+            self.batch_metadata_button,
+            self.color_button,
+            self.group_run_button,
+            self.ungroup_run_button,
+        )
+        for index, button in enumerate(analysis_buttons):
+            self.dataset_analysis_layout.addWidget(button, index // 2, index % 2)
+        left_layout.addWidget(self.dataset_analysis_group)
+
+        self.spectrum_display_group = QtWidgets.QGroupBox()
+        spectrum_display_buttons = QtWidgets.QGridLayout(
+            self.spectrum_display_group
+        )
+        spectrum_display_buttons.addWidget(self.show_all_button, 0, 0)
+        spectrum_display_buttons.addWidget(self.hide_all_button, 0, 1)
+        spectrum_display_buttons.addWidget(self.move_dataset_up_button, 1, 0)
+        spectrum_display_buttons.addWidget(self.move_dataset_down_button, 1, 1)
+        left_layout.addWidget(self.spectrum_display_group)
         self.import_button.clicked.connect(self.import_ascii)
         self.remove_button.clicked.connect(self.remove_dataset)
         self.metadata_button.clicked.connect(self.edit_metadata)
@@ -1446,11 +1499,26 @@ class MainWindow(QtWidgets.QMainWindow):
                 return True
         if watched is self.dataset_table.viewport():
             wheel_type = QtCore.QEvent.Type.Wheel if QT_API == 6 else QtCore.QEvent.Wheel
+            mouse_press_type = (
+                QtCore.QEvent.Type.MouseButtonPress
+                if QT_API == 6
+                else QtCore.QEvent.MouseButtonPress
+            )
             shift_modifier = (
                 QtCore.Qt.KeyboardModifier.ShiftModifier
                 if QT_API == 6
                 else QtCore.Qt.ShiftModifier
             )
+            if event.type() == mouse_press_type:
+                position = event.position() if QT_API == 6 else event.pos()
+                if hasattr(position, "toPoint"):
+                    position = position.toPoint()
+                index = self.dataset_table.indexAt(position)
+                self._dataset_checkbox_press = bool(
+                    index.isValid() and index.column() == DATASET_SELECTED_COLUMN
+                )
+                if self._dataset_checkbox_press:
+                    QtCore.QTimer.singleShot(0, self._finish_dataset_checkbox_press)
             if event.type() == wheel_type and event.modifiers() & shift_modifier:
                 delta = event.angleDelta().y() or event.angleDelta().x()
                 bar = self.dataset_table.horizontalScrollBar()
@@ -1643,6 +1711,44 @@ class MainWindow(QtWidgets.QMainWindow):
         self.move_dataset_up_button.setEnabled(0 < row < count)
         self.move_dataset_down_button.setEnabled(0 <= row < count - 1)
 
+    def _apply_dataset_column_order(self, order):
+        normalized = [str(column_id) for column_id in order]
+        if (
+            len(normalized) != len(DEFAULT_DATASET_COLUMN_ORDER)
+            or set(normalized) != set(DEFAULT_DATASET_COLUMN_ORDER)
+        ):
+            normalized = list(DEFAULT_DATASET_COLUMN_ORDER)
+        header = self.dataset_table.horizontalHeader()
+        full_order = list(DATASET_HIDDEN_COLUMN_IDS) + normalized
+        self._dataset_header_update_guard = True
+        try:
+            for target_position, column_id in enumerate(full_order):
+                logical_column = DATASET_COLUMNS_BY_ID[column_id]
+                current_position = header.visualIndex(logical_column)
+                if current_position != target_position:
+                    header.moveSection(current_position, target_position)
+        finally:
+            self._dataset_header_update_guard = False
+        self._dataset_column_order = normalized
+
+    def _current_dataset_column_order(self):
+        header = self.dataset_table.horizontalHeader()
+        visible_ids = set(DEFAULT_DATASET_COLUMN_ORDER)
+        return [
+            DATASET_COLUMN_IDS[header.logicalIndex(position)]
+            for position in range(header.count())
+            if DATASET_COLUMN_IDS[header.logicalIndex(position)] in visible_ids
+        ]
+
+    def _dataset_header_section_moved(
+        self, _logical_column: int, _old_position: int, _new_position: int
+    ):
+        if self._dataset_header_update_guard:
+            return
+        order = self._current_dataset_column_order()
+        self._dataset_column_order = order
+        self._settings.set(DATASET_COLUMN_ORDER, order, sync=True)
+
     def _build_menus(self):
         bar = self.menuBar()
         self.file_menu = bar.addMenu("")
@@ -1802,20 +1908,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 t("color"),
                 t("column"),
                 t("source"),
+                t("selected"),
             )
         )
         self.import_button.setText(t("add"))
         self.remove_button.setText(t("remove"))
         self.metadata_button.setText(t("metadata"))
-        self.batch_metadata_button.setText(t("batch_metadata"))
+        self.batch_metadata_button.setText(t("batch_input"))
         self.gradient_button.setText(t("gradient"))
-        self.color_button.setText(t("change_color"))
+        self.color_button.setText(t("spectrum"))
         self.show_all_button.setText(t("show_all"))
         self.hide_all_button.setText(t("hide_all"))
         self.move_dataset_up_button.setText(t("move_up"))
         self.move_dataset_down_button.setText(t("move_down"))
         self.group_run_button.setText(t("group_run"))
         self.ungroup_run_button.setText(t("ungroup_run"))
+        self.dataset_data_group.setTitle(t("dataset_data_group"))
+        self.dataset_analysis_group.setTitle(t("dataset_analysis_group"))
+        self.spectrum_display_group.setTitle(t("spectrum_display_group"))
         self.display_group.setTitle(t("display_group"))
         self.navigation_group.setTitle(t("navigation_group"))
         self.integration_group.setTitle(t("integration_group"))
@@ -1958,6 +2068,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._updating_table = True
         self.dataset_table.setRowCount(len(self.project.datasets))
         for row, dataset in enumerate(self.project.datasets):
+            selected = _read_only_item("")
+            selected.setCheckState(UNCHECKED)
+            selected.setData(USER_ROLE, dataset.id)
+            self.dataset_table.setItem(row, DATASET_SELECTED_COLUMN, selected)
             show = _read_only_item("")
             show.setCheckState(CHECKED if dataset.visible else UNCHECKED)
             show.setData(USER_ROLE, dataset.id)
@@ -2022,6 +2136,8 @@ class MainWindow(QtWidgets.QMainWindow):
             source.setTextAlignment(alignment)
             self.dataset_table.setItem(row, DATASET_SOURCE_COLUMN, source)
         self.dataset_table.resizeColumnsToContents()
+        self.dataset_table.setColumnWidth(DATASET_SELECTED_COLUMN, 55)
+        self.dataset_table.setColumnWidth(DATASET_VISIBLE_COLUMN, 55)
         self.dataset_table.setColumnWidth(DATASET_RUN_ID_COLUMN, 160)
         self.dataset_table.setColumnWidth(DATASET_TIMESTAMP_COLUMN, 150)
         self.dataset_table.setColumnWidth(DATASET_COLUMN_NAME_COLUMN, 180)
@@ -2031,6 +2147,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.project.datasets:
             row = min(max(selected_row, 0), len(self.project.datasets) - 1)
             self.dataset_table.selectRow(row)
+        self._sync_dataset_selection_checkboxes()
         self._update_dataset_order_buttons()
 
     def _selected_dataset(self) -> Optional[Dataset]:
@@ -2115,10 +2232,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_all(rows[0])
 
     def _dataset_item_changed(self, item: QtWidgets.QTableWidgetItem):
-        if self._updating_table:
+        if self._updating_table or self._dataset_selection_sync_guard:
             return
         row, column = item.row(), item.column()
         if row < 0 or row >= len(self.project.datasets):
+            return
+        if column == DATASET_SELECTED_COLUMN:
+            self._dataset_checkbox_press = False
+            self._apply_dataset_checkbox_selection(row)
             return
         dataset = self.project.datasets[row]
         before = self._capture_analysis_state()
@@ -2189,7 +2310,81 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plot()
         self._update_title()
 
+    def _sync_dataset_selection_checkboxes(self):
+        selected_rows = set(self._selected_dataset_rows())
+        self._dataset_selection_sync_guard = True
+        try:
+            for row in range(self.dataset_table.rowCount()):
+                item = self.dataset_table.item(row, DATASET_SELECTED_COLUMN)
+                if item is None:
+                    continue
+                state = CHECKED if row in selected_rows else UNCHECKED
+                if item.checkState() != state:
+                    item.setCheckState(state)
+        finally:
+            self._dataset_selection_sync_guard = False
+
+    def _apply_dataset_checkbox_selection(self, preferred_row: int):
+        checked_rows = [
+            row
+            for row in range(self.dataset_table.rowCount())
+            if self.dataset_table.item(row, DATASET_SELECTED_COLUMN) is not None
+            and self.dataset_table.item(row, DATASET_SELECTED_COLUMN).checkState()
+            == CHECKED
+        ]
+        selection = self.dataset_table.selectionModel()
+        if selection is None:
+            return
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+        no_update = (
+            QtCore.QItemSelectionModel.SelectionFlag.NoUpdate
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.NoUpdate
+        )
+        model = self.dataset_table.model()
+        self._dataset_selection_sync_guard = True
+        try:
+            selection.clearSelection()
+            for row in checked_rows:
+                selection.select(
+                    model.index(row, DATASET_SELECTED_COLUMN), select | rows
+                )
+            if checked_rows:
+                current_row = (
+                    preferred_row if preferred_row in checked_rows else checked_rows[0]
+                )
+                selection.setCurrentIndex(
+                    model.index(current_row, DATASET_SELECTED_COLUMN), no_update
+                )
+            else:
+                self.dataset_table.setCurrentCell(-1, -1)
+        finally:
+            self._dataset_selection_sync_guard = False
+        self._dataset_selection_changed()
+
+    def _finish_dataset_checkbox_press(self):
+        if not self._dataset_checkbox_press:
+            return
+        self._dataset_checkbox_press = False
+        self._dataset_selection_changed()
+
     def _dataset_selection_changed(self):
+        if (
+            self._updating_table
+            or self._dataset_selection_sync_guard
+            or self._dataset_checkbox_press
+        ):
+            return
+        self._sync_dataset_selection_checkboxes()
         self._update_dataset_order_buttons()
         self._refresh_peak_table()
         self._plot()

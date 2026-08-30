@@ -41,8 +41,6 @@ jobs:
     timeout-minutes: 25
     env:
       QT_QPA_PLATFORM: offscreen
-      HPLC_ANALYZER_CONFIG_DIR: ${{ runner.temp }}\hplc-presets
-      HPLC_ANALYZER_TEST_SETTINGS_DIR: ${{ runner.temp }}\hplc-qsettings
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - name: Check out source
@@ -60,4 +58,9 @@ jobs:
       - name: Import application and GUI
         run: python -c "import hplc_app; import hplc_app.gui; print(hplc_app.APP_VERSION)"
       - name: Run source, project, import, export, and offscreen GUI tests
+        # The runner context is only available inside a step, so these stay here
+        # instead of the job-level env block.
+        env:
+          HPLC_ANALYZER_CONFIG_DIR: ${{ runner.temp }}\hplc-presets
+          HPLC_ANALYZER_TEST_SETTINGS_DIR: ${{ runner.temp }}\hplc-qsettings
         run: python -m unittest discover -s tests -v

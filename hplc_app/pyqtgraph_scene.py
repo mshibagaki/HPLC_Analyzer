@@ -402,7 +402,15 @@ class PyQtGraphSceneConsumer:
         if start is None or end is None:
             self.span_selection.hide()
             return
-        color = "#2563eb" if mode == "integrate" else "#f59e0b" if mode == "edit" else "#06b6d4"
+        color = (
+            "#2563eb"
+            if mode == "integrate"
+            else "#f59e0b"
+            if mode == "edit"
+            else "#7c3aed"
+            if mode == "time_range"
+            else "#06b6d4"
+        )
         self.span_selection.setBrush(self._brush(color, 0.25))
         for line in self.span_selection.lines:
             line.setPen(self.pg.mkPen(color, width=1.0))

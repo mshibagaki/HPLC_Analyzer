@@ -116,7 +116,11 @@ from hplc_app.pyqtgraph_scene import (
     pyqtgraph_scene_available,
 )
 from hplc_app.screen_scene import compose_base_screen_scene
-from hplc_app.screen_events import ScreenPointerEvent, normalize_pointer_event
+from hplc_app.screen_events import (
+    ScreenPointerEvent,
+    integration_peak_hit_target,
+    normalize_pointer_event,
+)
 from hplc_app.screen_navigation import (
     ScreenOverviewState,
     ScreenViewHistory,
@@ -759,6 +763,28 @@ class AnalysisTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertNotIn("matplotlib", source.casefold())
+
+    def test_integration_peak_hit_target_uses_shared_overlap_rule(self):
+        targets = (
+            ("wide", "y1", 2.0, 10.0),
+            ("narrow", "y1", 4.0, 8.0),
+            ("frontmost-tie", "y1", 8.0, 4.0),
+            ("other-axis", "y2", 6.0, 7.0),
+        )
+        self.assertEqual(
+            integration_peak_hit_target(targets, "y1", 6.0),
+            ("integration_peak", "frontmost-tie"),
+        )
+        self.assertEqual(
+            integration_peak_hit_target(targets, "y2", 6.5),
+            ("integration_peak", "other-axis"),
+        )
+        self.assertEqual(
+            integration_peak_hit_target(targets, "plot", 6.5),
+            ("integration_peak", "other-axis"),
+        )
+        self.assertEqual(integration_peak_hit_target(targets, "y1", 20.0), ("", ""))
+        self.assertEqual(integration_peak_hit_target(targets, "outside", 6.0), ("", ""))
 
     def test_axis_pan_contract_shifts_only_the_targeted_view_limits(self):
         initial = ScreenViewState(

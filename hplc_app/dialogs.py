@@ -3271,6 +3271,116 @@ class AxisLabelsDialog(QtWidgets.QDialog):
         method.retention_label_color = self.retention_color_button.color_name
 
 
+class FractionRangeDialog(QtWidgets.QDialog):
+    """Add or edit one persisted fraction range using exact numeric values."""
+
+    def __init__(
+        self,
+        regions,
+        default_interval: float,
+        minimum: float,
+        maximum: float,
+        language: str = "ja",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.language = language
+        self._regions = {region.id: region for region in regions}
+        self._default_bounds = tuple(sorted((float(minimum), float(maximum))))
+        if self._default_bounds[0] == self._default_bounds[1]:
+            self._default_bounds = (
+                self._default_bounds[0],
+                self._default_bounds[0] + 1.0,
+            )
+        self._default_interval = max(float(default_interval), 0.00001)
+        self.setWindowTitle(
+            "フラクション範囲の数値入力"
+            if language == "ja"
+            else "Numeric fraction range"
+        )
+        form = QtWidgets.QFormLayout(self)
+        self.target = QtWidgets.QComboBox()
+        self.target.addItem(
+            "新しい範囲を追加" if language == "ja" else "Add a new range",
+            "",
+        )
+        for index, region in enumerate(regions, 1):
+            self.target.addItem(
+                (
+                    "範囲 {index}: {start:g}–{end:g} min"
+                    if language == "ja"
+                    else "Range {index}: {start:g}–{end:g} min"
+                ).format(
+                    index=index,
+                    start=min(region.start_min, region.end_min),
+                    end=max(region.start_min, region.end_min),
+                ),
+                region.id,
+            )
+        self.start = QtWidgets.QDoubleSpinBox()
+        self.end = QtWidgets.QDoubleSpinBox()
+        self.interval = QtWidgets.QDoubleSpinBox()
+        for widget in (self.start, self.end, self.interval):
+            widget.setDecimals(5)
+            widget.setRange(-1.0e12, 1.0e12)
+            widget.setSuffix(" min")
+        self.interval.setMinimum(0.00001)
+        form.addRow("対象" if language == "ja" else "Target", self.target)
+        form.addRow("開始" if language == "ja" else "Start", self.start)
+        form.addRow("終了" if language == "ja" else "End", self.end)
+        form.addRow("分割間隔" if language == "ja" else "Interval", self.interval)
+        note = QtWidgets.QLabel(
+            "既存範囲を選ぶと、その範囲の値を更新します。"
+            if language == "ja"
+            else "Choose an existing range to update its values."
+        )
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self.target.currentIndexChanged.connect(self._load_target)
+        self._load_target()
+
+    @property
+    def selected_region_id(self) -> str:
+        return str(self.target.currentData() or "")
+
+    def values(self):
+        return self.start.value(), self.end.value(), self.interval.value()
+
+    def select_region(self, region_id: str):
+        index = self.target.findData(region_id)
+        self.target.setCurrentIndex(max(0, index))
+
+    def _load_target(self, *_args):
+        region = self._regions.get(self.selected_region_id)
+        if region is None:
+            start, end = self._default_bounds
+            interval = self._default_interval
+        else:
+            start, end = sorted((float(region.start_min), float(region.end_min)))
+            interval = float(region.interval_min)
+        self.start.setValue(start)
+        self.end.setValue(end)
+        self.interval.setValue(interval)
+
+    def _accept(self):
+        if self.end.value() <= self.start.value():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid range",
+                "終了は開始より後にしてください。"
+                if self.language == "ja"
+                else "End must be greater than start.",
+            )
+            return
+        self.accept()
+
+
 class PeakRangeDialog(QtWidgets.QDialog):
     def __init__(self, peak: PeakRegion, minimum: float, maximum: float, language: str = "ja", parent=None):
         super().__init__(parent)

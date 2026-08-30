@@ -118,6 +118,7 @@ def compose_base_screen_scene(
     selected_peak_ids: Sequence[str] = (),
     selected_vertical_marker_id: str = "",
     color_resolver: Optional[Callable[[Dataset, int], str]] = None,
+    selected_vertical_marker_ids: Sequence[str] = (),
 ) -> BaseScreenScene:
     """Compose visible base traces and B% data without creating GUI artists."""
 
@@ -278,19 +279,22 @@ def compose_base_screen_scene(
             ),
         )
 
+    selected_marker_ids = set(selected_vertical_marker_ids)
+    if selected_vertical_marker_id:
+        selected_marker_ids.add(selected_vertical_marker_id)
     vertical_markers = tuple(
         ScreenVerticalMarkerSpec(
             marker_id=marker.id,
             axis_id="y2" if marker.y_axis == 2 else "y1",
             x_value=float(marker.x_min),
-            selected=marker.id == selected_vertical_marker_id,
+            selected=marker.id in selected_marker_ids,
             color=(
                 "#f59e0b"
-                if marker.id == selected_vertical_marker_id
+                if marker.id in selected_marker_ids
                 else (marker.color or "#7c3aed")
             ),
-            line_width=2.0 if marker.id == selected_vertical_marker_id else 1.15,
-            alpha=0.95 if marker.id == selected_vertical_marker_id else 0.8,
+            line_width=2.0 if marker.id in selected_marker_ids else 1.15,
+            alpha=0.95 if marker.id in selected_marker_ids else 0.8,
         )
         for marker in project.vertical_markers
     )

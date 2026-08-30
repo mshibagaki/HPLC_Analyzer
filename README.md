@@ -167,12 +167,14 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json
 python scripts\benchmark_integrated_screen.py --traces 8 --points 100000 --repeats 3 --output integrated-screen-benchmark.json
 python scripts\benchmark_integrated_screen.py --traces 8 --points 100000 --repeats 3 --decorated --output integrated-decorated-benchmark.json
+python scripts\benchmark_integrated_screen.py --input sample_data --repeats 3 --decorated --output integrated-file-benchmark.json
+python scripts\benchmark_integrated_screen.py --input path\to\run1.gcd path\to\exports --recursive --repeats 3
 python scripts\probe_pyqtgraph_parity.py
 ```
 
 Windows 11のoptional consumerを検証する環境だけ、通常requirementsに加えて`pip install -r requirements-win11-pyqtgraph.txt`を実行します。この依存は通常buildやWindows 7 offline buildには含めません。consumerはproduction sceneのstatic要素、Qt snapshot、navigationと編集eventを扱い、`MainWindow`からセッション限定でopt-inできます。失敗時はMatplotlibへ戻り、保存設定やWin7依存は変更しません。
 
-結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。統合benchmarkは実際の`MainWindow._plot()`を両経路で測り、試験表示中のMatplotlib線数とnative scene要素数も記録します。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
+結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。統合benchmarkは実際の`MainWindow._plot()`を両経路で測り、試験表示中のMatplotlib線数とnative scene要素数も記録します。`--input`にはGCD/TXTファイルまたはディレクトリを複数指定でき、productionの探索・parserを使用します。読込不能なsidecar TXTは黙って混ぜず、ファイル名と理由を`skipped_inputs`へ残します。元ファイルや生成JSONは変更・自動追跡しません。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
 
 Win11の隔離probeでは、primary trace、Y2軸、split panel、zoom/pan、integration region、retention/fixed-size text、vertical marker、curve picking、snapshotを再現できました。gradientはcustom AxisItemとViewBoxを追加し、Y2と同時にB%用の第三独立scaleとして共有X軸上へ重ねられることも確認済みです。
 

@@ -32,3 +32,9 @@ win7_offline/
 *.log
 *.tmp
 *.bak
+
+# User-owned raw measurement data (never tracked)
+rawdata/
+
+# Generated benchmark results
+*-benchmark.json

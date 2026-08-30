@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 import re
 from typing import Iterable, List, Optional
@@ -33,6 +34,14 @@ PEAK_HEADERS = (
     "integration_source",
     "manual_integration",
     "notes",
+    "peak_type",
+    "parent_peak_id",
+    "fit_model",
+    "fit_retention_time_min",
+    "fit_rmse_uV",
+    "fit_r_squared",
+    "fit_aic",
+    "fit_parameters_json",
 )
 
 
@@ -41,11 +50,21 @@ def export_peak_csv(path: str, datasets: Iterable[Dataset]) -> None:
         writer = csv.writer(handle)
         writer.writerow(PEAK_HEADERS)
         for dataset in datasets:
-            for index, peak in enumerate(dataset.peaks, start=1):
+            integration_numbers = {
+                peak.id: index
+                for index, peak in enumerate(dataset.peaks, start=1)
+            }
+            fitted_number = 0
+            for peak in dataset.display_peaks():
+                if peak.is_fitted:
+                    fitted_number += 1
+                    peak_number = "F%d" % fitted_number
+                else:
+                    peak_number = integration_numbers[peak.id]
                 writer.writerow(
                     (
                         dataset.label,
-                        index,
+                        peak_number,
                         peak.start_min,
                         peak.end_min,
                         peak.retention_time_min,
@@ -65,8 +84,29 @@ def export_peak_csv(path: str, datasets: Iterable[Dataset]) -> None:
                         peak.calculated_baseline_start_uv,
                         peak.calculated_baseline_end_uv,
                         peak.integration_source,
-                        peak.integration_source != "auto",
+                        (
+                            "" if peak.is_fitted
+                            else peak.integration_source != "auto"
+                        ),
                         peak.notes,
+                        "fitted" if peak.is_fitted else "integrated",
+                        peak.parent_peak_id if peak.is_fitted else "",
+                        peak.fit_model if peak.is_fitted else "",
+                        (
+                            peak.fit_retention_time_min
+                            if peak.is_fitted else ""
+                        ),
+                        peak.fit_rmse_uv if peak.is_fitted else "",
+                        peak.fit_r_squared if peak.is_fitted else "",
+                        peak.fit_aic if peak.is_fitted else "",
+                        (
+                            json.dumps(
+                                peak.fit_parameters,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                            if peak.is_fitted else ""
+                        ),
                     )
                 )
 

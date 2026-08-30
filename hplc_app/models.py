@@ -279,6 +279,12 @@ class PeakRegion:
     fit_rmse_uv: Optional[float] = None
     fit_r_squared: Optional[float] = None
     fit_aic: Optional[float] = None
+    peak_kind: str = "integrated"
+    parent_peak_id: str = ""
+
+    @property
+    def is_fitted(self) -> bool:
+        return self.peak_kind == "fitted" or bool(self.parent_peak_id)
 
 
 @dataclass
@@ -357,6 +363,9 @@ class Dataset:
     visible: bool = True
     color: str = ""
     peaks: List[PeakRegion] = field(default_factory=list)
+    # Kept outside ``peaks`` so older v1 readers ignore explicit fitted rows
+    # instead of recalculating and double-counting them as integrations.
+    fitted_peaks: List[PeakRegion] = field(default_factory=list)
     time_min: np.ndarray = field(default_factory=lambda: np.array([], dtype=float), repr=False)
     intensity_uv: np.ndarray = field(default_factory=lambda: np.array([], dtype=float), repr=False)
     raw_bytes: bytes = field(default=b"", repr=False)
@@ -413,6 +422,46 @@ class Dataset:
         data.pop("intensity_uv", None)
         data.pop("raw_bytes", None)
         return data
+
+    def display_peaks(self) -> List[PeakRegion]:
+        """Return integrations with their fitted children directly after them."""
+
+        children: Dict[str, List[PeakRegion]] = {}
+        orphans: List[PeakRegion] = []
+        parent_ids = {peak.id for peak in self.peaks}
+        for peak in self.fitted_peaks:
+            if peak.parent_peak_id in parent_ids:
+                children.setdefault(peak.parent_peak_id, []).append(peak)
+            else:
+                orphans.append(peak)
+        rows: List[PeakRegion] = []
+        for peak in self.peaks:
+            rows.append(peak)
+            rows.extend(children.get(peak.id, ()))
+        rows.extend(orphans)
+        return rows
+
+    def peak_by_id(self, peak_id: str) -> Optional[PeakRegion]:
+        return next(
+            (
+                peak
+                for peak in self.display_peaks()
+                if peak.id == peak_id
+            ),
+            None,
+        )
+
+    def parent_peak_for(self, fitted_peak: PeakRegion) -> Optional[PeakRegion]:
+        if not fitted_peak.is_fitted:
+            return None
+        return next(
+            (
+                peak
+                for peak in self.peaks
+                if peak.id == fitted_peak.parent_peak_id
+            ),
+            None,
+        )
 
     def wavelength_text(self) -> str:
         """Return a compact wavelength label suitable for tables and legends."""

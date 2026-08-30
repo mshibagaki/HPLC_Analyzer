@@ -54,6 +54,7 @@ class ScreenPeakOverlaySpec:
     label_font_family: str
     label_font_size: float
     label_color: str
+    fit_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,41 @@ def _readonly(values) -> np.ndarray:
     result = np.asarray(values, dtype=float)
     result.setflags(write=False)
     return result
+
+
+def _fit_curve(dataset, fitted_peak, baseline_peak, unit):
+    if not fitted_peak.fit_model or not fitted_peak.fit_parameters:
+        return None, None
+    fit_mask = (
+        (dataset.time_min >= baseline_peak.start_min)
+        & (dataset.time_min <= baseline_peak.end_min)
+    )
+    fit_time = dataset.time_min[fit_mask]
+    if fit_time.size < 3:
+        return None, None
+    retention_time = fitted_peak.fit_retention_time_min
+    if retention_time is None:
+        retention_time = fit_time[0]
+    fit_result = PeakFitResult(
+        model=fitted_peak.fit_model,
+        parameters=dict(fitted_peak.fit_parameters),
+        retention_time_min=float(retention_time),
+        rmse_uv=float(fitted_peak.fit_rmse_uv or 0.0),
+        r_squared=float(fitted_peak.fit_r_squared or 0.0),
+        aic=float(fitted_peak.fit_aic or 0.0),
+        point_count=int(fit_time.size),
+    )
+    fitted_uv = evaluate_fit_profile(fit_time, fit_result)
+    baseline_time, baseline_uv = baseline_trace(dataset, baseline_peak)
+    if baseline_time.size == fit_time.size:
+        fitted_uv = fitted_uv + baseline_uv
+    return (
+        _readonly(fit_time + dataset.x_shift_min),
+        _readonly(
+            reference_values_for_display(dataset, fitted_uv, unit)
+            + dataset.offset
+        ),
+    )
 
 
 def compose_base_screen_scene(
@@ -168,8 +204,16 @@ def compose_base_screen_scene(
             project.method.show_integration_areas
             or project.method.show_retention_labels
             or any(peak.fit_model for peak in dataset.peaks)
+            or bool(dataset.fitted_peaks)
         ):
             continue
+        fitted_parent_ids = {
+            peak.parent_peak_id for peak in dataset.fitted_peaks
+            if peak.parent_peak_id
+        }
+        parent_numbers = {
+            peak.id: index for index, peak in enumerate(dataset.peaks, start=1)
+        }
         for peak in dataset.peaks:
             is_selected = peak.id in selected_peaks
             color = "#f59e0b" if is_selected else trace.color
@@ -184,32 +228,14 @@ def compose_base_screen_scene(
                     )
 
             fit_x = fit_y = None
-            if peak.fit_model and peak.fit_parameters:
-                fit_mask = (
-                    (dataset.time_min >= peak.start_min)
-                    & (dataset.time_min <= peak.end_min)
-                )
-                fit_time = dataset.time_min[fit_mask]
-                if fit_time.size >= 3:
-                    fit_result = PeakFitResult(
-                        model=peak.fit_model,
-                        parameters=dict(peak.fit_parameters),
-                        retention_time_min=float(
-                            peak.fit_retention_time_min or fit_time[0]
-                        ),
-                        rmse_uv=float(peak.fit_rmse_uv or 0.0),
-                        r_squared=float(peak.fit_r_squared or 0.0),
-                        aic=float(peak.fit_aic or 0.0),
-                        point_count=int(fit_time.size),
-                    )
-                    fitted_uv = evaluate_fit_profile(fit_time, fit_result)
-                    baseline_time, baseline_uv = baseline_trace(dataset, peak)
-                    if baseline_time.size == fit_time.size:
-                        fitted_uv = fitted_uv + baseline_uv
-                    fit_x = _readonly(fit_time + dataset.x_shift_min)
-                    fit_y = _readonly(
-                        reference_values_for_display(dataset, fitted_uv, unit)
-                        + dataset.offset
+            fit_label = ""
+            if peak.id not in fitted_parent_ids:
+                fit_x, fit_y = _fit_curve(dataset, peak, peak, unit)
+                if fit_x is not None:
+                    fit_label = "%s — Fit %s (#%d)" % (
+                        project.legend_label_for(dataset),
+                        peak.fit_model.upper(),
+                        parent_numbers[peak.id],
                     )
 
             retention_x = (
@@ -253,6 +279,58 @@ def compose_base_screen_scene(
                     ),
                     label_color=(
                         project.method.retention_label_color or "#000000"
+                    ),
+                    fit_label=fit_label,
+                )
+            )
+
+        fitted_rows = [
+            peak for peak in dataset.display_peaks() if peak.is_fitted
+        ]
+        for fitted_number, fitted_peak in enumerate(fitted_rows, start=1):
+            fit_x, fit_y = _fit_curve(
+                dataset, fitted_peak, fitted_peak, unit
+            )
+            if fit_x is None:
+                continue
+            parent_number = parent_numbers.get(fitted_peak.parent_peak_id)
+            parent_label = (
+                "#%d" % parent_number
+                if parent_number is not None else "orphan"
+            )
+            peak_overlays.append(
+                ScreenPeakOverlaySpec(
+                    dataset_id=dataset.id,
+                    peak_id=fitted_peak.id,
+                    axis_id=trace.axis_id,
+                    is_selected=fitted_peak.id in selected_peaks,
+                    color=(
+                        "#f59e0b"
+                        if fitted_peak.id in selected_peaks else trace.color
+                    ),
+                    show_integration_area=False,
+                    start_x=float(fitted_peak.start_min + dataset.x_shift_min),
+                    end_x=float(fitted_peak.end_min + dataset.x_shift_min),
+                    retention_x=None,
+                    baseline_x=None,
+                    baseline_y=None,
+                    fit_x=fit_x,
+                    fit_y=fit_y,
+                    label_x=None,
+                    label_y=None,
+                    label_text="",
+                    label_font_family="",
+                    label_font_size=float(
+                        project.method.retention_label_font_size
+                    ),
+                    label_color=(
+                        project.method.retention_label_color or "#000000"
+                    ),
+                    fit_label="%s — F%d Fit %s (%s)" % (
+                        project.legend_label_for(dataset),
+                        fitted_number,
+                        fitted_peak.fit_model.upper(),
+                        parent_label,
                     ),
                 )
             )

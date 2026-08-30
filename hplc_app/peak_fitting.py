@@ -23,6 +23,87 @@ class PeakFitResult:
     point_count: int
 
 
+_LEGACY_FIT_FIELDS = (
+    "fit_model",
+    "fit_parameters",
+    "fit_retention_time_min",
+    "fit_rmse_uv",
+    "fit_r_squared",
+    "fit_aic",
+)
+
+
+def apply_fit_result(
+    fitted_peak: PeakRegion,
+    parent_peak: PeakRegion,
+    result: PeakFitResult,
+) -> PeakRegion:
+    """Update one explicit fitted child without changing parent integration values."""
+
+    fitted_peak.peak_kind = "fitted"
+    fitted_peak.parent_peak_id = parent_peak.id
+    fitted_peak.start_min = parent_peak.start_min
+    fitted_peak.end_min = parent_peak.end_min
+    fitted_peak.baseline_mode = parent_peak.baseline_mode
+    fitted_peak.baseline_start_uv = parent_peak.baseline_start_uv
+    fitted_peak.baseline_end_uv = parent_peak.baseline_end_uv
+    fitted_peak.calculated_baseline_start_uv = parent_peak.calculated_baseline_start_uv
+    fitted_peak.calculated_baseline_end_uv = parent_peak.calculated_baseline_end_uv
+    fitted_peak.integration_source = "fit"
+    fitted_peak.retention_time_min = result.retention_time_min
+    fitted_peak.fit_model = result.model
+    fitted_peak.fit_parameters = dict(result.parameters)
+    fitted_peak.fit_retention_time_min = result.retention_time_min
+    fitted_peak.fit_rmse_uv = result.rmse_uv
+    fitted_peak.fit_r_squared = result.r_squared
+    fitted_peak.fit_aic = result.aic
+    # Fitted rows are descriptive results, not additional integrations.
+    fitted_peak.raw_height_uv = None
+    fitted_peak.raw_area_uv_min = None
+    fitted_peak.raw_area_uv_sec = None
+    fitted_peak.height_mau = None
+    fitted_peak.area_mau_min = None
+    fitted_peak.area_mau_sec = None
+    fitted_peak.area_percent = None
+    fitted_peak.fwhm_min = None
+    fitted_peak.gradient_a_pct = None
+    fitted_peak.gradient_b_pct = None
+    fitted_peak.gradient_c_pct = None
+    fitted_peak.gradient_d_pct = None
+    fitted_peak.amount_nmol = None
+    fitted_peak.amount_ug = None
+    return fitted_peak
+
+
+def fitted_peak_from_result(
+    parent_peak: PeakRegion, result: PeakFitResult
+) -> PeakRegion:
+    return apply_fit_result(PeakRegion(), parent_peak, result)
+
+
+def mirror_fitted_peak_for_legacy(
+    parent_peak: PeakRegion, fitted_peak: PeakRegion
+) -> None:
+    """Mirror one fit on its parent for older v1 readers that ignore children."""
+
+    for field_name in _LEGACY_FIT_FIELDS:
+        value = getattr(fitted_peak, field_name)
+        setattr(
+            parent_peak,
+            field_name,
+            dict(value) if field_name == "fit_parameters" else value,
+        )
+
+
+def clear_legacy_fit(parent_peak: PeakRegion) -> None:
+    parent_peak.fit_model = ""
+    parent_peak.fit_parameters = {}
+    parent_peak.fit_retention_time_min = None
+    parent_peak.fit_rmse_uv = None
+    parent_peak.fit_r_squared = None
+    parent_peak.fit_aic = None
+
+
 def gaussian_profile(x, center: float, sigma: float):
     x = np.asarray(x, dtype=float)
     sigma = max(float(sigma), 1.0e-12)

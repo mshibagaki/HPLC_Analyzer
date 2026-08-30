@@ -14,6 +14,7 @@ from matplotlib.text import Text
 
 from .analysis import baseline_trace, display_values, reference_values_for_display
 from .models import Dataset, PeakRegion, Project
+from .peak_fitting import PeakFitResult, evaluate_fit_profile
 
 
 A4_SIZE_INCHES = (8.2677165, 11.6929134)
@@ -134,10 +135,21 @@ def _peak_rows(
     peaks: Iterable[PeakRegion],
     options: ReportOptions,
     start_number: int = 1,
+    number_labels=None,
+    parent_numbers=None,
 ):
     rows = []
     for number, peak in enumerate(peaks, start=start_number):
-        row = [str(number)]
+        row = [
+            str((number_labels or {}).get(peak.id, number)),
+            (
+                "Fit %s -> #%s" % (
+                    peak.fit_model.upper(),
+                    (parent_numbers or {}).get(peak.parent_peak_id, "?"),
+                )
+                if peak.is_fitted else "Integration"
+            ),
+        ]
         if options.retention_time:
             row.append(_number(peak.retention_time_min))
         if options.integration_range:
@@ -154,7 +166,13 @@ def _peak_rows(
         if options.quantitation:
             row.append(_number(peak.amount_ug))
         if options.baseline:
-            row.append("Auto" if peak.integration_source == "auto" else "Manual")
+            row.append(
+                peak.fit_model.upper()
+                if peak.is_fitted
+                else (
+                    "Auto" if peak.integration_source == "auto" else "Manual"
+                )
+            )
         rows.append(tuple(row))
     return rows
 
@@ -165,10 +183,12 @@ def _add_peak_table(
     start_number: int,
     language: str,
     options: ReportOptions,
+    number_labels=None,
+    parent_numbers=None,
 ):
     axis.axis("off")
-    headers = ["#"]
-    widths = [0.045]
+    headers = ["#", "種別／親" if language == "ja" else "Type / parent"]
+    widths = [0.045, 0.135]
     if options.retention_time:
         headers.append("RT (min)")
         widths.append(0.085)
@@ -187,7 +207,13 @@ def _add_peak_table(
         headers.append("Method")
         widths.append(0.09)
     width_total = sum(widths)
-    rows = _peak_rows(peaks, options, start_number)
+    rows = _peak_rows(
+        peaks,
+        options,
+        start_number,
+        number_labels=number_labels,
+        parent_numbers=parent_numbers,
+    )
     if not rows:
         axis.text(
             0.5,
@@ -229,7 +255,13 @@ def _plot_dataset(
         values = display_values(dataset, unit)
     color = dataset.color or "#1f77b4"
     time = dataset.time_min + dataset.x_shift_min
-    axis.plot(time, values + dataset.offset, color=color, linewidth=project.method.line_width)
+    axis.plot(
+        time,
+        values + dataset.offset,
+        color=color,
+        linewidth=project.method.line_width,
+        label=project.legend_label_for(dataset),
+    )
     for peak in dataset.peaks:
         start = peak.start_min + dataset.x_shift_min
         end = peak.end_min + dataset.x_shift_min
@@ -284,6 +316,52 @@ def _plot_dataset(
                 linewidth=0.7,
                 alpha=0.7,
             )
+    parent_numbers = {
+        peak.id: number for number, peak in enumerate(dataset.peaks, start=1)
+    }
+    fitted_plotted = False
+    fitted_rows = [peak for peak in dataset.display_peaks() if peak.is_fitted]
+    for fitted_number, fitted_peak in enumerate(fitted_rows, start=1):
+        parent = dataset.parent_peak_for(fitted_peak)
+        if parent is None or not fitted_peak.fit_model or not fitted_peak.fit_parameters:
+            continue
+        mask = (
+            (dataset.time_min >= fitted_peak.start_min)
+            & (dataset.time_min <= fitted_peak.end_min)
+        )
+        fit_time = dataset.time_min[mask]
+        if fit_time.size < 3:
+            continue
+        retention_time = fitted_peak.fit_retention_time_min
+        if retention_time is None:
+            retention_time = fit_time[0]
+        result = PeakFitResult(
+            model=fitted_peak.fit_model,
+            parameters=dict(fitted_peak.fit_parameters),
+            retention_time_min=float(retention_time),
+            rmse_uv=float(fitted_peak.fit_rmse_uv or 0.0),
+            r_squared=float(fitted_peak.fit_r_squared or 0.0),
+            aic=float(fitted_peak.fit_aic or 0.0),
+            point_count=int(fit_time.size),
+        )
+        fitted_uv = evaluate_fit_profile(fit_time, result)
+        baseline_time, baseline_uv = baseline_trace(dataset, fitted_peak)
+        if baseline_time.size == fit_time.size:
+            fitted_uv = fitted_uv + baseline_uv
+        fitted_values = reference_values_for_display(dataset, fitted_uv, unit)
+        axis.plot(
+            fit_time + dataset.x_shift_min,
+            fitted_values + dataset.offset,
+            color="#c026d3",
+            linestyle=":",
+            linewidth=max(1.0, project.method.line_width),
+            label="F%d Fit %s (#%d)" % (
+                fitted_number,
+                fitted_peak.fit_model.upper(),
+                parent_numbers[parent.id],
+            ),
+        )
+        fitted_plotted = True
     for annotation in project.annotations:
         if annotation.dataset_id not in ("", dataset.id) or not annotation.text.strip():
             continue
@@ -326,6 +404,8 @@ def _plot_dataset(
         )
         gradient_axis.set_ylim(0.0, 100.0)
         gradient_axis.set_ylabel(project.method.gradient_axis_label or "Mobile phase B (%)")
+    if fitted_plotted:
+        axis.legend(frameon=False, fontsize=6.5)
 
 
 def analysis_report_figures(
@@ -338,6 +418,17 @@ def analysis_report_figures(
     figures: List[Figure] = []
     report_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     for dataset in datasets:
+        display_peaks = dataset.display_peaks()
+        parent_numbers = {
+            peak.id: number for number, peak in enumerate(dataset.peaks, start=1)
+        }
+        number_labels = dict(parent_numbers)
+        number_labels.update({
+            peak.id: "F%d" % number
+            for number, peak in enumerate(
+                (peak for peak in display_peaks if peak.is_fitted), start=1
+            )
+        })
         figure = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
         figure.subplots_adjust(left=0.075, right=0.9, top=0.95, bottom=0.055, hspace=0.3)
         grid = figure.add_gridspec(4, 1, height_ratios=(0.42, 0.95, 3.8, 2.65))
@@ -366,7 +457,15 @@ def analysis_report_figures(
         plot_axis.set_title("Chromatogram", fontsize=9, loc="left")
 
         table_axis = figure.add_subplot(grid[3])
-        _add_peak_table(table_axis, dataset.peaks[:20], 1, language, options)
+        _add_peak_table(
+            table_axis,
+            display_peaks[:20],
+            1,
+            language,
+            options,
+            number_labels=number_labels,
+            parent_numbers=parent_numbers,
+        )
         table_axis.set_title(
             "ピーク表" if language == "ja" else "Peak table",
             fontsize=9,
@@ -384,7 +483,7 @@ def analysis_report_figures(
         _apply_report_fonts(figure)
         figures.append(figure)
 
-        remaining = dataset.peaks[20:]
+        remaining = display_peaks[20:]
         for offset in range(0, len(remaining), 40):
             page_peaks = remaining[offset : offset + 40]
             continuation = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
@@ -400,7 +499,15 @@ def analysis_report_figures(
                 loc="left",
                 pad=12,
             )
-            _add_peak_table(table_axis, page_peaks, 21 + offset, language, options)
+            _add_peak_table(
+                table_axis,
+                page_peaks,
+                21 + offset,
+                language,
+                options,
+                number_labels=number_labels,
+                parent_numbers=parent_numbers,
+            )
             continuation.text(0.94, 0.025, report_time, fontsize=6, ha="right", color="#6b7280")
             _apply_report_fonts(continuation)
             figures.append(continuation)

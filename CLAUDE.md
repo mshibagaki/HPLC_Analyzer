@@ -17,10 +17,7 @@ assistant follow the same documents in the same order.
    startable now, the per-issue procedure, and the constraints worth repeating.
    It is a hand-off brief, not a rule file, and applies to any assistant despite
    its name.
-6. **`ACKNOWLEDGEMENTS.md`** — people whose original design or method became a
-   feature. Distinct from `THIRD_PARTY_NOTICES.txt`, which covers software
-   licenses.
-7. Open GitHub Issues / PRs and the latest `origin/main` — check before starting
+6. Open GitHub Issues / PRs and the latest `origin/main` — check before starting
    anything, to avoid duplicating work that is already open or merged.
 
 Do not add assistant-specific instructions to this file. If guidance applies to

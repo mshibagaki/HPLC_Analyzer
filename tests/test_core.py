@@ -156,7 +156,9 @@ from hplc_app.updater_download import (
 from hplc_app.settings_store import (
     ApplicationSettings,
     AUTOMATIC_UPDATE_CHECK,
+    DATASET_COLUMN_ORDER,
     DATABASE_PATH,
+    DEFAULT_DATASET_COLUMN_ORDER,
     FIGURE_FORMAT,
     IMPORT_DIRECTORY,
     LAST_IMPORT_DIRECTORY,
@@ -3774,6 +3776,7 @@ class ApplicationSettingsTests(unittest.TestCase):
     def test_all_application_keys_round_trip_without_renaming_legacy_keys(self):
         expected_keys = {
             "ui/language",
+            "ui/dataset_column_order",
             "updates/automatic_check",
             "paths/import_directory",
             "paths/save_directory",
@@ -3793,6 +3796,7 @@ class ApplicationSettingsTests(unittest.TestCase):
         store = ApplicationSettings(backend)
         values = {
             UI_LANGUAGE: "en",
+            DATASET_COLUMN_ORDER: list(reversed(DEFAULT_DATASET_COLUMN_ORDER)),
             AUTOMATIC_UPDATE_CHECK: False,
             IMPORT_DIRECTORY: "C:/HPLC/import",
             SAVE_DIRECTORY: "C:/HPLC/save",
@@ -3809,6 +3813,10 @@ class ApplicationSettingsTests(unittest.TestCase):
         }
         self.assertTrue(store.set_many(values))
         self.assertEqual(store.get(UI_LANGUAGE), "en")
+        self.assertEqual(
+            store.get(DATASET_COLUMN_ORDER),
+            list(reversed(DEFAULT_DATASET_COLUMN_ORDER)),
+        )
         self.assertFalse(store.get(AUTOMATIC_UPDATE_CHECK))
         self.assertEqual(store.get(IMPORT_DIRECTORY), "C:/HPLC/import")
         self.assertEqual(store.get(SAVE_DIRECTORY), "C:/HPLC/save")
@@ -3834,6 +3842,7 @@ class ApplicationSettingsTests(unittest.TestCase):
         backend = _FakeSettingsBackend(
             {
                 UI_LANGUAGE: "de",
+                DATASET_COLUMN_ORDER: '["selected", "missing"]',
                 IMPORT_DIRECTORY: 123,
                 RENDERING_QUALITY: "unsupported",
                 SCREEN_RENDERER: "unsupported",
@@ -3844,6 +3853,9 @@ class ApplicationSettingsTests(unittest.TestCase):
         )
         store = ApplicationSettings(backend)
         self.assertEqual(store.get(UI_LANGUAGE), "ja")
+        self.assertEqual(
+            store.get(DATASET_COLUMN_ORDER), list(DEFAULT_DATASET_COLUMN_ORDER)
+        )
         self.assertEqual(store.get(IMPORT_DIRECTORY), "")
         self.assertEqual(store.get(RENDERING_QUALITY), default_render_quality())
         self.assertEqual(store.get(SCREEN_RENDERER), "pyqtgraph")

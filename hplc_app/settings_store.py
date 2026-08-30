@@ -23,6 +23,7 @@ from .rendering import default_render_quality, normalize_render_quality
 ORGANIZATION_NAME = "Research Tools"
 
 UI_LANGUAGE = "ui/language"
+DATASET_COLUMN_ORDER = "ui/dataset_column_order"
 AUTOMATIC_UPDATE_CHECK = "updates/automatic_check"
 IMPORT_DIRECTORY = "paths/import_directory"
 SAVE_DIRECTORY = "paths/save_directory"
@@ -36,6 +37,21 @@ FIGURE_FORMAT = "export/figure_format"
 NAMING_AUTHOR = "naming/author"
 LEGACY_CONDITION_PRESETS = "presets/conditions"
 LEGACY_GRADIENT_PRESETS = "presets/gradients"
+
+DEFAULT_DATASET_COLUMN_ORDER = (
+    "selected",
+    "visible",
+    "run_id",
+    "label",
+    "wavelength",
+    "y_axis",
+    "auv",
+    "color",
+    "column",
+    "x_shift",
+    "offset",
+    "source",
+)
 
 
 @dataclass(frozen=True)
@@ -101,6 +117,21 @@ def _json_object(value: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
     return decoded if isinstance(decoded, dict) else deepcopy(fallback)
 
 
+def _dataset_column_order(value: Any, fallback: tuple) -> list:
+    decoded = value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return list(fallback)
+    if not isinstance(decoded, (list, tuple)):
+        return list(fallback)
+    normalized = [str(item) for item in decoded]
+    if len(normalized) != len(fallback) or set(normalized) != set(fallback):
+        return list(fallback)
+    return normalized
+
+
 def _encode_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -111,6 +142,11 @@ def _text_spec(default: str = "") -> SettingSpec:
 
 SETTING_SPECS: Dict[str, SettingSpec] = {
     UI_LANGUAGE: SettingSpec(_constant("ja"), _language, str),
+    DATASET_COLUMN_ORDER: SettingSpec(
+        _constant(DEFAULT_DATASET_COLUMN_ORDER),
+        _dataset_column_order,
+        _encode_json,
+    ),
     AUTOMATIC_UPDATE_CHECK: SettingSpec(_constant(True), _boolean, bool),
     IMPORT_DIRECTORY: _text_spec(),
     SAVE_DIRECTORY: _text_spec(),

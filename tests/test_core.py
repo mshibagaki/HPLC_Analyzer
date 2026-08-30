@@ -1895,12 +1895,12 @@ class ProjectTests(unittest.TestCase):
         installer_helper = (ROOT / "scripts" / "build_installer.bat").read_text(
             encoding="utf-8"
         )
-        self.assertIn("--define=AppVersion=%APP_VERSION%", installer_helper)
+        self.assertIn("/DAppVersion=%APP_VERSION%", installer_helper)
         self.assertIn(
-            "--define=AppVersionNumeric=%APP_VERSION_NUMERIC%", installer_helper
+            "/DAppVersionNumeric=%APP_VERSION_NUMERIC%", installer_helper
         )
         self.assertIn(
-            "--define=ArtifactBaseName=%ARTIFACT_BASE_NAME%", installer_helper
+            "/DArtifactBaseName=%ARTIFACT_BASE_NAME%", installer_helper
         )
 
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))

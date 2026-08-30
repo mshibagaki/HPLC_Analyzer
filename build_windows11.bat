@@ -61,6 +61,8 @@ python -m pip install --upgrade pip setuptools wheel
 if errorlevel 1 goto :failed
 python -m pip install -r requirements-win11.txt
 if errorlevel 1 goto :failed
+python -m pip install -r requirements-win11-pyqtgraph.txt
+if errorlevel 1 goto :failed
 python scripts\verify_windows11_x64.py --packages
 if errorlevel 1 goto :failed
 

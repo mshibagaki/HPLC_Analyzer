@@ -20,6 +20,7 @@ EXPECTED_PACKAGES = {
     "PyInstaller": "6.12.0",
     "PySide6": "6.8.3",
     "pefile": "2023.2.7",
+    "pyqtgraph": "0.13.7",
 }
 PE_MACHINE_AMD64 = 0x8664
 

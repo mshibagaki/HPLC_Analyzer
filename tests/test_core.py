@@ -4,6 +4,7 @@ from copy import deepcopy
 from contextlib import closing
 import csv
 import ast
+from datetime import datetime, timezone
 import hashlib
 import math
 import json
@@ -57,7 +58,12 @@ from hplc_app.models import (
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
-from hplc_app.parser import dataset_from_bytes, load_ascii_file, load_chromatogram_file
+from hplc_app.parser import (
+    dataset_from_bytes,
+    infer_y_axis,
+    load_ascii_file,
+    load_chromatogram_file,
+)
 from hplc_app.peak_fitting import emg_profile, fit_peak, gaussian_profile
 from hplc_app.preset_store import (
     apply_preset_operation,
@@ -119,7 +125,17 @@ from hplc_app.screen_navigation import (
     begin_axis_pan,
     compose_overview_state,
 )
-from hplc_app.timestamps import acquisition_timestamp, timestamp_from_filename
+from hplc_app.timestamps import (
+    ACQUISITION_TIMESTAMP_SOURCE_KEY,
+    GCD_FILETIME_UTC_KEY,
+    TIMESTAMP_SOURCE_FILE_MTIME,
+    TIMESTAMP_SOURCE_FILENAME,
+    TIMESTAMP_SOURCE_GCD_FILETIME,
+    TIMESTAMP_SOURCE_UNAVAILABLE,
+    TIMESTAMP_SOURCE_VENDOR,
+    acquisition_timestamp,
+    timestamp_from_filename,
+)
 from hplc_app.update_check import (
     check_for_updates,
     compare_semver,
@@ -267,6 +283,52 @@ class ParserTests(unittest.TestCase):
         for field in ("k'", "Plate #", "Plate Ht.", "Tailing", "Resolution", "Sep.Factor"):
             self.assertEqual(parsed.peak_table[0][field], "")
 
+    def test_known_gcd_file_property_timestamp_is_explicit_and_version_gated(self):
+        status = bytearray(12)
+        struct.pack_into("<I", status, 0, 500)
+        struct.pack_into("<I", status, 8, 3)
+        expected_utc = datetime(2026, 8, 9, 17, 1, 6)
+        delta = expected_utc - datetime(1601, 1, 1)
+        filetime_ticks = (
+            (delta.days * 86400 + delta.seconds) * 10_000_000
+            + delta.microseconds * 10
+        )
+        file_property = bytearray(514)
+        file_property[4:12] = b"2.32.00\0"
+        struct.pack_into("<Q", file_property, 506, filetime_ticks)
+        streams = {
+            "Status": bytes(status),
+            "Intensity Data": struct.pack("<3d", -104.0, 12.5, 300.0),
+            "File Property": bytes(file_property),
+        }
+
+        parsed = parse_gcd_streams(streams)
+        self.assertEqual(
+            parsed.metadata[GCD_FILETIME_UTC_KEY], "2026-08-09T17:01:06Z"
+        )
+        expected_local = (
+            expected_utc.replace(tzinfo=timezone.utc)
+            .astimezone()
+            .replace(tzinfo=None)
+            .isoformat(timespec="seconds")
+        )
+        self.assertEqual(
+            acquisition_timestamp(parsed.metadata, "ambiguous.gcd"),
+            expected_local,
+        )
+        self.assertEqual(
+            parsed.metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY],
+            TIMESTAMP_SOURCE_GCD_FILETIME,
+        )
+
+        unknown_version = bytearray(file_property)
+        unknown_version[4:12] = b"9.99.99\0"
+        streams["File Property"] = bytes(unknown_version)
+        self.assertNotIn(
+            GCD_FILETIME_UTC_KEY,
+            parse_gcd_streams(streams).metadata,
+        )
+
     def test_synthetic_cfb_exercises_fat_directory_and_mini_streams(self):
         raw = synthetic_gcd_bytes()
         parsed = parse_gcd_bytes(raw)
@@ -383,6 +445,14 @@ class ParserTests(unittest.TestCase):
                     "Mark",
                 ):
                     self.assertEqual(gcd_peak[field], txt_peak[field])
+            self.assertEqual(
+                gcd.measurement.acquisition_datetime,
+                ascii_export.measurement.acquisition_datetime,
+            )
+            self.assertEqual(
+                gcd.source_metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY],
+                TIMESTAMP_SOURCE_GCD_FILETIME,
+            )
         original = load_chromatogram_file(str(gcd_files[0]))
         with tempfile.TemporaryDirectory() as directory:
             project_path = os.path.join(directory, "gcd-roundtrip.hplcproj")
@@ -401,6 +471,9 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(
             acquisition_timestamp(metadata, "20260508_005353.TXT"),
             "2026-05-07T19:33:54",
+        )
+        self.assertEqual(
+            metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY], TIMESTAMP_SOURCE_VENDOR
         )
         self.assertEqual(
             acquisition_timestamp(
@@ -441,6 +514,90 @@ class ParserTests(unittest.TestCase):
             "20261340_996099.TXT",
         ):
             self.assertEqual(timestamp_from_filename(ambiguous), "")
+
+        filename_metadata = {}
+        self.assertEqual(
+            acquisition_timestamp(
+                filename_metadata,
+                "20260507_193354.gcd",
+                "2099-01-02T03:04:05",
+            ),
+            "2026-05-07T19:33:54",
+        )
+        self.assertEqual(
+            filename_metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY],
+            TIMESTAMP_SOURCE_FILENAME,
+        )
+        modified_metadata = {}
+        self.assertEqual(
+            acquisition_timestamp(
+                modified_metadata,
+                "ambiguous.gcd",
+                "2026-08-10T04:05:06",
+            ),
+            "2026-08-10T04:05:06",
+        )
+        self.assertEqual(
+            modified_metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY],
+            TIMESTAMP_SOURCE_FILE_MTIME,
+        )
+        unavailable_metadata = {}
+        self.assertEqual(
+            acquisition_timestamp(unavailable_metadata, "ambiguous.gcd"), ""
+        )
+        self.assertEqual(
+            unavailable_metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY],
+            TIMESTAMP_SOURCE_UNAVAILABLE,
+        )
+
+    def test_gcd_file_mtime_fallback_and_channel_axis_defaults(self):
+        raw = synthetic_gcd_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ch2_directory = root / "Batch_CH2"
+            ch2_directory.mkdir()
+            gcd_path = ch2_directory / "ambiguous.gcd"
+            gcd_path.write_bytes(raw)
+            modified_epoch = 1_786_332_306
+            os.utime(str(gcd_path), (modified_epoch, modified_epoch))
+            dataset = load_chromatogram_file(str(gcd_path))
+
+        self.assertEqual(
+            dataset.measurement.acquisition_datetime,
+            datetime.fromtimestamp(modified_epoch).isoformat(timespec="seconds"),
+        )
+        self.assertEqual(
+            dataset.source_metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY],
+            TIMESTAMP_SOURCE_FILE_MTIME,
+        )
+        self.assertEqual(dataset.y_axis, 2)
+        self.assertEqual(dataset.measurement.group, "")
+        self.assertEqual(dataset.raw_bytes, raw)
+        project = Project(datasets=[dataset])
+        self.assertEqual(
+            dataset.run_id,
+            "%s_1_ambiguous"
+            % dataset.measurement.acquisition_datetime.replace("-", "")
+            .replace("T", "_")
+            .replace(":", ""),
+        )
+        self.assertEqual(project.run_for(dataset).timestamp,
+                         dataset.measurement.acquisition_datetime)
+        self.assertEqual(
+            infer_y_axis("C:/runs/ch1/sample.gcd"), 1
+        )
+        self.assertEqual(
+            infer_y_axis("C:/runs/BATCH_ch2/sample.gcd"), 2
+        )
+        self.assertEqual(
+            infer_y_axis("C:/runs/ch1/ch2/sample.gcd"), 1
+        )
+        self.assertEqual(
+            infer_y_axis("C:/runs/neutral/ch2.gcd"), 1
+        )
+        self.assertEqual(
+            infer_y_axis("C:/research1/neutral/sample.gcd"), 1
+        )
 
     def test_ascii_import_keeps_label_separate_from_run_timestamp(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -1412,10 +1569,12 @@ class ProjectTests(unittest.TestCase):
                     "original_filename": "20260507_120000.TXT",
                     "measurement": {
                         "sample_name": "sample A",
+                        "group": "legacy group",
                         "acquisition_datetime": "2026-05-07T12:00:00",
                         "wavelength_nm": 214.0,
                         "column_name": "C4",
                     },
+                    "y_axis": 2,
                     "peaks": [{"retention_time_min": 3.2}],
                     "source_metadata": {"kept": "unchanged"},
                 },
@@ -1455,6 +1614,8 @@ class ProjectTests(unittest.TestCase):
             migrated["datasets"][0]["measurement"],
             untouched["datasets"][0]["measurement"],
         )
+        self.assertEqual(migrated["datasets"][0]["y_axis"], 2)
+        self.assertEqual(migrated["runs"][0]["group"], "legacy group")
         self.assertEqual(
             migrated["datasets"][1]["peaks"],
             untouched["datasets"][1]["peaks"],
@@ -2137,6 +2298,7 @@ class ProjectTests(unittest.TestCase):
         dataset.label = "CaM-LL37 cleavage 16 h"
         dataset.measurement.aux_range_au_per_v = 1.0
         dataset.measurement.gradient = [GradientPoint(0, 90, 10, 0, 0, 1.0)]
+        dataset.measurement.group = "preserved group"
         dataset.y_axis = 2
         project = Project(
             title="roundtrip",
@@ -2189,6 +2351,8 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(restored.raw_bytes, dataset.raw_bytes)
             self.assertEqual(restored.time_min.size, 54001)
             self.assertEqual(restored.measurement.gradient[0].b_pct, 10)
+            self.assertEqual(restored.measurement.group, "preserved group")
+            self.assertEqual(restored.run_id, dataset.run_id)
             self.assertEqual(restored.y_axis, 2)
             self.assertEqual(restored.x_shift_min, 0.25)
             self.assertEqual(restored.gradient_preset_name, "RP-C4")

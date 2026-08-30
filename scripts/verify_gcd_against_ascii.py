@@ -39,6 +39,15 @@ def _round_half_away(values: np.ndarray) -> np.ndarray:
 def verify_pair(gcd_path: Path, txt_path: Path) -> str:
     gcd = load_chromatogram_file(str(gcd_path))
     ascii_export = load_chromatogram_file(str(txt_path))
+    if gcd.measurement.acquisition_datetime != ascii_export.measurement.acquisition_datetime:
+        raise AssertionError(
+            "%s: acquisition time differs (GCD=%r, TXT=%r)"
+            % (
+                gcd_path.name,
+                gcd.measurement.acquisition_datetime,
+                ascii_export.measurement.acquisition_datetime,
+            )
+        )
     if gcd.time_min.size != ascii_export.time_min.size:
         raise AssertionError(
             "%s: point count differs (GCD=%d, TXT=%d)"
@@ -68,12 +77,13 @@ def verify_pair(gcd_path: Path, txt_path: Path) -> str:
                     % (gcd_path.name, gcd_peak["Peak#"], field, gcd_peak[field], txt_peak[field])
                 )
     return (
-        "%s: %d points, %d peaks, max |dt|=%g min, "
+        "%s: %d points, %d peaks, acquisition=%s, max |dt|=%g min, "
         "TXT quantization=%g uV, rounded |dI|=%g uV"
         % (
             gcd_path.name,
             gcd.time_min.size,
             len(gcd.source_peak_table),
+            gcd.measurement.acquisition_datetime,
             time_error,
             raw_intensity_delta,
             rounded_intensity_error,

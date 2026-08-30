@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import os
 from pathlib import Path
+import re
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -18,10 +20,16 @@ class ParseError(ValueError):
 
 
 def infer_y_axis(source_path: str) -> int:
-    """Assign Ch2 traces to the second axis while keeping all other data on axis 1."""
-    normalized = source_path.replace("/", "\\").lower()
-    components = [part for part in normalized.split("\\") if part]
-    return 2 if "ch2" in components else 1
+    """Infer the initial axis from parent directories, never from the filename."""
+
+    normalized = str(source_path or "").replace("/", "\\").casefold()
+    directory = normalized.rsplit("\\", 1)[0] if "\\" in normalized else ""
+    channel_tokens = set(
+        re.findall(r"(?<![a-z0-9])ch([12])(?![a-z0-9])", directory)
+    )
+    has_ch1 = "1" in channel_tokens
+    has_ch2 = "2" in channel_tokens
+    return 2 if has_ch2 and not has_ch1 else 1
 
 
 @dataclass
@@ -175,8 +183,14 @@ def parse_ascii_bytes(raw: bytes) -> ParsedAscii:
     )
 
 
-def dataset_from_bytes(raw: bytes, source_path: str = "", label: str = "") -> Dataset:
-    if raw.startswith(CFB_SIGNATURE):
+def dataset_from_bytes(
+    raw: bytes,
+    source_path: str = "",
+    label: str = "",
+    source_modified_timestamp: str = "",
+) -> Dataset:
+    is_gcd = raw.startswith(CFB_SIGNATURE)
+    if is_gcd:
         try:
             parsed = parse_gcd_bytes(raw)
         except GcdParseError as exc:
@@ -194,7 +208,9 @@ def dataset_from_bytes(raw: bytes, source_path: str = "", label: str = "") -> Da
         or parsed.metadata.get("Configuration.Instrument Name", ""),
         method_name=parsed.metadata.get("Original Files.Method File", ""),
         acquisition_datetime=acquisition_timestamp(
-            parsed.metadata, original_filename
+            parsed.metadata,
+            original_filename,
+            source_modified_timestamp if is_gcd else "",
         ),
     )
     dataset = Dataset(
@@ -217,8 +233,21 @@ def dataset_from_bytes(raw: bytes, source_path: str = "", label: str = "") -> Da
 
 
 def load_ascii_file(path: str) -> Dataset:
-    raw = Path(path).read_bytes()
-    return dataset_from_bytes(raw, source_path=path)
+    source = Path(path)
+    raw = source.read_bytes()
+    modified_timestamp = ""
+    if raw.startswith(CFB_SIGNATURE):
+        try:
+            modified_timestamp = datetime.fromtimestamp(
+                source.stat().st_mtime
+            ).isoformat(timespec="seconds")
+        except (OSError, OverflowError, ValueError):
+            pass
+    return dataset_from_bytes(
+        raw,
+        source_path=path,
+        source_modified_timestamp=modified_timestamp,
+    )
 
 
 def load_chromatogram_file(path: str) -> Dataset:

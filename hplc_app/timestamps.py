@@ -1,6 +1,6 @@
-"""Deterministic acquisition timestamp extraction without file I/O."""
+"""Deterministic acquisition timestamp extraction with explicit provenance."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 from typing import Dict
@@ -23,6 +23,13 @@ EXPLICIT_TIMESTAMP_FORMATS = (
     "%Y-%m-%d %H:%M:%S",
     "%Y-%m-%dT%H:%M:%S",
 )
+GCD_FILETIME_UTC_KEY = "GCD.File Property Timestamp UTC"
+ACQUISITION_TIMESTAMP_SOURCE_KEY = "Acquisition.Timestamp Source"
+TIMESTAMP_SOURCE_VENDOR = "Sample Information.Acquisition Date"
+TIMESTAMP_SOURCE_GCD_FILETIME = "GCD.File Property FILETIME"
+TIMESTAMP_SOURCE_FILENAME = "strict filename pattern"
+TIMESTAMP_SOURCE_FILE_MTIME = "file modification time"
+TIMESTAMP_SOURCE_UNAVAILABLE = "unavailable"
 
 
 def _iso_timestamp(value, formats):
@@ -46,14 +53,52 @@ def timestamp_from_filename(filename: str) -> str:
     return ""
 
 
-def acquisition_timestamp(metadata: Dict[str, str], filename: str) -> str:
-    """Use vendor acquisition metadata, then a strict filename fallback."""
+def _record_timestamp_source(metadata, source: str) -> None:
+    if isinstance(metadata, dict):
+        metadata[ACQUISITION_TIMESTAMP_SOURCE_KEY] = source
+
+
+def _local_timestamp_from_utc(value: str) -> str:
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError):
+        return ""
+    return parsed.astimezone().replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def acquisition_timestamp(
+    metadata: Dict[str, str],
+    filename: str,
+    modified_timestamp: str = "",
+) -> str:
+    """Resolve acquisition time without hiding which fallback supplied it."""
+
     explicit = str(
         (metadata or {}).get("Sample Information.Acquisition Date", "") or ""
     ).strip()
     if explicit:
+        _record_timestamp_source(metadata, TIMESTAMP_SOURCE_VENDOR)
         return _iso_timestamp(explicit, EXPLICIT_TIMESTAMP_FORMATS) or explicit
-    return timestamp_from_filename(filename)
+    gcd_filetime = _local_timestamp_from_utc(
+        str((metadata or {}).get(GCD_FILETIME_UTC_KEY, "") or "").strip()
+    )
+    if gcd_filetime:
+        _record_timestamp_source(metadata, TIMESTAMP_SOURCE_GCD_FILETIME)
+        return gcd_filetime
+    from_filename = timestamp_from_filename(filename)
+    if from_filename:
+        _record_timestamp_source(metadata, TIMESTAMP_SOURCE_FILENAME)
+        return from_filename
+    from_modified_time = _iso_timestamp(
+        str(modified_timestamp or "").strip(), EXPLICIT_TIMESTAMP_FORMATS
+    )
+    if from_modified_time:
+        _record_timestamp_source(metadata, TIMESTAMP_SOURCE_FILE_MTIME)
+        return from_modified_time
+    _record_timestamp_source(metadata, TIMESTAMP_SOURCE_UNAVAILABLE)
+    return ""
 
 
 def run_id_timestamp(value: str) -> str:

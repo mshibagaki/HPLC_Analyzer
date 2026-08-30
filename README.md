@@ -159,10 +159,20 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 - グラフ部分と操作・ピーク表部分の境界をドラッグして表示高さを変更
 - 描画品質を「高品質／軽量」から選択。Windows 7は軽量、Windows 11は高品質が既定
 - 画面用Figure/Canvasはscreen surface interface経由で生成し、解析・Project保存・A4レポート描画から分離
+- Windows 11 / Qt 6の画面描画はPyQtGraphが既定。チェックボックスでMatplotlibへ切り替えでき、選択はアプリ設定として再起動後も保持
 - 軽量描画は画面だけをpixel幅に応じてmin/max間引きし、非表示データを描画対象から除外
 - パン／連続ズーム中は再描画を抑制し、操作終了時に現在の表示範囲を正式再描画
 
-画面レンダラー候補は通常依存へ追加する前に、隔離benchmarkで比較します。Matplotlib基準は既存依存だけで実行でき、PyQtGraphは明示的に導入した環境でだけ測定されます。表示trace、Y1/Y2割当、凡例、B%系列、peak overlay、vertical marker、fraction region、free textはbackend-neutral sceneとして構成し、現行Matplotlib画面も同じsceneを使用します。pointer入力、hit-target、軸別pan、home/back/forward表示履歴、overviewの全体・詳細窓状態はrenderer非依存です。Win7/Python 3.8候補は`pyqtgraph==0.12.4`ですが、Win7の標準依存・画面は変更しません。Qt 6環境のみ、上記のopt-in試験表示と未対応操作・エラー時の自動fallbackを利用できます。
+Windows 11ビルドは`requirements-win11-pyqtgraph.txt`を通常のビルド手順で導入し、Qt 6ではPyQtGraphを画面描画の既定にします。表示trace、Y1/Y2割当、凡例、B%系列、peak overlay、vertical marker、fraction region、free textはbackend-neutral sceneとして構成され、pointer入力、hit-target、軸別pan、home/back/forward履歴、overviewの全体・詳細窓と表示範囲はbackend-neutral `ScreenViewState`が正本です。PyQtGraphが未導入、Qt 6初期化または描画に失敗した場合は、理由を画面へ表示してMatplotlibへ自動復帰します。画面描画の選択はプロジェクトではなくアプリ設定へ保存されます。
+
+Matplotlibは次の責務のため削除しません。
+
+- PNG / SVG / PDFの図出力、現在画面のクリップボードコピーと印刷に使う高品質Figureの再構築
+- `report.py`の独立したFigureによるA4解析レポートとレポート印刷
+- PyQtGraph未導入・初期化／描画失敗時のWindows 11フォールバック画面
+- PySide2 / Qt 5固定のWindows 7画面描画（PyQtGraphはWindows 7依存へ追加しない）
+
+Matplotlib画面へ切り替えた場合も同じsceneと`ScreenViewState`を使用します。Windows 7の固定依存、offline build、軽量描画設定は変更しません。
 
 ```text
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json
@@ -173,7 +183,7 @@ python scripts\benchmark_integrated_screen.py --input path\to\run1.gcd path\to\e
 python scripts\probe_pyqtgraph_parity.py
 ```
 
-Windows 11のoptional consumerを検証する環境だけ、通常requirementsに加えて`pip install -r requirements-win11-pyqtgraph.txt`を実行します。この依存は通常buildやWindows 7 offline buildには含めません。consumerはproduction sceneのstatic要素、Qt snapshot、navigationと編集eventを扱い、`MainWindow`からセッション限定でopt-inできます。失敗時はMatplotlibへ戻り、保存設定やWin7依存は変更しません。
+`build_windows11.bat`は通常requirementsに続けて`requirements-win11-pyqtgraph.txt`を導入し、`scripts/verify_windows11_x64.py --packages`が固定版の同梱を検証します。この追加requirementsはWindows 7 offline buildには含めません。consumerはproduction sceneのstatic要素、Qt snapshot、navigationと編集eventを扱い、失敗時は保存済みの選択を破棄せずMatplotlibへ戻ります。
 
 結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。統合benchmarkは実際の`MainWindow._plot()`を両経路で測り、試験表示中のMatplotlib線数とnative scene要素数も記録します。`--input`にはGCD/TXTファイルまたはディレクトリを複数指定でき、productionの探索・parserを使用します。読込不能なsidecar TXTは黙って混ぜず、ファイル名と理由を`skipped_inputs`へ残します。元ファイルや生成JSONは変更・自動追跡しません。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
 

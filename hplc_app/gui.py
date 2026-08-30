@@ -111,6 +111,7 @@ from .settings_store import (
     LEGACY_GRADIENT_PRESETS,
     NAMING_AUTHOR,
     RENDERING_QUALITY,
+    SCREEN_RENDERER,
     SAVE_DIRECTORY,
     UI_LANGUAGE,
 )
@@ -475,6 +476,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._span_selector = None
         self._span_selector_mode = None
         self._view_state = None
+        self._view_state_update_guard = False
         self._view_history = ScreenViewHistory(max_entries=50)
         self._view_initialized = False
         self._dataset_lines = {}
@@ -502,6 +504,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._database_path = self._settings.get(DATABASE_PATH)
         self._figure_export_format = self._settings.get(FIGURE_FORMAT)
         self._render_quality = self._settings.get(RENDERING_QUALITY)
+        self._screen_renderer_preference = self._settings.get(SCREEN_RENDERER)
         self._automatic_update_check = self._settings.get(AUTOMATIC_UPDATE_CHECK)
         self._update_check_thread = None
         self._update_check_worker = None
@@ -530,6 +533,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._retranslate()
         self._refresh_all()
         self.resize(1500, 900)
+        self._activate_preferred_screen_renderer()
 
     def _save_global_preset_file(self):
         try:
@@ -720,30 +724,53 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_screen_preview_notice(self):
         self.screen_preview_checkbox.setText(self._history_label(
-            "PyQtGraph表示（実験的・今回のみ）", "PyQtGraph view (experimental, this session)"
+            "PyQtGraph画面描画", "PyQtGraph screen renderer"
         ))
         messages = {
             "active": (
-                "閲覧・縦線・積分編集・トレース移動・フラクション・2画面に対応。他の編集は従来描画へ戻ります。",
-                "Viewing, vertical markers, integration editing, trace movement, fractions and split view. Other editing returns to Matplotlib.",
+                "PyQtGraphを画面描画に使用中です。図出力・印刷はMatplotlibを使用します。",
+                "PyQtGraph is rendering the screen. Figure output and printing use Matplotlib.",
             ),
             "unsupported": (
                 "この操作は従来描画に戻して続行します。",
                 "This operation continues with the Matplotlib renderer.",
             ),
+            "missing": (
+                "PyQtGraphがインストールされていないため、Matplotlibで表示しています。",
+                "PyQtGraph is not installed; the screen is using Matplotlib.",
+            ),
+            "qt5": (
+                "このQt5 / Windows 7ビルドでは、Matplotlibで表示します。",
+                "This Qt5 / Windows 7 build uses Matplotlib for the screen.",
+            ),
             "failed": (
-                "PyQtGraphを使用できないため、従来描画に戻しました。",
-                "PyQtGraph is unavailable or failed; restored Matplotlib.",
+                "PyQtGraphの初期化または描画に失敗したため、Matplotlibへ戻しました。",
+                "PyQtGraph initialization or rendering failed; restored Matplotlib.",
             ),
         }
         message = messages.get(self._screen_preview_notice, ("", ""))
         self.screen_preview_label.setText(self._history_label(*message))
         self.screen_preview_checkbox.setToolTip(self._history_label(
-            "Windows 11向け試験表示。標準描画や保存設定は変更しません。",
-            "Experimental modern-build view. Does not change defaults or saved settings.",
+            "Windows 11では既定で有効です。選択はアプリ設定へ保存されます。",
+            "Enabled by default on Windows 11. The selection is saved in application settings.",
         ))
 
+    def _activate_preferred_screen_renderer(self):
+        if self._screen_renderer_preference != "pyqtgraph":
+            return
+        if QT_API != 6:
+            self._screen_preview_notice = "qt5"
+            self._update_screen_preview_notice()
+            return
+        self.screen_preview_checkbox.setChecked(True)
+
     def _toggle_screen_preview(self, enabled):
+        self._screen_renderer_preference = (
+            "pyqtgraph" if enabled else "matplotlib"
+        )
+        self._settings.set(
+            SCREEN_RENDERER, self._screen_renderer_preference, sync=True
+        )
         if not enabled:
             self._stop_screen_preview()
             return
@@ -751,9 +778,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
             return
+        if QT_API != 6:
+            self._stop_screen_preview(qt5=True)
+            return
         try:
-            if QT_API != 6:
-                raise RuntimeError("The preview requires the modern Qt build")
             if self._screen_preview is None:
                 from .screen_preview import ExperimentalScreenPreview
                 self._screen_preview = ExperimentalScreenPreview(self)
@@ -766,10 +794,14 @@ class MainWindow(QtWidgets.QMainWindow):
             # Once the native widget is live, retain only Matplotlib axes/view
             # state until a full-quality export or fallback needs its artists.
             self._plot()
+        except ImportError:
+            self._stop_screen_preview(missing=True)
         except Exception:
             self._stop_screen_preview(failed=True)
 
-    def _stop_screen_preview(self, *, failed=False, unsupported=False):
+    def _stop_screen_preview(
+        self, *, failed=False, unsupported=False, missing=False, qt5=False
+    ):
         if self._screen_preview is None and not self.screen_preview_checkbox.isChecked():
             return
         preview, self._screen_preview = self._screen_preview, None
@@ -787,7 +819,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 and self._selected_dataset() is not None):
             self._install_span_selector("integrate" if self.integrate_button.isChecked() else
                                         "edit" if self.edit_peak_button.isChecked() else "fraction")
-        self._screen_preview_notice = "failed" if failed else "unsupported" if unsupported else ""
+        self._screen_preview_notice = (
+            "qt5" if qt5 else "missing" if missing else
+            "failed" if failed else "unsupported" if unsupported else ""
+        )
         self._update_screen_preview_notice()
         self.canvas.draw_idle()
         self.toolbar.set_history_buttons()
@@ -861,7 +896,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._navigation_interaction_active = False
         self._refresh_screen_series_for_view()
 
-    def _screen_view_state(self):
+    def _matplotlib_view_state(self):
         return ScreenViewState(
             x=tuple(self.axes.get_xlim()),
             y1=tuple(self.axes.get_ylim()),
@@ -876,6 +911,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 else None
             ),
         )
+
+    def _screen_view_state(self):
+        """Return the backend-neutral authoritative interactive view state."""
+
+        if self._view_state is not None:
+            return self._view_state
+        return self._matplotlib_view_state()
+
+    def _sync_view_state_from_axes(self):
+        if (
+            not self._view_state_update_guard
+            and hasattr(self, "axes")
+            and self._view_initialized
+        ):
+            self._view_state = self._matplotlib_view_state()
 
     def _begin_axis_pan(self, event):
         if self._screen_pan_session is not None:
@@ -898,10 +948,15 @@ class MainWindow(QtWidgets.QMainWindow):
             canvas_width=bbox.width,
             canvas_height=bbox.height,
         )
-        self.axes.set_xlim(*state.x)
-        self.axes.set_ylim(*state.y1)
-        if self.axes_right is not None and state.y2 is not None:
-            self.axes_right.set_ylim(*state.y2)
+        self._view_state = state
+        self._view_state_update_guard = True
+        try:
+            self.axes.set_xlim(*state.x)
+            self.axes.set_ylim(*state.y1)
+            if self.axes_right is not None and state.y2 is not None:
+                self.axes_right.set_ylim(*state.y2)
+        finally:
+            self._view_state_update_guard = False
         self._request_canvas_draw(throttled=True)
         return True
 
@@ -2413,14 +2468,19 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_view_state(self, state):
         if not state:
             return
-        self.axes.set_xlim(*state.x)
-        self.axes.set_ylim(*state.y1)
-        if self.axes_right is not None and state.y2 is not None:
-            self.axes_right.set_ylim(*state.y2)
-        if self.axes_gradient is not None and state.gradient is not None:
-            self.axes_gradient.set_ylim(*state.gradient)
-        self._set_dynamic_x_ticks()
-        self._update_overview_window()
+        self._view_state = state
+        self._view_state_update_guard = True
+        try:
+            self.axes.set_xlim(*state.x)
+            self.axes.set_ylim(*state.y1)
+            if self.axes_right is not None and state.y2 is not None:
+                self.axes_right.set_ylim(*state.y2)
+            if self.axes_gradient is not None and state.gradient is not None:
+                self.axes_gradient.set_ylim(*state.gradient)
+            self._set_dynamic_x_ticks()
+            self._update_overview_window()
+        finally:
+            self._view_state_update_guard = False
         self._request_canvas_draw(force=True, refresh_series=True)
 
     def _push_view_history(self):
@@ -2482,16 +2542,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self._xlim_callback_id = self.axes.callbacks.connect(
             "xlim_changed", self._on_xlim_changed
         )
+        self.axes.callbacks.connect("ylim_changed", self._on_ylim_changed)
+        if self.axes_right is not None:
+            self.axes_right.callbacks.connect(
+                "ylim_changed", self._on_ylim_changed
+            )
 
     def _on_xlim_changed(self, _axis):
-        if self._tick_update_guard:
+        if self._tick_update_guard or self._view_state_update_guard:
             return
         self._tick_update_guard = True
         try:
             self._set_dynamic_x_ticks()
             self._update_overview_window()
+            self._sync_view_state_from_axes()
         finally:
             self._tick_update_guard = False
+        self._request_canvas_draw(throttled=True, refresh_series=True)
+        self.toolbar.set_history_buttons()
+
+    def _on_ylim_changed(self, _axis):
+        if self._view_state_update_guard:
+            return
+        self._sync_view_state_from_axes()
         self._request_canvas_draw(throttled=True, refresh_series=True)
         self.toolbar.set_history_buttons()
 
@@ -2716,6 +2789,9 @@ class MainWindow(QtWidgets.QMainWindow):
             detail_x=tuple(self.axes.get_xlim()),
         )
         self._view_initialized = has_times
+        self._view_state = (
+            self._matplotlib_view_state() if self._view_initialized else None
+        )
         if self._view_initialized:
             self._view_history.ensure_home(self._screen_view_state())
         self._matplotlib_screen_complete = False
@@ -3087,6 +3163,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
             legend.set_draggable(True)
         self._view_initialized = bool(times)
+        self._view_state = (
+            self._matplotlib_view_state() if self._view_initialized else None
+        )
         if self._view_initialized:
             self._view_history.ensure_home(self._screen_view_state())
         if self._is_lightweight_rendering():

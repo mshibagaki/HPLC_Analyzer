@@ -31,6 +31,7 @@ LAST_SAVE_DIRECTORY = "paths/last_save_directory"
 LAST_PROJECT_DIRECTORY = "paths/last_project_directory"
 DATABASE_PATH = "database/path"
 RENDERING_QUALITY = "rendering/quality"
+SCREEN_RENDERER = "rendering/screen_renderer"
 FIGURE_FORMAT = "export/figure_format"
 NAMING_AUTHOR = "naming/author"
 LEGACY_CONDITION_PRESETS = "presets/conditions"
@@ -68,6 +69,11 @@ def _figure_format(value: Any, fallback: str) -> str:
 
 def _render_quality(value: Any, fallback: str) -> str:
     return normalize_render_quality(value, fallback)
+
+
+def _screen_renderer(value: Any, fallback: str) -> str:
+    normalized = _text(value, fallback).strip().lower()
+    return normalized if normalized in ("pyqtgraph", "matplotlib") else fallback
 
 
 def _boolean(value: Any, fallback: bool) -> bool:
@@ -115,6 +121,11 @@ SETTING_SPECS: Dict[str, SettingSpec] = {
     RENDERING_QUALITY: SettingSpec(
         default=default_render_quality,
         decode=_render_quality,
+        encode=str,
+    ),
+    SCREEN_RENDERER: SettingSpec(
+        default=_constant("pyqtgraph"),
+        decode=_screen_renderer,
         encode=str,
     ),
     FIGURE_FORMAT: SettingSpec(_constant("png"), _figure_format, str),

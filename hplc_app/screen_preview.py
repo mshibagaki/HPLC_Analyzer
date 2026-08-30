@@ -1,7 +1,7 @@
-"""Transitional MainWindow adapter; Matplotlib remains the export/edit model.
+"""Qt6 MainWindow screen adapter; Matplotlib remains output and fallback.
 
-Imported only on explicit opt-in. Model edits use the owner's undo-aware methods;
-renderer selection does not change persistent settings.
+Model edits use the owner's undo-aware methods. The application-level renderer
+preference is owned by MainWindow and does not enter project files.
 """
 
 from copy import deepcopy

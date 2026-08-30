@@ -87,7 +87,7 @@ def _trace_edit_state(datasets):
          deepcopy(item.peaks))
         for item in datasets
     ]
-from hplc_app.settings_store import ApplicationSettings
+from hplc_app.settings_store import ApplicationSettings, SCREEN_RENDERER
 from hplc_app.rendering import HIGH_QUALITY, LIGHTWEIGHT
 from hplc_app.update_ui import UpdateDownloadDialog, UpdateDownloadWorker
 from hplc_app.pyqtgraph_scene import (
@@ -196,6 +196,9 @@ class GuiTests(unittest.TestCase):
         os.environ["HPLC_ANALYZER_CONFIG_DIR"] = self._preset_directory.name
         self.settings = QtCore.QSettings("Research Tools", "HPLC Analyzer")
         self.settings.clear()
+        # Most existing GUI tests target the Matplotlib fallback explicitly.
+        # Dedicated renderer-default tests remove this override.
+        self.settings.setValue(SCREEN_RENDERER, "matplotlib")
         self.settings.sync()
 
     def tearDown(self):
@@ -392,6 +395,89 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_qt6_pyqtgraph_default_persists_and_owns_neutral_view_state(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        self.settings.remove(SCREEN_RENDERER)
+        self.settings.sync()
+        windows = []
+        try:
+            window = self.make_window()
+            windows.append(window)
+            self.assertTrue(window.screen_preview_checkbox.isChecked())
+            self.assertIsNotNone(window._screen_preview)
+            self.assertEqual(window._settings.get(SCREEN_RENDERER), "pyqtgraph")
+            self.assertEqual(window._view_state, window._screen_view_state())
+            preview = window._screen_preview
+            state = preview.consumer.capture_view_state()
+            preview.handle_event(
+                "scroll_event",
+                ScreenPointerEvent(
+                    button="up", axis_role="y1", hit_region="x",
+                    data_coordinates=((
+                        "y1", sum(state.x) / 2.0, sum(state.y1) / 2.0,
+                    ),),
+                ),
+            )
+            native_state = preview.consumer.capture_view_state()
+            self.assertEqual(window._view_state, native_state)
+            self.assertEqual(window._matplotlib_view_state(), native_state)
+
+            window.screen_preview_checkbox.setChecked(False)
+            self.assertEqual(window._settings.get(SCREEN_RENDERER), "matplotlib")
+            window.project.dirty = False
+            window.close()
+            windows.remove(window)
+
+            restored = self.make_window()
+            windows.append(restored)
+            self.assertIsNone(restored._screen_preview)
+            self.assertFalse(restored.screen_preview_checkbox.isChecked())
+            restored.screen_preview_checkbox.setChecked(True)
+            self.assertEqual(
+                restored._settings.get(SCREEN_RENDERER), "pyqtgraph"
+            )
+            restored.project.dirty = False
+            restored.close()
+            windows.remove(restored)
+
+            restarted = self.make_window()
+            windows.append(restarted)
+            self.assertIsNotNone(restarted._screen_preview)
+            self.assertTrue(restarted.screen_preview_checkbox.isChecked())
+        finally:
+            for current in windows:
+                current.project.dirty = False
+                current.close()
+
+    def test_default_renderer_fallback_explains_missing_pyqtgraph_and_qt5(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        self.settings.remove(SCREEN_RENDERER)
+        self.settings.sync()
+        with patch(
+            "hplc_app.screen_preview.PyQtGraphSceneConsumer",
+            side_effect=ImportError("missing"),
+        ):
+            window = self.make_window()
+        try:
+            self.assertIsNone(window._screen_preview)
+            self.assertIs(window.plot_stack.currentWidget(), window.canvas)
+            self.assertEqual(window._screen_preview_notice, "missing")
+            self.assertIn("インストール", window.screen_preview_label.text())
+            self.assertEqual(window._settings.get(SCREEN_RENDERER), "pyqtgraph")
+
+            window._screen_preview_notice = ""
+            window._screen_renderer_preference = "pyqtgraph"
+            with patch("hplc_app.gui.QT_API", 5):
+                window._activate_preferred_screen_renderer()
+            self.assertIsNone(window._screen_preview)
+            self.assertEqual(window._screen_preview_notice, "qt5")
+            self.assertIn("Windows 7", window.screen_preview_label.text())
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_mainwindow_preview_falls_back_for_tools_split_and_failures(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -411,7 +497,7 @@ class GuiTests(unittest.TestCase):
             with patch("hplc_app.screen_preview.PyQtGraphSceneConsumer", side_effect=ImportError("missing")):
                 window.screen_preview_checkbox.setChecked(True)
             self.assertIsNone(window._screen_preview)
-            self.assertEqual(window._screen_preview_notice, "failed")
+            self.assertEqual(window._screen_preview_notice, "missing")
             with patch("hplc_app.screen_preview.ExperimentalScreenPreview._update_legend",
                        side_effect=RuntimeError("initialization failure")):
                 window.screen_preview_checkbox.setChecked(True)

@@ -124,7 +124,14 @@ def verify_dependency_pins(root):
     return errors
 
 
-def verify_source_consistency(root, release_version, project_schema):
+def verify_source_consistency(
+    root, release_version, project_schema, offline_assets=True
+):
+    """Check release identity, schema and pins.
+
+    ``offline_assets`` verifies the untracked Windows 7 offline bundle and
+    wheelhouse. Callers without those local assets pass ``False``.
+    """
     root = Path(root)
     errors = []
     try:
@@ -160,8 +167,9 @@ def verify_source_consistency(root, release_version, project_schema):
         )
     try:
         errors.extend(verify_dependency_pins(root))
-        errors.extend(verify_bundle(root))
-        errors.extend(verify_dependency_closure(root))
+        if offline_assets:
+            errors.extend(verify_bundle(root))
+            errors.extend(verify_dependency_closure(root))
     except (OSError, SyntaxError, ValueError) as exc:
         errors.append("dependency or Win7 manifest check failed: {0}".format(exc))
     return errors

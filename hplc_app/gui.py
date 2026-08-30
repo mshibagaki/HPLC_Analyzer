@@ -3666,6 +3666,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_canvas_motion(self, event):
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(event)
+        self._update_pointer_coordinates(event)
         if self._annotation_drag is not None:
             drag = self._annotation_drag
             x_value, y_value = event.data_for(drag["axis_role"])
@@ -3727,6 +3728,28 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._request_canvas_draw(throttled=True)
             except ValueError:
                 pass
+
+    def _update_pointer_coordinates(self, event):
+        """Show backend-neutral pointer coordinates in the toolbar location."""
+
+        if not isinstance(event, ScreenPointerEvent):
+            event = self._normalized_pointer_event(event)
+        axis = {
+            "y1": self.axes,
+            "y2": self.axes_right,
+            "gradient": self.axes_gradient,
+            "overview_y1": self.axes_overview,
+            "overview_y2": self.axes_overview_right,
+        }.get(event.axis_role)
+        message = ""
+        if axis is not None:
+            x_value, y_value = event.data_for(event.axis_role)
+            if x_value is not None and y_value is not None:
+                try:
+                    message = axis.format_coord(x_value, y_value).rstrip()
+                except (TypeError, ValueError, OverflowError):
+                    message = ""
+        self.toolbar.set_message(message)
 
     def _on_canvas_release(self, event):
         if not isinstance(event, ScreenPointerEvent):
@@ -4350,13 +4373,14 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         view_state = self._capture_view_state()
         self._push_view_history()
-        x_limits = tuple(view_state.x)
-        self._view_initialized = False
-        self._plot(preserve_view=False)
-        self.axes.set_xlim(*x_limits)
-        self._set_dynamic_x_ticks()
-        self._update_overview_window()
-        self._request_canvas_draw()
+        self._apply_view_state(replace(
+            view_state,
+            y1=self._scene_y_limits(self._screen_scene, "y1"),
+            y2=(
+                self._scene_y_limits(self._screen_scene, "y2")
+                if view_state.y2 is not None else None
+            ),
+        ))
 
     def _import_chromatogram_paths(
         self, paths, group_label="", show_progress=False, group_labels=None

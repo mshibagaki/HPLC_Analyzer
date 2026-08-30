@@ -99,17 +99,25 @@ class PyQtGraphNavigationController:
         if self._pan is not None and name in (
             "motion_notify_event", "button_release_event",
         ):
-            if name == "button_release_event" and event.button != 1:
-                return True
-            rectangle = self.consumer.pan_rectangle(self._pan.target)
-            state = axis_pan_view(self._pan, event, rectangle.width(), rectangle.height())
-            state, _overview = self._bounded_state(state)
-            if state != self._pan.initial_view and not self._pan_recorded:
-                self.history.record_before_change(self._pan.initial_view)
-                self._pan_recorded = True
-            self._apply(state)
-            if name == "button_release_event":
+            ending = name == "button_release_event"
+            try:
+                rectangle = self.consumer.pan_rectangle(self._pan.target)
+                state = axis_pan_view(
+                    self._pan, event, rectangle.width(), rectangle.height()
+                )
+                state, _overview = self._bounded_state(state)
+                if state != self._pan.initial_view and not self._pan_recorded:
+                    self.history.record_before_change(self._pan.initial_view)
+                    self._pan_recorded = True
+                self._apply(state)
+            except Exception:
                 self._pan = None
+                raise
+            finally:
+                # Qt can report a different/no button on release. Any release
+                # terminates the gesture so later pointer motion cannot pan.
+                if ending:
+                    self._pan = None
             return True
         if not managed:
             return False

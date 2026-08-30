@@ -12,6 +12,7 @@ from math import isfinite
 from .pyqtgraph_navigation import PyQtGraphNavigationController
 from .pyqtgraph_scene import PyQtGraphSceneConsumer
 from .qt_compat import USER_ROLE
+from .screen_events import ScreenPointerEvent
 from .screen_navigation import compose_overview_state
 
 
@@ -67,6 +68,9 @@ class ExperimentalScreenPreview:
                         preview.cancel_zoom_drag()
                     if event.type() == core.QEvent.Type.Leave:
                         preview.consumer.set_pointer_cursor()
+                        preview.owner._update_pointer_coordinates(
+                            ScreenPointerEvent()
+                        )
                     if (event.type() == core.QEvent.Type.KeyPress
                             and event.key() == core.Qt.Key.Key_Escape
                             and (preview._span_drag is not None
@@ -538,6 +542,8 @@ class ExperimentalScreenPreview:
             return True
         try:
             owner = self.owner
+            if name == "motion_notify_event":
+                owner._update_pointer_coordinates(event)
             if not owner._view_initialized:
                 return True
             if self._handle_span_event(name, event):

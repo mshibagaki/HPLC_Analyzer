@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,7 @@ from hplc_app.dialogs import (
 )
 from hplc_app.gui import (
     DATASET_LABEL_COLUMN,
+    DATASET_OFFSET_COLUMN,
     DATASET_COLUMN_NAME_COLUMN,
     DATASET_RUN_ID_COLUMN,
     DATASET_SOURCE_COLUMN,
@@ -557,6 +559,95 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(window._current_view_pixmap().isNull())
             for dataset, values in zip(window.project.datasets, raw):
                 np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_pointer_coordinates_and_motion_keep_plot_geometry(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("split_y_axes")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            window.pointer_action.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core = consumer.qt_core
+
+            def rectangle_values(rectangle):
+                return (
+                    rectangle.left(), rectangle.top(),
+                    rectangle.width(), rectangle.height(),
+                )
+
+            before_geometry = (
+                rectangle_values(consumer.primary.vb.sceneBoundingRect()),
+                rectangle_values(consumer.secondary.sceneBoundingRect()),
+            )
+            with patch.object(preview, "refresh", wraps=preview.refresh) as refresh:
+                for role, view, axis, x_value in (
+                    ("y1", consumer.primary.vb, window.axes, 12.0),
+                    ("y2", consumer.secondary, window.axes_right, 30.0),
+                ):
+                    for offset in range(5):
+                        y_value = sum(view.viewRange()[1]) / 2.0 + offset
+                        scene_position = view.mapViewToScene(
+                            core.QPointF(x_value + offset * 0.1, y_value)
+                        )
+                        event = consumer.pointer_event(scene_position)
+                        self.assertEqual(event.axis_role, role)
+                        preview.handle_event("motion_notify_event", event)
+                        coordinates = event.data_for(role)
+                        self.assertEqual(
+                            window.toolbar.locLabel.text(),
+                            axis.format_coord(*coordinates).rstrip(),
+                        )
+                refresh.assert_not_called()
+            self.app.processEvents()
+            after_geometry = (
+                rectangle_values(consumer.primary.vb.sceneBoundingRect()),
+                rectangle_values(consumer.secondary.sceneBoundingRect()),
+            )
+            np.testing.assert_allclose(
+                after_geometry, before_geometry, rtol=0.0, atol=0.0
+            )
+
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            preview = window._screen_preview
+            consumer = preview.consumer
+            view = consumer.overview.vb
+            scene_position = view.mapViewToScene(
+                consumer.qt_core.QPointF(18.0, sum(view.viewRange()[1]) / 2.0)
+            )
+            event = consumer.pointer_event(scene_position)
+            self.assertEqual(event.axis_role, "overview_y1")
+            preview.handle_event("motion_notify_event", event)
+            self.assertEqual(
+                window.toolbar.locLabel.text(),
+                window.axes_overview.format_coord(
+                    *event.data_for("overview_y1")
+                ).rstrip(),
+            )
+
+            window.screen_preview_checkbox.setChecked(False)
+            legacy_event = ScreenPointerEvent(
+                axis_role="y1",
+                hit_region="plot",
+                data_coordinates=(("y1", 7.25, 1234.5),),
+            )
+            window._on_canvas_motion(legacy_event)
+            self.assertEqual(
+                window.toolbar.locLabel.text(),
+                window.axes.format_coord(7.25, 1234.5).rstrip(),
+            )
+            window._update_pointer_coordinates(ScreenPointerEvent())
+            self.assertEqual(window.toolbar.locLabel.text(), "")
         finally:
             window.project.dirty = False
             window.close()
@@ -1365,6 +1456,66 @@ class GuiTests(unittest.TestCase):
             navigation.close()
             self.assertIsNone(consumer._pointer_handler)
             self.assertFalse(consumer._dispatch_viewport_event(wheel))
+        finally:
+            if navigation is not None:
+                navigation.close()
+            consumer.close()
+
+    def test_pyqtgraph_pan_ends_on_any_release_and_apply_failure(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional PyQtGraph dependency is not installed")
+        consumer = PyQtGraphSceneConsumer(size=(800, 500))
+        navigation = None
+        try:
+            initial = ScreenViewState(
+                x=(0.0, 100.0), y1=(0.0, 1000.0),
+                y2=None, gradient=None,
+            )
+            consumer.apply_view_state(
+                initial, compose_overview_state(False, initial.x, initial.x)
+            )
+            consumer.snapshot()
+            navigation = PyQtGraphNavigationController(consumer)
+            navigation.set_pan_enabled(True)
+            press = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=200.0, canvas_y=200.0,
+            )
+            motion = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=225.0, canvas_y=230.0,
+            )
+            other_button_release = ScreenPointerEvent(
+                button=3, axis_role="y1", hit_region="plot",
+                canvas_x=225.0, canvas_y=230.0,
+            )
+            navigation.handle_event("button_press_event", press)
+            navigation.handle_event("motion_notify_event", motion)
+            navigation.handle_event(
+                "button_release_event", other_button_release
+            )
+            released = consumer.capture_view_state()
+            self.assertIsNone(navigation._pan)
+            navigation.handle_event(
+                "motion_notify_event",
+                ScreenPointerEvent(
+                    button=1, axis_role="y1", hit_region="plot",
+                    canvas_x=300.0, canvas_y=300.0,
+                ),
+            )
+            self.assertEqual(consumer.capture_view_state(), released)
+
+            consumer.apply_view_state(
+                initial, compose_overview_state(False, initial.x, initial.x)
+            )
+            navigation.reset_history()
+            navigation.handle_event("button_press_event", press)
+            with patch.object(
+                consumer, "apply_view_state", side_effect=RuntimeError("apply")
+            ):
+                with self.assertRaises(RuntimeError):
+                    navigation.handle_event("motion_notify_event", motion)
+            self.assertIsNone(navigation._pan)
         finally:
             if navigation is not None:
                 navigation.close()
@@ -3154,6 +3305,91 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_preview_trace_move_reset_restores_exact_display_and_raw_digest(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            window.dataset_table.selectRow(0)
+            window.move_axis_combo.setCurrentIndex(
+                window.move_axis_combo.findData("both")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            window.move_trace_button.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            dataset = window.project.datasets[0]
+
+            def raw_digest():
+                digest = hashlib.sha256()
+                for current in window.project.datasets:
+                    digest.update(np.ascontiguousarray(current.time_min).tobytes())
+                    digest.update(np.ascontiguousarray(current.intensity_uv).tobytes())
+                return digest.hexdigest()
+
+            before_digest = raw_digest()
+            initial_detail = tuple(
+                values.copy() for values in consumer.trace_items[dataset.id].getData()
+            )
+            initial_overview = tuple(
+                values.copy()
+                for values in consumer.overview_trace_items[dataset.id].getData()
+            )
+            press = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=100.0, canvas_y=100.0,
+                data_coordinates=(("y1", 1.0, 100.0),),
+            )
+            moved = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=140.0, canvas_y=140.0,
+                data_coordinates=(("y1", 1.5, 1100.0),),
+            )
+            preview.handle_event("button_press_event", press)
+            preview.handle_event("motion_notify_event", moved)
+            self.assertEqual(
+                (consumer.trace_items[dataset.id].pos().x(),
+                 consumer.trace_items[dataset.id].pos().y()),
+                (0.5, 1000.0),
+            )
+            preview.handle_event("button_release_event", moved)
+            self.assertEqual(dataset.x_shift_min, 0.5)
+            self.assertEqual(dataset.offset, 1000.0)
+            self.assertEqual(
+                (consumer.trace_items[dataset.id].pos().x(),
+                 consumer.trace_items[dataset.id].pos().y()),
+                (0.0, 0.0),
+            )
+            self.assertEqual(
+                (consumer.overview_trace_items[dataset.id].pos().x(),
+                 consumer.overview_trace_items[dataset.id].pos().y()),
+                (0.0, 0.0),
+            )
+
+            window.dataset_table.item(0, DATASET_X_SHIFT_COLUMN).setText("0")
+            window.dataset_table.item(0, DATASET_OFFSET_COLUMN).setText("0")
+            self.app.processEvents()
+            self.assertEqual((dataset.x_shift_min, dataset.offset), (0.0, 0.0))
+            final_detail = consumer.trace_items[dataset.id].getData()
+            final_overview = consumer.overview_trace_items[dataset.id].getData()
+            for actual, expected in zip(final_detail, initial_detail):
+                np.testing.assert_array_equal(actual, expected)
+            for actual, expected in zip(final_overview, initial_overview):
+                np.testing.assert_array_equal(actual, expected)
+            self.assertEqual(
+                (consumer.trace_items[dataset.id].pos().x(),
+                 consumer.trace_items[dataset.id].pos().y()),
+                (0.0, 0.0),
+            )
+            self.assertEqual(raw_digest(), before_digest)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_trace_move_cancellation_and_target_guards(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -4314,6 +4550,45 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.reset_y_view_button.text(), "Y軸全体")
         window.project.dirty = False
         window.close()
+
+    def test_preview_full_y_uses_scene_bounds_and_preserves_x_and_raw_data(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("split_y_axes")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            digest = hashlib.sha256()
+            for dataset in window.project.datasets:
+                digest.update(np.ascontiguousarray(dataset.time_min).tobytes())
+                digest.update(np.ascontiguousarray(dataset.intensity_uv).tobytes())
+            before_digest = digest.hexdigest()
+            expected_y1 = window._scene_y_limits(window._screen_scene, "y1")
+            expected_y2 = window._scene_y_limits(window._screen_scene, "y2")
+            original = window._screen_view_state()
+            narrowed = ScreenViewState(
+                x=(7.0, 11.0), y1=(-10.0, 10.0), y2=(-20.0, 20.0),
+                gradient=original.gradient,
+            )
+            window._apply_view_state(narrowed)
+            window._reset_y_view()
+            reset = window._screen_view_state()
+            self.assertEqual(reset.x, narrowed.x)
+            np.testing.assert_allclose(reset.y1, expected_y1)
+            np.testing.assert_allclose(reset.y2, expected_y2)
+            self.assertEqual(reset.gradient, narrowed.gradient)
+            self.assertEqual(preview.consumer.capture_view_state(), reset)
+            digest = hashlib.sha256()
+            for dataset in window.project.datasets:
+                digest.update(np.ascontiguousarray(dataset.time_min).tobytes())
+                digest.update(np.ascontiguousarray(dataset.intensity_uv).tobytes())
+            self.assertEqual(digest.hexdigest(), before_digest)
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_move_mode_changes_only_selected_trace_and_disables_pan(self):
         window = self.make_window()

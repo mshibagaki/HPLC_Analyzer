@@ -28,6 +28,7 @@ from .dialogs import (
     AxisLabelsDialog,
     BatchMetadataDialog,
     DirectoryImportDialog,
+    FractionRangeDialog,
     GradientDialog,
     LegendComposerDialog,
     LabDatabaseDialog,
@@ -120,7 +121,11 @@ from .settings_store import (
 from .update_check import check_for_updates
 from .screen_renderer import create_screen_render_surface
 from .screen_scene import compose_base_screen_scene
-from .screen_events import ScreenPointerEvent, normalize_pointer_event
+from .screen_events import (
+    ScreenPointerEvent,
+    integration_peak_hit_target,
+    normalize_pointer_event,
+)
 from .screen_navigation import (
     ScreenOverviewState,
     ScreenViewHistory,
@@ -224,6 +229,19 @@ DATASET_COLUMNS_BY_ID = {
     for logical_column, column_id in DATASET_COLUMN_IDS.items()
 }
 DATASET_HIDDEN_COLUMN_IDS = ("timestamp", "group")
+
+MOUSE_MODE_IDS = (
+    "normal",
+    "pointer",
+    "peak_select",
+    "time_range",
+    "integrate",
+    "edit_peak",
+    "split_peak",
+    "fraction",
+    "move_trace",
+    "annotation",
+)
 
 
 def _resolved_plot_font(family: str):
@@ -449,6 +467,7 @@ class DatasetTableWidget(QtWidgets.QTableWidget):
 
 class MainWindow(QtWidgets.QMainWindow):
     _open_windows = set()
+    timeRangeSelected = QtCore.Signal(float, float)
 
     def __init__(self):
         super().__init__()
@@ -515,6 +534,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._annotation_drag = None
         self._vertical_marker_artists = {}
         self._selected_vertical_marker_id = ""
+        self._selected_vertical_marker_ids = set()
+        self._mouse_mode = "normal"
+        self._selected_time_range = None
         self._edit_range_peak_id = None
         self._overview_view_patch = None
         self._overview_window_state = ScreenOverviewState(
@@ -1293,6 +1315,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
+        self.mouse_mode_label = QtWidgets.QLabel()
+        self.mouse_mode_combo = QtWidgets.QComboBox()
+        for mode_id in MOUSE_MODE_IDS:
+            self.mouse_mode_combo.addItem(mode_id, mode_id)
         self.reset_view_button = QtWidgets.QPushButton()
         self.reset_x_view_button = QtWidgets.QPushButton()
         self.reset_y_view_button = QtWidgets.QPushButton()
@@ -1319,20 +1345,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self._text_beside_icon_style()
         )
         self.pointer_control_button.setIconSize(QtCore.QSize(18, 18))
-        navigation_controls.addWidget(self.move_trace_button, 0, 0)
-        navigation_controls.addWidget(self.move_axis_combo, 0, 1)
-        navigation_controls.addWidget(self.zoom_axis_label, 1, 0)
-        navigation_controls.addWidget(self.zoom_axis_combo, 1, 1)
-        navigation_controls.addWidget(self.view_mode_label, 2, 0)
-        navigation_controls.addWidget(self.view_mode_combo, 2, 1)
-        navigation_controls.addWidget(self.pointer_control_button, 3, 0, 1, 2)
+        navigation_controls.addWidget(self.mouse_mode_label, 0, 0)
+        navigation_controls.addWidget(self.mouse_mode_combo, 0, 1)
+        navigation_controls.addWidget(self.move_trace_button, 1, 0)
+        navigation_controls.addWidget(self.move_axis_combo, 1, 1)
+        navigation_controls.addWidget(self.zoom_axis_label, 2, 0)
+        navigation_controls.addWidget(self.zoom_axis_combo, 2, 1)
+        navigation_controls.addWidget(self.view_mode_label, 3, 0)
+        navigation_controls.addWidget(self.view_mode_combo, 3, 1)
+        navigation_controls.addWidget(self.pointer_control_button, 4, 0, 1, 2)
         reset_buttons = QtWidgets.QHBoxLayout()
         reset_buttons.setContentsMargins(0, 0, 0, 0)
         reset_buttons.addWidget(self.reset_view_button)
         reset_buttons.addWidget(self.reset_x_view_button)
         reset_buttons.addWidget(self.reset_y_view_button)
-        navigation_controls.addLayout(reset_buttons, 4, 0, 1, 2)
-        navigation_controls.setRowStretch(5, 1)
+        navigation_controls.addLayout(reset_buttons, 5, 0, 1, 2)
+        navigation_controls.setRowStretch(6, 1)
 
         self.integration_group = QtWidgets.QGroupBox()
         integration_controls = QtWidgets.QGridLayout(self.integration_group)
@@ -1357,6 +1385,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fraction_interval_spin.setValue(1.0)
         self.fraction_interval_spin.setSuffix(" min")
         self.clear_fractions_button = QtWidgets.QPushButton()
+        self.fraction_numeric_button = QtWidgets.QPushButton()
         self.auto_detect_button = QtWidgets.QPushButton()
         self.fit_peak_button = QtWidgets.QPushButton()
         self.select_all_peaks_button = QtWidgets.QPushButton()
@@ -1373,7 +1402,8 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.fraction_button, 4, 0)
         integration_controls.addWidget(self.fraction_interval_spin, 4, 1)
         integration_controls.addWidget(self.clear_fractions_button, 4, 2)
-        integration_controls.setRowStretch(5, 1)
+        integration_controls.addWidget(self.fraction_numeric_button, 5, 0, 1, 3)
+        integration_controls.setRowStretch(6, 1)
 
         controls.addWidget(self.display_group, 4)
         controls.addWidget(self.navigation_group, 2)
@@ -1419,10 +1449,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.legend_combo.currentIndexChanged.connect(self._method_controls_changed)
         self.zoom_axis_combo.currentIndexChanged.connect(self._zoom_axis_changed)
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
+        self.mouse_mode_combo.currentIndexChanged.connect(self._mouse_mode_changed)
         self.integrate_button.toggled.connect(self._toggle_integration)
         self.split_peak_button.toggled.connect(self._toggle_split_mode)
         self.fraction_button.toggled.connect(self._toggle_fraction_mode)
         self.clear_fractions_button.clicked.connect(self.clear_fraction_regions)
+        self.fraction_numeric_button.clicked.connect(self.edit_fraction_range_numeric)
         self.edit_peak_button.toggled.connect(self._toggle_edit_range_mode)
         self.delete_peak_button.clicked.connect(self.delete_peak)
         self.auto_detect_button.clicked.connect(self.auto_detect_peaks)
@@ -1454,9 +1486,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 action.triggered.connect(self._toolbar_navigation_triggered)
 
     def _toolbar_navigation_triggered(self, *_args):
-        if (not self.toolbar._actions["zoom"].isChecked()
-                and self._screen_preview is not None):
+        pan_active = self.toolbar._actions["pan"].isChecked()
+        zoom_active = self.toolbar._actions["zoom"].isChecked()
+        if not zoom_active and self._screen_preview is not None:
             self._screen_preview.cancel_zoom_drag()
+        if not (pan_active or zoom_active):
+            return
         for control in (
             self.integrate_button,
             self.edit_peak_button,
@@ -1468,6 +1503,8 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             if control.isChecked():
                 control.setChecked(False)
+        normal_index = self.mouse_mode_combo.findData("normal")
+        self.mouse_mode_combo.setCurrentIndex(max(0, normal_index))
 
     def _action(self, slot=None, checkable=False):
         action = QAction(self)
@@ -1957,6 +1994,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.split_peak_button.setText(t("split_peak"))
         self.fraction_button.setText(t("fraction_mode"))
         self.clear_fractions_button.setText(t("clear_fractions"))
+        self.fraction_numeric_button.setText(t("fraction_numeric"))
         self.delete_peak_button.setText(t("delete_peak"))
         self.show_integration_checkbox.setText(t("show_integration"))
         self.show_retention_checkbox.setText(t("show_retention_labels"))
@@ -1979,6 +2017,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode_combo.setItemText(0, t("view_single"))
         self.view_mode_combo.setItemText(1, t("view_overview_detail"))
         self.view_mode_combo.setItemText(2, t("view_split_y_axes"))
+        self.mouse_mode_label.setText(t("mouse_mode"))
+        for index, mode_id in enumerate(MOUSE_MODE_IDS):
+            self.mouse_mode_combo.setItemText(
+                index, t("mouse_mode_" + mode_id)
+            )
         self.move_trace_button.setText(t("move_trace"))
         self.pointer_action.setText(t("pointer_line"))
         self.pointer_action.setToolTip(t("pointer_hint"))
@@ -3058,8 +3101,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 if 0 <= row < len(selected.peaks):
                     selected_peak_ids.add(selected.peaks[row].id)
         marker_ids = {marker.id for marker in self.project.vertical_markers}
-        if self._selected_vertical_marker_id not in marker_ids:
+        self._selected_vertical_marker_ids.intersection_update(marker_ids)
+        if self._selected_vertical_marker_id in marker_ids:
+            self._selected_vertical_marker_ids.add(
+                self._selected_vertical_marker_id
+            )
+        elif self._selected_vertical_marker_id:
             self._selected_vertical_marker_id = ""
+        if (
+            not self._selected_vertical_marker_id
+            and self._selected_vertical_marker_ids
+        ):
+            self._selected_vertical_marker_id = next(
+                marker.id
+                for marker in self.project.vertical_markers
+                if marker.id in self._selected_vertical_marker_ids
+            )
         visible = [dataset for dataset in self.project.datasets if dataset.visible]
         base_scene = compose_base_screen_scene(
             self.project,
@@ -3067,6 +3124,7 @@ class MainWindow(QtWidgets.QMainWindow):
             selected_dataset_ids=selected_dataset_ids,
             selected_peak_ids=selected_peak_ids,
             selected_vertical_marker_id=self._selected_vertical_marker_id,
+            selected_vertical_marker_ids=self._selected_vertical_marker_ids,
             color_resolver=dataset_display_color,
         )
         self._screen_scene = base_scene
@@ -3372,12 +3430,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("edit")
         elif self.fraction_button.isChecked():
             self._install_span_selector("fraction")
+        elif self._mouse_mode == "time_range":
+            self._install_span_selector("time_range")
         if (
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
             or self.split_peak_button.isChecked()
             or self.fraction_button.isChecked()
             or self.pointer_button.isChecked()
+            or self._mouse_mode == "time_range"
         ):
             self._ensure_interaction_cursor()
         self._matplotlib_screen_complete = True
@@ -3392,7 +3453,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _install_span_selector(self, mode: str = "integrate"):
         self._clear_span_selector()
-        if mode in ("integrate", "edit", "fraction") and self._screen_preview is not None:
+        if mode in ("integrate", "edit", "fraction", "time_range") and self._screen_preview is not None:
             return
         selected = self._selected_dataset()
         selector_axis = (
@@ -3408,6 +3469,9 @@ class MainWindow(QtWidgets.QMainWindow):
         elif mode == "fraction":
             callback = self._on_fraction_span_selected
             color = "#06b6d4"
+        elif mode == "time_range":
+            callback = self._on_time_range_selected
+            color = "#7c3aed"
         else:
             callback = self._on_span_selected
             color = "#2563eb"
@@ -3451,12 +3515,71 @@ class MainWindow(QtWidgets.QMainWindow):
         elif "zoom" in mode:
             self.toolbar.zoom()
 
+    @property
+    def selected_time_range(self):
+        return self._selected_time_range
+
+    def _set_mouse_mode_display(self, mode: str):
+        normalized = mode if mode in MOUSE_MODE_IDS else "normal"
+        self._mouse_mode = normalized
+        index = self.mouse_mode_combo.findData(normalized)
+        self.mouse_mode_combo.blockSignals(True)
+        self.mouse_mode_combo.setCurrentIndex(max(0, index))
+        self.mouse_mode_combo.blockSignals(False)
+
+    def _mouse_tool_toggled(self, mode: str, enabled: bool):
+        if enabled:
+            self._set_mouse_mode_display(mode)
+        elif self._mouse_mode == mode:
+            self._set_mouse_mode_display("normal")
+
+    def _mouse_mode_changed(self, *_args):
+        mode = str(self.mouse_mode_combo.currentData() or "normal")
+        if mode not in MOUSE_MODE_IDS:
+            mode = "normal"
+        self._mouse_mode = mode
+        controls = {
+            "pointer": self.pointer_action,
+            "integrate": self.integrate_button,
+            "edit_peak": self.edit_peak_button,
+            "split_peak": self.split_peak_button,
+            "fraction": self.fraction_button,
+            "move_trace": self.move_trace_button,
+            "annotation": self.annotation_action,
+        }
+        selected_control = controls.get(mode)
+        if selected_control is not None:
+            selected_control.setChecked(True)
+            return
+        for control in controls.values():
+            if control.isChecked():
+                control.setChecked(False)
+        self._clear_span_selector()
+        self._hide_interaction_cursor()
+        if mode == "normal":
+            self.statusBar().clearMessage()
+            return
+        self._deactivate_toolbar_navigation()
+        if mode == "peak_select":
+            self.statusBar().showMessage(self.translator("peak_select_hint"))
+        elif mode == "time_range":
+            if self._selected_dataset() is None:
+                QtWidgets.QMessageBox.information(
+                    self, APP_NAME, self.translator("no_dataset")
+                )
+                self._set_mouse_mode_display("normal")
+                return
+            self.statusBar().showMessage(self.translator("time_range_hint"))
+            self._install_span_selector("time_range")
+            self._ensure_interaction_cursor()
+
     def _toggle_integration(self, enabled: bool):
         if enabled:
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
                 self.integrate_button.setChecked(False)
                 return
+            self._mouse_tool_toggled("integrate", True)
             self._deactivate_toolbar_navigation()
             self.edit_peak_button.setChecked(False)
             self.split_peak_button.setChecked(False)
@@ -3468,6 +3591,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("integrate")
             self._ensure_interaction_cursor()
         else:
+            self._mouse_tool_toggled("integrate", False)
             self.statusBar().clearMessage()
             self._clear_span_selector()
             if not (
@@ -3487,6 +3611,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 self.edit_peak_button.setChecked(False)
                 return
+            self._mouse_tool_toggled("edit_peak", True)
             self._edit_range_peak_id = dataset.peaks[row].id
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
@@ -3499,6 +3624,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("edit")
             self._ensure_interaction_cursor()
         else:
+            self._mouse_tool_toggled("edit_peak", False)
             self._edit_range_peak_id = None
             if self._span_selector is not None and self._span_selector_mode == "edit":
                 self._clear_span_selector()
@@ -3518,6 +3644,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("select_peak"))
                 self.split_peak_button.setChecked(False)
                 return
+            self._mouse_tool_toggled("split_peak", True)
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
@@ -3528,6 +3655,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(self.translator("split_hint"))
             self._ensure_interaction_cursor()
         else:
+            self._mouse_tool_toggled("split_peak", False)
             if not (
                 self.integrate_button.isChecked()
                 or self.edit_peak_button.isChecked()
@@ -3549,6 +3677,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 self.fraction_button.setChecked(False)
                 return
+            self._mouse_tool_toggled("fraction", True)
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
@@ -3560,6 +3689,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("fraction")
             self._ensure_interaction_cursor()
         else:
+            self._mouse_tool_toggled("fraction", False)
             if self._span_selector is not None and self._span_selector_mode == "fraction":
                 self._clear_span_selector()
             self.statusBar().clearMessage()
@@ -3577,12 +3707,68 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plot()
         self._update_title()
 
+    def edit_fraction_range_numeric(self):
+        if not self.project.datasets:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("no_dataset")
+            )
+            return
+        minimum, maximum = self._full_x_bounds()
+        dialog = FractionRangeDialog(
+            regions=self.project.fraction_regions,
+            default_interval=self.fraction_interval_spin.value(),
+            minimum=minimum,
+            maximum=maximum,
+            language=self._application_language,
+            parent=self,
+        )
+        if not dialog_exec(dialog):
+            return
+        start, end, interval = dialog.values()
+        target_id = dialog.selected_region_id
+        before = self._capture_analysis_state()
+        if target_id:
+            region = next(
+                (
+                    item
+                    for item in self.project.fraction_regions
+                    if item.id == target_id
+                ),
+                None,
+            )
+            if region is None:
+                return
+            values = (float(start), float(end), float(interval))
+            if values == (region.start_min, region.end_min, region.interval_min):
+                return
+            region.start_min, region.end_min, region.interval_min = values
+            history = self._history_label(
+                "フラクション範囲を編集", "Edit fraction range"
+            )
+        else:
+            self.project.fraction_regions.append(
+                FractionRegion(
+                    start_min=float(start),
+                    end_min=float(end),
+                    interval_min=float(interval),
+                )
+            )
+            history = self._history_label(
+                "フラクション範囲を追加", "Add fraction range"
+            )
+        self.fraction_interval_spin.setValue(float(interval))
+        self._push_undo_snapshot(before, history)
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+
     def _toggle_move_mode(self, enabled: bool):
         if enabled:
             if self._selected_dataset() is None:
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
                 self.move_trace_button.setChecked(False)
                 return
+            self._mouse_tool_toggled("move_trace", True)
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
@@ -3592,6 +3778,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.annotation_action.setChecked(False)
             self.statusBar().showMessage(self.translator("move_hint"))
         else:
+            self._mouse_tool_toggled("move_trace", False)
             if self._screen_preview is not None:
                 self._screen_preview.cancel_move_drag()
             self._move_drag = None
@@ -3605,6 +3792,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_pointer_mode(self, enabled: bool):
         if enabled:
+            self._mouse_tool_toggled("pointer", True)
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
@@ -3615,6 +3803,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(self.translator("pointer_hint"))
             self._ensure_interaction_cursor()
         else:
+            self._mouse_tool_toggled("pointer", False)
             if not (
                 self.integrate_button.isChecked()
                 or self.edit_peak_button.isChecked()
@@ -3632,6 +3821,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 self.annotation_action.setChecked(False)
                 return
+            self._mouse_tool_toggled("annotation", True)
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.edit_peak_button.setChecked(False)
@@ -3641,6 +3831,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pointer_button.setChecked(False)
             self.statusBar().showMessage(self.translator("text_annotation_hint"))
         else:
+            self._mouse_tool_toggled("annotation", False)
             if self._screen_preview is not None:
                 self._screen_preview.cancel_annotation_drag()
             self.statusBar().clearMessage()
@@ -3673,6 +3864,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
 
     def _matplotlib_hit_target(self, event):
+        if self._mouse_mode == "peak_select":
+            return self._integration_peak_hit_target(event)
         if event.canvas_x is None or event.canvas_y is None:
             return "", ""
         for marker in reversed(self.project.vertical_markers):
@@ -3701,6 +3894,38 @@ class MainWindow(QtWidgets.QMainWindow):
                 return "annotation", annotation.id
         return "", ""
 
+    def _integration_peak_hit_target(self, event):
+        """Resolve an integration-area click from the backend-neutral scene."""
+
+        target_axis = event.axis_role if self._split_y_axes else "plot"
+        if target_axis not in ("y1", "y2", "plot"):
+            return "", ""
+        coordinate_axis = event.axis_role if event.axis_role in ("y1", "y2") else "y1"
+        x_value, _y_value = event.data_for(coordinate_axis)
+        scene = getattr(self, "_screen_scene", None)
+        targets = (
+            (
+                overlay.peak_id,
+                overlay.axis_id,
+                overlay.start_x,
+                overlay.end_x,
+            )
+            for overlay in (() if scene is None else scene.peak_overlays)
+            if overlay.show_integration_area
+        )
+        return integration_peak_hit_target(targets, target_axis, x_value)
+
+    def _select_integration_peak(self, peak_id: str):
+        """Select the dataset and table row represented by a plotted area."""
+
+        for row, dataset in enumerate(self.project.datasets):
+            if not any(peak.id == peak_id for peak in dataset.peaks):
+                continue
+            self.dataset_table.selectRow(row)
+            self._refresh_peak_table([peak_id])
+            self._peak_selection_changed()
+            return
+
     def _annotation_at_event(self, event):
         if event.hit_kind != "annotation":
             return None
@@ -3725,13 +3950,21 @@ class MainWindow(QtWidgets.QMainWindow):
             None,
         )
 
-    def _select_vertical_marker(self, marker):
-        self._selected_vertical_marker_id = marker.id if marker is not None else ""
+    def _select_vertical_marker(self, marker, additive: bool = False):
+        if marker is None:
+            self._selected_vertical_marker_ids.clear()
+            self._selected_vertical_marker_id = ""
+        elif additive:
+            self._selected_vertical_marker_ids.add(marker.id)
+            self._selected_vertical_marker_id = marker.id
+        else:
+            self._selected_vertical_marker_ids = {marker.id}
+            self._selected_vertical_marker_id = marker.id
         if self._screen_preview is not None:
             self._plot()
             return
         for marker_id, artist in self._vertical_marker_artists.items():
-            selected = marker_id == self._selected_vertical_marker_id
+            selected = marker_id in self._selected_vertical_marker_ids
             model = next(
                 (
                     item
@@ -3762,6 +3995,7 @@ class MainWindow(QtWidgets.QMainWindow):
         before = self._capture_analysis_state()
         marker = VerticalMarker(x_min=float(x_value), y_axis=y_axis)
         self.project.vertical_markers.append(marker)
+        self._selected_vertical_marker_ids = {marker.id}
         self._selected_vertical_marker_id = marker.id
         self._push_undo_snapshot(
             before, self._history_label("縦線を追加", "Add vertical marker")
@@ -3771,22 +4005,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
 
     def delete_selected_vertical_marker(self):
-        marker_id = self._selected_vertical_marker_id
-        if not marker_id:
+        marker_ids = set(self._selected_vertical_marker_ids)
+        if self._selected_vertical_marker_id:
+            marker_ids.add(self._selected_vertical_marker_id)
+        if not marker_ids:
             return False
         before = self._capture_analysis_state()
         retained = [
             marker
             for marker in self.project.vertical_markers
-            if marker.id != marker_id
+            if marker.id not in marker_ids
         ]
         if len(retained) == len(self.project.vertical_markers):
+            self._selected_vertical_marker_ids.clear()
             self._selected_vertical_marker_id = ""
             return False
+        removed_count = len(self.project.vertical_markers) - len(retained)
         self.project.vertical_markers = retained
+        self._selected_vertical_marker_ids.clear()
         self._selected_vertical_marker_id = ""
         self._push_undo_snapshot(
-            before, self._history_label("縦線を削除", "Delete vertical marker")
+            before,
+            self._history_label(
+                "縦線を%d本削除" % removed_count,
+                "Delete %d vertical marker(s)" % removed_count,
+            ),
         )
         self.project.dirty = True
         self._plot()
@@ -3868,9 +4111,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if str(getattr(self.toolbar, "mode", "")):
             return
+        if self._mouse_mode == "peak_select":
+            if event.hit_kind == "integration_peak":
+                self._select_integration_peak(event.hit_id)
+            return
         marker = self._vertical_marker_at_event(event)
         if marker is not None:
-            self._select_vertical_marker(marker)
+            self._select_vertical_marker(
+                marker, additive=self.pointer_button.isChecked()
+            )
             return
         annotation = self._annotation_at_event(event)
         if annotation is not None:
@@ -3913,6 +4162,7 @@ class MainWindow(QtWidgets.QMainWindow):
             or self.split_peak_button.isChecked()
             or self.fraction_button.isChecked()
             or self.move_trace_button.isChecked()
+            or self._mouse_mode in ("peak_select", "time_range")
         ):
             self._back_to_previous_view()
             return
@@ -3959,6 +4209,7 @@ class MainWindow(QtWidgets.QMainWindow):
             or self.split_peak_button.isChecked()
             or self.fraction_button.isChecked()
             or self.pointer_button.isChecked()
+            or self._mouse_mode == "time_range"
         ):
             if event.axis_role in ("y1", "y2", "gradient"):
                 x_value, _y_value = event.data_for(event.axis_role)
@@ -4427,6 +4678,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.dirty = True
         self._plot()
         self._update_title()
+
+    def _on_time_range_selected(self, minimum: float, maximum: float):
+        if not all(math.isfinite(float(value)) for value in (minimum, maximum)):
+            return
+        start, end = sorted((float(minimum), float(maximum)))
+        if start == end:
+            return
+        self._selected_time_range = (start, end)
+        self.statusBar().showMessage(
+            self.translator("time_range_selected", start=start, end=end)
+        )
+        self.timeRangeSelected.emit(start, end)
 
     def _on_edit_span_selected(self, minimum: float, maximum: float):
         dataset = self._selected_dataset()
@@ -5295,6 +5558,7 @@ class MainWindow(QtWidgets.QMainWindow):
             condition_presets=deepcopy(self._global_condition_presets),
             gradient_presets=deepcopy(self._global_gradient_presets),
         )
+        self._selected_time_range = None
         self._view_initialized = False
         self._view_history.clear()
         self._reset_undo_history()
@@ -5327,6 +5591,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _open_project_path(self, path: str) -> bool:
         try:
             self.project = load_project(path)
+            self._selected_time_range = None
             self._settings.set(
                 LAST_PROJECT_DIRECTORY, str(Path(path).parent), sync=True
             )

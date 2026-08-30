@@ -20,6 +20,7 @@ from hplc_app.dialogs import (
     AxisLabelsDialog,
     BatchMetadataDialog,
     DirectoryImportDialog,
+    FractionRangeDialog,
     GradientDialog,
     LabDatabaseDialog,
     LegendComposerDialog,
@@ -1000,18 +1001,21 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(window._selected_vertical_marker_id, first.id)
             self.assertEqual(len(window._undo_stack), undo_count)
             self.assertFalse(window.project.dirty)
-            self.assertEqual(consumer.marker_items[second.id].pen.color().name(), "#7c3aed")
+            self.assertEqual(consumer.marker_items[second.id].pen.color().name(), "#f59e0b")
             consumer.application.sendEvent(consumer.widget, gui.QKeyEvent(
                 core.QEvent.Type.KeyPress, core.Qt.Key.Key_Delete,
                 core.Qt.KeyboardModifier.NoModifier,
             ))
-            self.assertEqual([marker.id for marker in window.project.vertical_markers], [second.id])
+            self.assertEqual(window.project.vertical_markers, [])
             self.assertNotIn(first.id, consumer.marker_items)
+            self.assertNotIn(second.id, consumer.marker_items)
             self.assertIs(window._screen_preview, preview)
             window.undo()
             self.assertIn(first.id, consumer.marker_items)
+            self.assertIn(second.id, consumer.marker_items)
             window.redo()
             self.assertNotIn(first.id, consumer.marker_items)
+            self.assertNotIn(second.id, consumer.marker_items)
             window.undo()
             with tempfile.TemporaryDirectory() as directory:
                 path = str(Path(directory) / "native-markers.hplcproj")
@@ -4516,6 +4520,204 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(len(window.project.fraction_regions), 1)
         window.project.dirty = False
         window.close()
+
+    def test_mouse_mode_selects_integration_area_and_syncs_legacy_tools(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        wide = dataset.peaks[0]
+        narrow = PeakRegion(start_min=6.0, end_min=8.0)
+        dataset.peaks.append(narrow)
+        recalculate_dataset_peaks(dataset)
+        window._refresh_peak_table()
+        window._plot()
+
+        self.assertEqual(window.mouse_mode_combo.currentData(), "normal")
+        window.integrate_button.setChecked(True)
+        self.assertEqual(window.mouse_mode_combo.currentData(), "integrate")
+        select_index = window.mouse_mode_combo.findData("peak_select")
+        window.mouse_mode_combo.setCurrentIndex(select_index)
+        self.assertFalse(window.integrate_button.isChecked())
+        self.assertEqual(window._mouse_mode, "peak_select")
+
+        event = ScreenPointerEvent(
+            button=1,
+            axis_role="y1",
+            hit_region="plot",
+            data_coordinates=(("y1", 7.0, 0.0),),
+        )
+        hit = window._integration_peak_hit_target(event)
+        self.assertEqual(hit, ("integration_peak", narrow.id))
+        window._on_canvas_press(event.with_hit_target(*hit))
+        self.assertEqual(window._selected_dataset().id, dataset.id)
+        self.assertEqual(window._selected_peak_ids(), [narrow.id])
+        self.assertNotIn(wide.id, window._selected_peak_ids())
+
+        range_signal = Mock()
+        window.timeRangeSelected.connect(range_signal)
+        dirty = window.project.dirty
+        range_index = window.mouse_mode_combo.findData("time_range")
+        window.mouse_mode_combo.setCurrentIndex(range_index)
+        self.assertEqual(window._span_selector_mode, "time_range")
+        window._on_time_range_selected(9.0, 3.0)
+        self.assertEqual(window.selected_time_range, (3.0, 9.0))
+        range_signal.assert_called_once_with(3.0, 9.0)
+        self.assertEqual(window.project.dirty, dirty)
+        window.project.dirty = False
+        window.close()
+
+    def test_vertical_pointer_additive_selection_bulk_delete_and_undo(self):
+        window = self.make_window()
+        first = VerticalMarker(x_min=6.0)
+        second = VerticalMarker(x_min=8.0)
+        window.project.vertical_markers = [first, second]
+        window._selected_vertical_marker_ids.clear()
+        window._selected_vertical_marker_id = ""
+        window._plot()
+        window.pointer_action.setChecked(True)
+        for marker in (first, second):
+            window._on_canvas_press(
+                ScreenPointerEvent(
+                    button=1,
+                    axis_role="y1",
+                    hit_region="plot",
+                    data_coordinates=(("y1", marker.x_min, 0.0),),
+                    hit_kind="vertical_marker",
+                    hit_id=marker.id,
+                )
+            )
+        self.assertEqual(window._selected_vertical_marker_ids, {first.id, second.id})
+        self.assertTrue(window.delete_selected_vertical_marker())
+        self.assertEqual(window.project.vertical_markers, [])
+        window.undo()
+        self.assertEqual(
+            {marker.id for marker in window.project.vertical_markers},
+            {first.id, second.id},
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_numeric_fraction_range_add_edit_and_undo(self):
+        window = self.make_window()
+        add_dialog = FractionRangeDialog(
+            [], 1.0, 0.0, 20.0, language="en", parent=window
+        )
+        add_dialog.start.setValue(2.5)
+        add_dialog.end.setValue(9.5)
+        add_dialog.interval.setValue(1.25)
+        with patch("hplc_app.gui.FractionRangeDialog", return_value=add_dialog), \
+                patch("hplc_app.gui.dialog_exec", return_value=True):
+            window.edit_fraction_range_numeric()
+        self.assertEqual(len(window.project.fraction_regions), 1)
+        region = window.project.fraction_regions[0]
+        region_id = region.id
+        self.assertEqual(
+            (region.start_min, region.end_min, region.interval_min),
+            (2.5, 9.5, 1.25),
+        )
+
+        edit_dialog = FractionRangeDialog(
+            window.project.fraction_regions,
+            1.0,
+            0.0,
+            20.0,
+            language="en",
+            parent=window,
+        )
+        edit_dialog.select_region(region_id)
+        edit_dialog.start.setValue(3.0)
+        edit_dialog.end.setValue(8.0)
+        edit_dialog.interval.setValue(0.5)
+        with patch("hplc_app.gui.FractionRangeDialog", return_value=edit_dialog), \
+                patch("hplc_app.gui.dialog_exec", return_value=True):
+            window.edit_fraction_range_numeric()
+        self.assertEqual(len(window.project.fraction_regions), 1)
+        self.assertEqual(window.project.fraction_regions[0].id, region_id)
+        self.assertEqual(
+            (
+                window.project.fraction_regions[0].start_min,
+                window.project.fraction_regions[0].end_min,
+                window.project.fraction_regions[0].interval_min,
+            ),
+            (3.0, 8.0, 0.5),
+        )
+        window.undo()
+        restored = window.project.fraction_regions[0]
+        self.assertEqual(restored.id, region_id)
+        self.assertEqual(
+            (restored.start_min, restored.end_min, restored.interval_min),
+            (2.5, 9.5, 1.25),
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_preview_time_range_uses_shared_non_mutating_contract(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.screen_preview_checkbox.setChecked(True)
+            index = window.mouse_mode_combo.findData("time_range")
+            window.mouse_mode_combo.setCurrentIndex(index)
+            preview = window._screen_preview
+            signal = Mock()
+            window.timeRangeSelected.connect(signal)
+            undo_count = len(window._undo_stack)
+            window.project.dirty = False
+
+            def event(time, pixel):
+                return ScreenPointerEvent(
+                    button=1,
+                    axis_role="y1",
+                    hit_region="plot",
+                    canvas_x=float(pixel),
+                    data_coordinates=(("y1", float(time), 0.0),),
+                )
+
+            preview.handle_event("button_press_event", event(8.0, 20.0))
+            preview.handle_event("motion_notify_event", event(2.0, 80.0))
+            preview.handle_event("button_release_event", event(2.0, 80.0))
+            self.assertEqual(window.selected_time_range, (2.0, 8.0))
+            signal.assert_called_once_with(2.0, 8.0)
+            self.assertEqual(len(window._undo_stack), undo_count)
+            self.assertFalse(window.project.dirty)
+            self.assertIsNone(preview._span_drag)
+            self.assertFalse(preview.consumer.span_selection.isVisible())
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_click_selects_the_same_overlapping_integration_area(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            dataset = window.project.datasets[0]
+            wide = dataset.peaks[0]
+            narrow = PeakRegion(start_min=6.0, end_min=8.0)
+            dataset.peaks.append(narrow)
+            recalculate_dataset_peaks(dataset)
+            window._refresh_peak_table([wide.id])
+            window._plot()
+            window.screen_preview_checkbox.setChecked(True)
+            index = window.mouse_mode_combo.findData("peak_select")
+            window.mouse_mode_combo.setCurrentIndex(index)
+            event = ScreenPointerEvent(
+                button=1,
+                axis_role="y1",
+                hit_region="plot",
+                canvas_x=50.0,
+                canvas_y=50.0,
+                data_coordinates=(("y1", 7.0, 0.0),),
+            )
+            self.assertTrue(
+                window._screen_preview.handle_event("button_press_event", event)
+            )
+            self.assertEqual(window._selected_peak_ids(), [narrow.id])
+            self.assertNotIn(wide.id, window._selected_peak_ids())
+            self.assertIsNotNone(window._screen_preview)
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_numeric_auv_and_independent_time_shift(self):
         window = self.make_window()

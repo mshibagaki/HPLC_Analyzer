@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 import math
-from typing import Mapping, Optional, Tuple
+from typing import Iterable, Mapping, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,41 @@ class ScreenPointerEvent:
             hit_kind=str(kind or ""),
             hit_id=str(target_id or ""),
         )
+
+
+def integration_peak_hit_target(
+    targets: Iterable[Tuple[str, str, float, float]],
+    axis_role: str,
+    x_value: Optional[float],
+) -> Tuple[str, str]:
+    """Resolve overlapping integration areas identically for both renderers.
+
+    The narrowest containing interval wins because it is the most specific
+    target.  Equal-width ties use the last drawn interval (the visually
+    frontmost target), represented by the later iterable position.
+    """
+
+    x_value = _finite_value(x_value)
+    if axis_role not in ("y1", "y2", "plot") or x_value is None:
+        return "", ""
+    candidates = []
+    for draw_order, target in enumerate(targets):
+        try:
+            peak_id, target_axis, start_value, end_value = target
+            start = float(start_value)
+            end = float(end_value)
+        except (TypeError, ValueError):
+            continue
+        if (axis_role != "plot" and target_axis != axis_role) or not all(
+            math.isfinite(value) for value in (start, end)
+        ):
+            continue
+        left, right = sorted((start, end))
+        if left <= x_value <= right:
+            candidates.append((right - left, -draw_order, str(peak_id)))
+    if not candidates:
+        return "", ""
+    return "integration_peak", min(candidates)[2]
 
 
 def _finite_value(value):

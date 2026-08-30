@@ -13,7 +13,7 @@ from .database import (
     database_sections,
     export_database_csvs,
 )
-from .import_batch import discover_chromatogram_files
+from .import_batch import discover_chromatogram_files_with_report
 from .models import (
     AnalysisMethod,
     Dataset,
@@ -475,6 +475,7 @@ class DirectoryImportDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.language = language
         self.files = []
+        self.duplicate_txt_skip_count = 0
         self.setWindowTitle(
             "ディレクトリ一括読み込み"
             if language == "ja"
@@ -496,6 +497,15 @@ class DirectoryImportDialog(QtWidgets.QDialog):
             else "Include subfolders"
         )
         root.addWidget(self.recursive_checkbox)
+        self.preference_label = QtWidgets.QLabel(
+            "同じディレクトリに、拡張子を除く名前が同じ .gcd と .txt がある場合は、"
+            "大文字・小文字を区別せず .gcd を優先します。"
+            if language == "ja"
+            else "When .gcd and .txt files in the same directory have matching stems "
+            "(case-insensitive), .gcd is preferred."
+        )
+        self.preference_label.setWordWrap(True)
+        root.addWidget(self.preference_label)
         form = QtWidgets.QFormLayout()
         self.group_edit = QtWidgets.QLineEdit()
         form.addRow(
@@ -536,22 +546,34 @@ class DirectoryImportDialog(QtWidgets.QDialog):
         directory = self.directory_edit.text().strip()
         self.preview_list.clear()
         try:
-            self.files = discover_chromatogram_files(
+            discovery = discover_chromatogram_files_with_report(
                 directory, self.recursive_checkbox.isChecked()
             )
+            self.files = discovery.files
+            self.duplicate_txt_skip_count = len(discovery.skipped_txt_files)
         except (OSError, ValueError):
             self.files = []
+            self.duplicate_txt_skip_count = 0
         root = Path(directory) if directory else None
         for path in self.files:
             self.preview_list.addItem(path.relative_to(root).as_posix())
         if directory and not self.group_edit.text().strip():
             self.group_edit.setText(Path(directory).name)
         count = len(self.files)
-        self.summary_label.setText(
+        summary = (
             "%d件のTXT/GCDが見つかりました。" % count
             if self.language == "ja"
             else "%d TXT/GCD file(s) found." % count
         )
+        if self.duplicate_txt_skip_count:
+            summary += (
+                " .gcd を優先し、同名 .txt を%d件スキップします。"
+                % self.duplicate_txt_skip_count
+                if self.language == "ja"
+                else " Preferred .gcd and skipped %d matching .txt file(s)."
+                % self.duplicate_txt_skip_count
+            )
+        self.summary_label.setText(summary)
         self.import_button.setEnabled(bool(self.files))
 
     def _accept(self):
@@ -575,6 +597,10 @@ class DirectoryImportDialog(QtWidgets.QDialog):
     @property
     def directory_path(self):
         return Path(self.directory_edit.text().strip())
+
+    @property
+    def recursive(self):
+        return self.recursive_checkbox.isChecked()
 
 
 class WorkDirectoriesDialog(QtWidgets.QDialog):

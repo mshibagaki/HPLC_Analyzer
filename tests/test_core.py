@@ -2018,8 +2018,16 @@ class ProjectTests(unittest.TestCase):
                 read_sha256sums(checksums)
 
     def test_release_consistency_checks_identity_schema_pins_and_assets(self):
+        # The Windows 7 offline bundle and wheelhouse are large untracked local
+        # assets, so they are only verified where they are actually present.
+        offline_assets = (ROOT / "win7_offline").is_dir()
         self.assertEqual(
-            verify_source_consistency(ROOT, "v" + APP_VERSION, PROJECT_SCHEMA_VERSION),
+            verify_source_consistency(
+                ROOT,
+                "v" + APP_VERSION,
+                PROJECT_SCHEMA_VERSION,
+                offline_assets=offline_assets,
+            ),
             [],
         )
         self.assertTrue(
@@ -3165,6 +3173,8 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("scripts\\verify_windows7_x86.py --interpreter", batch)
 
     def test_windows7_offline_payload_is_complete_hashed_and_x86_only(self):
+        if not (ROOT / "win7_offline").is_dir():
+            self.skipTest("win7_offline assets are not present")
         self.assertEqual(verify_windows7_offline_bundle(ROOT), [])
         manifest = read_windows7_offline_manifest(
             ROOT / "win7_offline" / "MANIFEST.sha256"
@@ -3184,6 +3194,8 @@ class ProjectTests(unittest.TestCase):
         )
 
     def test_windows7_wheelhouse_is_complete_before_python_installation(self):
+        if not (ROOT / "win7_offline").is_dir():
+            self.skipTest("win7_offline assets are not present")
         batch = (ROOT / "build_windows7_offline.bat").read_text(encoding="utf-8")
         preparer = (ROOT / "prepare_windows7_offline_wheels.bat").read_text(
             encoding="utf-8"

@@ -26,6 +26,7 @@ except ImportError:
 PROJECT_CONSTANTS = ("PROJECT_FORMAT_MAJOR", "PROJECT_SCHEMA_VERSION")
 REQUIREMENT_FILES = (
     "requirements-win11.txt",
+    "requirements-win11-pyqtgraph.txt",
     "requirements-win7-bootstrap.txt",
     "requirements-win7.txt",
 )
@@ -99,16 +100,18 @@ def verify_dependency_pins(root):
         errors.extend(pin_errors)
     environments = (
         (
-            "requirements-win11.txt",
+            ("requirements-win11.txt", "requirements-win11-pyqtgraph.txt"),
             root / "scripts" / "verify_windows11_x64.py",
         ),
         (
-            "requirements-win7.txt",
+            ("requirements-win7.txt",),
             root / "scripts" / "verify_windows7_x86.py",
         ),
     )
-    for requirements_name, verifier_path in environments:
-        pins = pin_sets[requirements_name]
+    for requirements_names, verifier_path in environments:
+        pins = {}
+        for requirements_name in requirements_names:
+            pins.update(pin_sets[requirements_name])
         for module, expected in read_expected_packages(verifier_path).items():
             distribution = MODULE_DISTRIBUTIONS.get(module, module)
             actual = pins.get(_normalized_distribution(distribution))

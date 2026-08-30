@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+import importlib.util
 import os
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -18,18 +19,30 @@ if build_debug and (
         "HPLC_DEBUG_VERSION_FILE must name the generated Debug version resource"
     )
 
+hiddenimports = [
+    "matplotlib.backends.backend_qtagg",
+    "matplotlib.backends.backend_qt5agg",
+    "matplotlib.backends.backend_agg",
+    "matplotlib.backends.backend_svg",
+    "matplotlib.backends.backend_pdf",
+]
+# The screen preview loads PyQtGraph through importlib, so PyInstaller cannot see
+# it.  Bundle it only when the optional Windows 11 pin is installed; the shared
+# Windows 7 build never installs it and stays unchanged.
+if importlib.util.find_spec("pyqtgraph") is not None:
+    hiddenimports += [
+        "pyqtgraph",
+        "pyqtgraph.Qt.QtCore",
+        "pyqtgraph.Qt.QtGui",
+        "pyqtgraph.Qt.QtWidgets",
+    ]
+
 a = Analysis(
     ["app.py"],
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[
-        "matplotlib.backends.backend_qtagg",
-        "matplotlib.backends.backend_qt5agg",
-        "matplotlib.backends.backend_agg",
-        "matplotlib.backends.backend_svg",
-        "matplotlib.backends.backend_pdf",
-    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ import sys
 import tempfile
 import time
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +23,10 @@ if str(ROOT) not in sys.path:
 
 from hplc_app.gui import MainWindow
 from hplc_app.analysis import recalculate_dataset_peaks
+from hplc_app.import_batch import (
+    SUPPORTED_CHROMATOGRAM_SUFFIXES,
+    discover_chromatogram_files,
+)
 from hplc_app.models import (
     Dataset,
     FractionRegion,
@@ -32,10 +39,45 @@ from hplc_app.models import (
 from hplc_app.qt_compat import QT_API, QtCore, QtWidgets
 from hplc_app.renderer_benchmark import (
     RendererWorkload,
-    arrays_digest,
     synthetic_chromatograms,
 )
 from hplc_app.pyqtgraph_scene import pyqtgraph_scene_available
+from hplc_app.parser import load_chromatogram_file
+
+
+def _decorate_project(project):
+    first = project.datasets[0]
+    start = float(first.time_min[0])
+    end = float(first.time_min[-1])
+    span = max(end - start, 1.0)
+    first.measurement.gradient = [
+        GradientPoint(start, 90.0, 10.0, 0.0, 0.0),
+        GradientPoint(end, 10.0, 90.0, 0.0, 0.0),
+    ]
+    first.peaks = [PeakRegion(
+        start_min=start + span * 0.10,
+        end_min=start + span * 0.15,
+    )]
+    recalculate_dataset_peaks(first)
+    project.method.show_gradient_b = True
+    project.method.show_integration_areas = True
+    project.method.show_retention_labels = True
+    target = project.datasets[1] if len(project.datasets) > 1 else first
+    project.vertical_markers.append(VerticalMarker(
+        x_min=start + span * 0.40, y_axis=target.y_axis
+    ))
+    project.fraction_regions.append(FractionRegion(
+        start_min=start + span * 0.50,
+        end_min=start + span * 0.60,
+        interval_min=max(span * 0.02, 0.01),
+    ))
+    project.annotations.append(TextAnnotation(
+        text="Benchmark annotation",
+        x_min=start + span * 0.70,
+        y_value=float(np.nanmedian(target.intensity_uv)),
+        dataset_id=target.id,
+        y_axis=target.y_axis,
+    ))
 
 
 def _project_for(workload: RendererWorkload, *, decorated=False):
@@ -52,28 +94,62 @@ def _project_for(workload: RendererWorkload, *, decorated=False):
         ))
     project = Project(datasets=datasets)
     if decorated:
-        first = project.datasets[0]
-        first.measurement.gradient = [
-            GradientPoint(0.0, 90.0, 10.0, 0.0, 0.0),
-            GradientPoint(30.0, 10.0, 90.0, 0.0, 0.0),
-        ]
-        first.peaks = [PeakRegion(start_min=3.5, end_min=4.5)]
-        recalculate_dataset_peaks(first)
-        project.method.show_gradient_b = True
-        project.method.show_integration_areas = True
-        project.method.show_retention_labels = True
-        project.vertical_markers.append(VerticalMarker(x_min=12.0, y_axis=2))
-        project.fraction_regions.append(FractionRegion(
-            start_min=15.0, end_min=18.0, interval_min=1.0
-        ))
-        project.annotations.append(TextAnnotation(
-            text="Benchmark annotation",
-            x_min=20.0,
-            y_value=0.5,
-            dataset_id=project.datasets[1].id,
-            y_axis=2,
-        ))
+        _decorate_project(project)
     return project, x_values, traces
+
+
+def _discover_inputs(inputs, recursive=False):
+    discovered = []
+    for entry in inputs:
+        path = Path(entry)
+        if path.is_dir():
+            discovered.extend(discover_chromatogram_files(path, recursive))
+        elif path.is_file() and path.suffix.lower() in SUPPORTED_CHROMATOGRAM_SUFFIXES:
+            discovered.append(path)
+        else:
+            raise ValueError("Unsupported or missing benchmark input: %s" % path)
+    unique = {}
+    for path in discovered:
+        resolved = path.resolve()
+        unique[str(resolved).casefold()] = resolved
+    result = sorted(unique.values(), key=lambda path: (str(path).casefold(), str(path)))
+    if not result:
+        raise ValueError("No supported .gcd or .txt benchmark inputs were found")
+    return result
+
+
+def _project_from_inputs(inputs, *, recursive=False, decorated=False):
+    paths = _discover_inputs(inputs, recursive=recursive)
+    datasets = []
+    loaded_paths = []
+    errors = []
+    for path in paths:
+        try:
+            datasets.append(load_chromatogram_file(str(path)))
+            loaded_paths.append(path)
+        except (OSError, ValueError) as exc:
+            errors.append({"file": path.name, "error": str(exc)})
+    if not datasets:
+        details = "; ".join(
+            "%s: %s" % (item["file"], item["error"])
+            for item in errors
+        )
+        raise ValueError("No benchmark input could be loaded: %s" % details)
+    project = Project(datasets=datasets)
+    if decorated:
+        _decorate_project(project)
+    return project, loaded_paths, errors
+
+
+def _project_digest(project):
+    digest = hashlib.sha256()
+    for dataset in project.datasets:
+        for array in (dataset.time_min, dataset.intensity_uv):
+            contiguous = np.ascontiguousarray(array)
+            digest.update(str(contiguous.dtype).encode("ascii"))
+            digest.update(str(contiguous.shape).encode("ascii"))
+            digest.update(contiguous.tobytes())
+    return digest.hexdigest()
 
 
 def _measure(window, application, repeats: int):
@@ -86,7 +162,13 @@ def _measure(window, application, repeats: int):
     return durations
 
 
-def benchmark(workload: RendererWorkload, *, decorated=False):
+def benchmark(
+    workload: RendererWorkload,
+    *,
+    decorated=False,
+    inputs=(),
+    recursive=False,
+):
     if QT_API != 6 or not pyqtgraph_scene_available():
         raise RuntimeError("The integrated benchmark requires Qt 6 and PyQtGraph")
 
@@ -94,10 +176,19 @@ def benchmark(workload: RendererWorkload, *, decorated=False):
     original_format = QtCore.QSettings.defaultFormat()
     ini_format = QtCore.QSettings.Format.IniFormat
     user_scope = QtCore.QSettings.Scope.UserScope
-    project, x_values, traces = _project_for(
-        workload, decorated=decorated
-    )
-    digest_before = arrays_digest(x_values, traces)
+    input_paths = []
+    input_errors = []
+    if inputs:
+        project, input_paths, input_errors = _project_from_inputs(
+            inputs, recursive=recursive, decorated=decorated
+        )
+        source = "files"
+    else:
+        project, _x_values, _traces = _project_for(
+            workload, decorated=decorated
+        )
+        source = "synthetic"
+    digest_before = _project_digest(project)
 
     with tempfile.TemporaryDirectory() as settings_directory:
         QtCore.QSettings.setDefaultFormat(ini_format)
@@ -151,10 +242,7 @@ def benchmark(workload: RendererWorkload, *, decorated=False):
             else:
                 os.environ["HPLC_ANALYZER_CONFIG_DIR"] = original_config
 
-    digest_after = arrays_digest(
-        project.datasets[0].time_min,
-        [dataset.intensity_uv for dataset in project.datasets],
-    )
+    digest_after = _project_digest(project)
     legacy_median = statistics.median(legacy)
     native_median = statistics.median(native)
     return {
@@ -165,11 +253,29 @@ def benchmark(workload: RendererWorkload, *, decorated=False):
             "qt_api": QT_API,
         },
         "workload": {
-            "traces": workload.trace_count,
-            "points_per_trace": workload.point_count,
+            "source": source,
+            "traces": len(project.datasets),
+            "total_points": sum(
+                int(dataset.time_min.size) for dataset in project.datasets
+            ),
+            "minimum_points_per_trace": min(
+                int(dataset.time_min.size) for dataset in project.datasets
+            ),
+            "maximum_points_per_trace": max(
+                int(dataset.time_min.size) for dataset in project.datasets
+            ),
+            "points_per_trace": (
+                workload.point_count if source == "synthetic" else None
+            ),
             "repeats": workload.repeats,
             "seed": workload.seed,
             "decorated": bool(decorated),
+            "input_files": [path.name for path in input_paths],
+            "suffix_counts": {
+                suffix: sum(path.suffix.lower() == suffix for path in input_paths)
+                for suffix in sorted({path.suffix.lower() for path in input_paths})
+            },
+            "skipped_inputs": input_errors,
         },
         "legacy_matplotlib_seconds": legacy,
         "native_preview_seconds": native,
@@ -194,6 +300,17 @@ def main() -> int:
         action="store_true",
         help="Include B%, a peak overlay, marker, fraction, and annotation.",
     )
+    parser.add_argument(
+        "--input",
+        type=Path,
+        nargs="+",
+        help="One or more .gcd/.txt files or directories; otherwise use synthetic data.",
+    )
+    parser.add_argument(
+        "--recursive",
+        action="store_true",
+        help="Recursively discover supported files below input directories.",
+    )
     parser.add_argument("--output", type=Path)
     arguments = parser.parse_args()
     payload = benchmark(
@@ -204,6 +321,8 @@ def main() -> int:
             seed=arguments.seed,
         ),
         decorated=arguments.decorated,
+        inputs=arguments.input or (),
+        recursive=arguments.recursive,
     )
     rendered = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     if arguments.output is None:

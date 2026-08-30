@@ -1143,6 +1143,39 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_integrated_benchmark_discovers_and_loads_real_inputs(self):
+        from scripts.benchmark_integrated_screen import (
+            _discover_inputs,
+            _project_digest,
+            _project_from_inputs,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            valid = root / "valid.TXT"
+            invalid = root / "notes.txt"
+            valid.write_bytes((SAMPLES / "210601.TXT").read_bytes())
+            invalid.write_text("not a chromatogram", encoding="utf-8")
+            discovered = _discover_inputs(
+                [root, valid], recursive=False
+            )
+            self.assertEqual(
+                [path.name for path in discovered],
+                ["notes.txt", "valid.TXT"],
+            )
+            project, loaded, errors = _project_from_inputs(
+                [root], decorated=True
+            )
+            self.assertEqual([path.name for path in loaded], ["valid.TXT"])
+            self.assertEqual([item["file"] for item in errors], ["notes.txt"])
+            self.assertEqual(len(project.datasets), 1)
+            digest = _project_digest(project)
+            self.assertEqual(digest, _project_digest(project))
+            self.assertTrue(project.method.show_gradient_b)
+            self.assertEqual(len(project.vertical_markers), 1)
+            with self.assertRaisesRegex(ValueError, "No benchmark input could be loaded"):
+                _project_from_inputs([invalid])
+
     def test_pyqtgraph_viewport_dispatches_and_disconnects_shared_events(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional PyQtGraph dependency is not installed")

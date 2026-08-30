@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-30 (Issue #180 delivery)
+Updated: 2026-08-31 (Issue #181 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -18,7 +18,7 @@ This tracked file is the source of truth for the original product requests. Upda
 | Presets | Preview/diff before apply, created/used/updated/name sorting, filter, rename/duplicate/delete, and import/export conflict policies |
 | Output and reports | Current view print and clipboard copy; all/visible/selected report scopes; compact peak table; per-export baseline/range/retention-time/B% options |
 | Scientific metadata | Run-owned analyte name, stable ID, aliases, source, molecular weight, extinction coefficients and units; persistence, export, and quantitation integration |
-| Peak fitting | Non-destructive Gaussian and right-tailing EMG fitting, automatic model selection, RMSE/R²/AIC, and visual overlay |
+| Peak fitting | Non-destructive Gaussian and right-tailing EMG fitting, automatic model selection, RMSE/R²/AIC, and visual overlay. Issue #181: every fit is an explicit parent-linked fitted row outside the integration collection, shown by default and distinguished in the table, Matplotlib/PyQtGraph legends, peak CSV, and PDF report; parent area, retention time, FWHM, and %Area remain unchanged; fitted rows can be recalculated or deleted independently; and a non-modal integration-list window keeps selection and note/range/fit/delete actions synchronized with the main table without owning or discarding data |
 | Preferences and colors | Persisted Japanese/English choice and default 280 nm blue-family / 214 nm red-family trace colors |
 | Update foundations | Nonblocking Stable Release check; canonical asset selection; bounded download; SHA-256 and Authenticode probes; signer allow-list policy; progress/cancel cleanup; installer execution remains disabled |
 
@@ -30,6 +30,12 @@ This tracked file is the source of truth for the original product requests. Upda
 | Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
 
 The following are useful extensions, but are not gaps in the original requested minimum: a shared analyte master library beyond the persisted Run snapshot, multi-peak deconvolution/curved baseline fitting beyond Gaussian/EMG single-peak fitting, and the long-term TraceLab platform split.
+
+## Project compatibility note for Issue #181
+
+Schema 107 stores explicit fitted rows in each Dataset's new `fitted_peaks` collection while keeping integrations in the existing `peaks` collection. Loading schema 106 or earlier creates a parent-linked fitted row from each legacy parent fit without changing the parent's integration values. The latest fitted result is also mirrored into the parent's existing `fit_*` fields so older v1 applications can still display one fit and continue to read the integrations.
+
+If a schema-107 project is opened and saved again by an older application, that application ignores and therefore removes the new `fitted_peaks` collection. Explicit fitted-row IDs, parent links, fitted-row notes, and all but the last mirrored fit per parent are lost. The parent integrations and the last mirrored `fit_*` result remain; reopening that older-saved project in the current application reconstructs at most one explicit fitted row per parent. Physical Win7-to-Win11 and Win11-to-Win7 project round trips remain an external validation gate.
 
 ## External and physical gates
 

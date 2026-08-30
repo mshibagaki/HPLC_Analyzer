@@ -220,6 +220,10 @@ class ExperimentalScreenPreview:
             legend.addItem(item, escape(trace.label))
         if scene.gradient is not None:
             legend.addItem(self.consumer.items[len(scene.traces)], escape(scene.gradient.label))
+        for overlay in scene.peak_overlays:
+            fit_item = self.consumer.fit_items.get(overlay.peak_id)
+            if fit_item is not None and overlay.fit_label:
+                legend.addItem(fit_item, escape(overlay.fit_label))
         color = method.legend_font_color or "#000000"
         size = "%gpt" % method.legend_font_size
         family = method.legend_font_family or self.consumer.application.font().family()
@@ -521,11 +525,12 @@ class ExperimentalScreenPreview:
         selected = owner._selected_dataset()
         row = owner.peak_table.currentRow()
         item = owner.peak_table.item(row, 0) if row >= 0 else None
+        peak = owner._peak_at_table_row(row, selected)
         # Check the table's stable ID too: stale/reordered rows must not edit a
         # different peak. Splitting is immediate, with no pending drag target.
         valid = (selected is not None and selected.visible
-                 and 0 <= row < len(selected.peaks) and item is not None
-                 and item.isSelected() and item.data(USER_ROLE) == selected.peaks[row].id
+                 and peak is not None and not peak.is_fitted and item is not None
+                 and item.isSelected() and item.data(USER_ROLE) == peak.id
                  and any(trace.dataset_id == selected.id for trace in self._scene.traces)
                  and event.hit_region in ("plot", "plot_y1", "plot_y2")
                  and (not self.consumer.split_y_axes

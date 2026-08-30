@@ -30,6 +30,7 @@ from .dialogs import (
     DirectoryImportDialog,
     FractionRangeDialog,
     GradientDialog,
+    IntegrationListDialog,
     LegendComposerDialog,
     LabDatabaseDialog,
     MetadataDialog,
@@ -73,7 +74,13 @@ from .naming import (
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
-from .peak_fitting import fit_peak
+from .peak_fitting import (
+    apply_fit_result,
+    clear_legacy_fit,
+    fit_peak,
+    fitted_peak_from_result,
+    mirror_fitted_peak_for_legacy,
+)
 from .preset_store import (
     load_preset_store_with_metadata,
     merge_preset_sources,
@@ -242,6 +249,15 @@ MOUSE_MODE_IDS = (
     "move_trace",
     "annotation",
 )
+
+PEAK_NOTES_COLUMN = 18
+PEAK_TYPE_COLUMN = 19
+PEAK_PARENT_COLUMN = 20
+PEAK_FIT_MODEL_COLUMN = 21
+PEAK_FIT_R2_COLUMN = 22
+PEAK_FIT_RMSE_COLUMN = 23
+PEAK_FIT_AIC_COLUMN = 24
+PEAK_COLUMN_COUNT = 25
 
 
 def _resolved_plot_font(family: str):
@@ -517,6 +533,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.translator = Translator(self._application_language)
         self._updating_table = False
+        self._peak_selection_sync_guard = False
+        self._integration_list_dialog = None
         self._dataset_column_order = self._settings.get(DATASET_COLUMN_ORDER)
         self._dataset_header_update_guard = False
         self._dataset_selection_sync_guard = False
@@ -1390,6 +1408,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fit_peak_button = QtWidgets.QPushButton()
         self.select_all_peaks_button = QtWidgets.QPushButton()
         self.delete_peak_button = QtWidgets.QPushButton()
+        self.integration_list_button = QtWidgets.QPushButton()
         integration_controls.addWidget(self.baseline_label, 0, 0)
         integration_controls.addWidget(self.baseline_combo, 0, 1, 1, 2)
         integration_controls.addWidget(self.integrate_button, 1, 0)
@@ -1403,7 +1422,8 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.fraction_interval_spin, 4, 1)
         integration_controls.addWidget(self.clear_fractions_button, 4, 2)
         integration_controls.addWidget(self.fraction_numeric_button, 5, 0, 1, 3)
-        integration_controls.setRowStretch(6, 1)
+        integration_controls.addWidget(self.integration_list_button, 6, 0, 1, 3)
+        integration_controls.setRowStretch(7, 1)
 
         controls.addWidget(self.display_group, 4)
         controls.addWidget(self.navigation_group, 2)
@@ -1412,7 +1432,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.peak_title = QtWidgets.QLabel()
         self.peak_title.setFont(font)
         analysis_layout.addWidget(self.peak_title)
-        self.peak_table = QtWidgets.QTableWidget(0, 19)
+        self.peak_table = QtWidgets.QTableWidget(0, PEAK_COLUMN_COUNT)
         self.peak_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.peak_table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
         edit_triggers = (
@@ -1460,6 +1480,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.auto_detect_button.clicked.connect(self.auto_detect_peaks)
         self.fit_peak_button.clicked.connect(self.fit_selected_peak)
         self.select_all_peaks_button.clicked.connect(self.peak_table.selectAll)
+        self.integration_list_button.clicked.connect(self.open_integration_list)
         self.move_trace_button.toggled.connect(self._toggle_move_mode)
         self.axis_labels_button.clicked.connect(self.edit_axis_labels)
         self.legend_settings_button.clicked.connect(self.edit_legend_composer)
@@ -1577,6 +1598,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "visible",
             "color",
             "peaks",
+            "fitted_peaks",
         )
         return {
             "method": deepcopy(self.project.method),
@@ -2033,6 +2055,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.auto_detect_button.setText(t("auto_detect"))
         self.fit_peak_button.setText(t("fit_peak"))
         self.select_all_peaks_button.setText(t("select_all_peaks"))
+        self.integration_list_button.setText(t("integration_list"))
         self.peak_title.setText(t("peaks"))
         self._set_peak_headers()
         self.japanese_action.setChecked(self._application_language == "ja")
@@ -2063,8 +2086,19 @@ class MainWindow(QtWidgets.QMainWindow):
             "ベースライン" if ja else "Baseline",
             "方法" if ja else "Method",
             "備考" if ja else "Notes",
+            "種別" if ja else "Type",
+            "親ピーク" if ja else "Parent peak",
+            "フィットモデル" if ja else "Fit model",
+            "Fit R²",
+            "Fit RMSE (µV)",
+            "Fit AIC",
         )
-        self.peak_table.setHorizontalHeaderLabels(headers)
+        tables = [self.peak_table]
+        if self._integration_list_dialog is not None:
+            tables.append(self._integration_list_dialog.table)
+        for table in tables:
+            table.setHorizontalHeaderLabels(headers)
+        self._retranslate_integration_list()
 
     def set_language(self, language: str):
         self._application_language = language if language in ("ja", "en") else "ja"
@@ -2432,6 +2466,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_peak_table()
         self._plot()
 
+    def _display_peaks(self, dataset=None):
+        dataset = self._selected_dataset() if dataset is None else dataset
+        return dataset.display_peaks() if dataset is not None else []
+
+    def _peak_at_table_row(self, row: int, dataset=None):
+        peaks = self._display_peaks(dataset)
+        return peaks[row] if 0 <= row < len(peaks) else None
+
     def _selected_peak_rows(self):
         selection = self.peak_table.selectionModel()
         if selection is None:
@@ -2439,41 +2481,92 @@ class MainWindow(QtWidgets.QMainWindow):
         return sorted({index.row() for index in selection.selectedRows()})
 
     def _selected_peak_ids(self):
+        return self._selected_peak_ids_from_table(self.peak_table)
+
+    @staticmethod
+    def _selected_peak_ids_from_table(table):
         ids = []
-        for row in self._selected_peak_rows():
-            item = self.peak_table.item(row, 0)
+        selection = table.selectionModel()
+        rows = (
+            sorted({index.row() for index in selection.selectedRows()})
+            if selection is not None else []
+        )
+        for row in rows:
+            item = table.item(row, 0)
             if item is not None and item.data(USER_ROLE):
                 ids.append(item.data(USER_ROLE))
         return ids
 
     def _select_peak_ids(self, peak_ids):
+        self._select_peak_ids_in_table(self.peak_table, peak_ids)
+
+    @staticmethod
+    def _select_peak_ids_in_table(table, peak_ids):
         wanted = set(peak_ids or [])
+        table.clearSelection()
         if not wanted:
             return
         matching_rows = []
-        for row in range(self.peak_table.rowCount()):
-            item = self.peak_table.item(row, 0)
+        for row in range(table.rowCount()):
+            item = table.item(row, 0)
             if item is not None and item.data(USER_ROLE) in wanted:
                 matching_rows.append(row)
         if not matching_rows:
             return
-        self.peak_table.setCurrentCell(matching_rows[0], 0)
+        table.setCurrentCell(matching_rows[0], 0)
         for row in matching_rows:
             selection = QtWidgets.QTableWidgetSelectionRange(
-                row, 0, row, self.peak_table.columnCount() - 1
+                row, 0, row, table.columnCount() - 1
             )
-            self.peak_table.setRangeSelected(selection, True)
+            table.setRangeSelected(selection, True)
 
     def _refresh_peak_table(self, selected_peak_ids=None):
         dataset = self._selected_dataset()
-        peaks = dataset.peaks if dataset else []
         if selected_peak_ids is None:
             selected_peak_ids = self._selected_peak_ids()
-        self.peak_table.blockSignals(True)
-        self.peak_table.setRowCount(len(peaks))
+        self._populate_peak_table(
+            self.peak_table, dataset, selected_peak_ids
+        )
+        dialog = self._integration_list_dialog
+        if dialog is not None:
+            dialog.dataset_label.setText(
+                (dataset.label or dataset.original_filename)
+                if dataset is not None
+                else self.translator.text("no_dataset")
+            )
+            self._populate_peak_table(
+                dialog.table, dataset, selected_peak_ids
+            )
+
+    def _populate_peak_table(self, table, dataset, selected_peak_ids):
+        peaks = self._display_peaks(dataset)
+        parent_numbers = {
+            peak.id: index
+            for index, peak in enumerate(dataset.peaks, 1)
+        } if dataset is not None else {}
+        fitted_number = 0
+        table.blockSignals(True)
+        table.setRowCount(len(peaks))
         for row, peak in enumerate(peaks):
+            if peak.is_fitted:
+                fitted_number += 1
+                row_label = "F%d" % fitted_number
+                peak_type = "フィット" if self._application_language == "ja" else "Fit"
+                parent_label = (
+                    "#%d" % parent_numbers[peak.parent_peak_id]
+                    if peak.parent_peak_id in parent_numbers
+                    else "?"
+                )
+                baseline_text = ""
+                method_text = peak.fit_model.upper()
+            else:
+                row_label = str(parent_numbers.get(peak.id, row + 1))
+                peak_type = "積分" if self._application_language == "ja" else "Integration"
+                parent_label = ""
+                baseline_text = peak.baseline_mode
+                method_text = "auto" if peak.integration_source == "auto" else "manual"
             values = (
-                str(row + 1),
+                row_label,
                 _format(peak.start_min),
                 _format(peak.end_min),
                 _format(peak.retention_time_min),
@@ -2489,31 +2582,53 @@ class MainWindow(QtWidgets.QMainWindow):
                 _format(peak.gradient_d_pct),
                 _format(peak.amount_nmol),
                 _format(peak.amount_ug),
-                peak.baseline_mode,
-                "auto" if peak.integration_source == "auto" else "manual",
+                baseline_text,
+                method_text,
                 peak.notes,
+                peak_type,
+                parent_label,
+                peak.fit_model.upper() if peak.is_fitted else "",
+                _format(peak.fit_r_squared) if peak.is_fitted else "",
+                _format(peak.fit_rmse_uv) if peak.is_fitted else "",
+                _format(peak.fit_aic) if peak.is_fitted else "",
             )
             for column, value in enumerate(values):
                 item = (
                     QtWidgets.QTableWidgetItem(value)
-                    if column == 18
+                    if column == PEAK_NOTES_COLUMN
                     else _read_only_item(value)
                 )
                 if column == 0:
                     item.setData(USER_ROLE, peak.id)
-                self.peak_table.setItem(row, column, item)
-        self.peak_table.resizeColumnsToContents()
-        self.peak_table.setColumnWidth(18, 240)
-        self.peak_table.clearSelection()
-        self._select_peak_ids(selected_peak_ids)
-        self.peak_table.blockSignals(False)
+                table.setItem(row, column, item)
+        table.resizeColumnsToContents()
+        table.setColumnWidth(PEAK_NOTES_COLUMN, 240)
+        self._select_peak_ids_in_table(table, selected_peak_ids)
+        table.blockSignals(False)
 
     def _peak_selection_changed(self):
+        if self._updating_table or self._peak_selection_sync_guard:
+            return
+        dialog = self._integration_list_dialog
+        if dialog is not None:
+            self._peak_selection_sync_guard = True
+            try:
+                dialog.table.blockSignals(True)
+                self._select_peak_ids_in_table(
+                    dialog.table, self._selected_peak_ids()
+                )
+                dialog.table.blockSignals(False)
+            finally:
+                self._peak_selection_sync_guard = False
         if self.edit_peak_button.isChecked():
-            dataset = self._selected_dataset()
             row = self.peak_table.currentRow()
-            if dataset is not None and 0 <= row < len(dataset.peaks):
-                self._edit_range_peak_id = dataset.peaks[row].id
+            peak = self._peak_at_table_row(row)
+            if peak is not None and not peak.is_fitted:
+                self._edit_range_peak_id = peak.id
+            else:
+                self._edit_range_peak_id = None
+                self.edit_peak_button.setChecked(False)
+                return
         if (self._screen_preview is None and self._is_lightweight_rendering()
                 and self._peak_overlay_artists):
             self._apply_peak_selection_styles()
@@ -2545,21 +2660,37 @@ class MainWindow(QtWidgets.QMainWindow):
                 baseline_line.set_color(color)
                 baseline_line.set_alpha(0.95 if selected else 0.55)
                 baseline_line.set_linewidth(1.4 if selected else 0.9)
+            fit_line = overlay.get("fit_line")
+            if fit_line is not None:
+                fit_line.set_color("#f59e0b" if selected else "#c026d3")
+                fit_line.set_linewidth(
+                    max(
+                        1.8 if selected else 1.2,
+                        self.project.method.line_width,
+                    )
+                )
 
     def _peak_item_double_clicked(self, item):
-        if item.column() == 18:
+        if item.column() == PEAK_NOTES_COLUMN:
             self.peak_table.editItem(item)
+            return
+        peak = self._peak_at_table_row(item.row())
+        if peak is not None and peak.is_fitted:
+            self.fit_selected_peak()
             return
         self.edit_peak_properties()
 
     def _peak_item_changed(self, item):
-        if self._updating_table or item.column() != 18:
+        self._peak_notes_item_changed(self.peak_table, item)
+
+    def _peak_notes_item_changed(self, table, item):
+        if self._updating_table or item.column() != PEAK_NOTES_COLUMN:
             return
         dataset = self._selected_dataset()
-        row = item.row()
-        if dataset is None or not (0 <= row < len(dataset.peaks)):
+        peaks = self._display_peaks(dataset)
+        peak = peaks[item.row()] if 0 <= item.row() < len(peaks) else None
+        if peak is None:
             return
-        peak = dataset.peaks[row]
         notes = item.text().strip()
         if notes == peak.notes:
             return
@@ -2570,6 +2701,92 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.project.dirty = True
         self._update_title()
+        self._refresh_peak_table(
+            self._selected_peak_ids_from_table(table)
+        )
+
+    def open_integration_list(self):
+        dialog = self._integration_list_dialog
+        if dialog is None:
+            dialog = IntegrationListDialog(
+                PEAK_COLUMN_COUNT,
+                language=self._application_language,
+                parent=self,
+            )
+            self._integration_list_dialog = dialog
+            dialog.table.itemSelectionChanged.connect(
+                self._detached_peak_selection_changed
+            )
+            dialog.table.itemChanged.connect(
+                lambda item: self._peak_notes_item_changed(dialog.table, item)
+            )
+            dialog.table.itemDoubleClicked.connect(
+                self._detached_peak_item_double_clicked
+            )
+            dialog.edit_button.clicked.connect(
+                lambda: self._run_detached_peak_action(
+                    self.edit_peak_properties
+                )
+            )
+            dialog.fit_button.clicked.connect(
+                lambda: self._run_detached_peak_action(
+                    self.fit_selected_peak
+                )
+            )
+            dialog.delete_button.clicked.connect(
+                lambda: self._run_detached_peak_action(self.delete_peak)
+            )
+            self._set_peak_headers()
+        self._refresh_peak_table(self._selected_peak_ids())
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _retranslate_integration_list(self):
+        dialog = self._integration_list_dialog
+        if dialog is None:
+            return
+        ja = self._application_language == "ja"
+        dialog.setWindowTitle("積分リスト" if ja else "Integration list")
+        dialog.edit_button.setText("範囲編集…" if ja else "Edit range…")
+        dialog.fit_button.setText(
+            "フィット／再計算" if ja else "Fit / recalculate"
+        )
+        dialog.delete_button.setText("削除" if ja else "Delete")
+
+    def _detached_peak_selection_changed(self):
+        if self._updating_table or self._peak_selection_sync_guard:
+            return
+        dialog = self._integration_list_dialog
+        if dialog is None:
+            return
+        ids = self._selected_peak_ids_from_table(dialog.table)
+        self._peak_selection_sync_guard = True
+        try:
+            self.peak_table.blockSignals(True)
+            self._select_peak_ids_in_table(self.peak_table, ids)
+            self.peak_table.blockSignals(False)
+        finally:
+            self._peak_selection_sync_guard = False
+        self._peak_selection_changed()
+
+    def _run_detached_peak_action(self, action):
+        self._detached_peak_selection_changed()
+        action()
+
+    def _detached_peak_item_double_clicked(self, item):
+        dialog = self._integration_list_dialog
+        if dialog is None:
+            return
+        if item.column() == PEAK_NOTES_COLUMN:
+            dialog.table.editItem(item)
+            return
+        self._detached_peak_selection_changed()
+        peak = self._peak_at_table_row(item.row())
+        if peak is not None and peak.is_fitted:
+            self.fit_selected_peak()
+        else:
+            self.edit_peak_properties()
 
     def _sync_method_controls(self):
         index = self.unit_combo.findData(self.project.method.display_unit)
@@ -3097,9 +3314,10 @@ class MainWindow(QtWidgets.QMainWindow):
             selected_dataset_ids.add(selected.id)
         selected_peak_ids = set()
         if selected is not None:
+            display_peaks = selected.display_peaks()
             for row in self._selected_peak_rows():
-                if 0 <= row < len(selected.peaks):
-                    selected_peak_ids.add(selected.peaks[row].id)
+                if 0 <= row < len(display_peaks):
+                    selected_peak_ids.add(display_peaks[row].id)
         marker_ids = {marker.id for marker in self.project.vertical_markers}
         self._selected_vertical_marker_ids.intersection_update(marker_ids)
         if self._selected_vertical_marker_id in marker_ids:
@@ -3255,11 +3473,17 @@ class MainWindow(QtWidgets.QMainWindow):
                     overlay["fit_line"] = target_axes.plot(
                         overlay_spec.fit_x,
                         overlay_spec.fit_y,
-                        color="#c026d3",
-                        linewidth=max(1.2, self.project.method.line_width),
+                        color=(
+                            "#f59e0b" if is_selected_peak else "#c026d3"
+                        ),
+                        linewidth=max(
+                            1.8 if is_selected_peak else 1.2,
+                            self.project.method.line_width,
+                        ),
                         linestyle=":",
                         alpha=0.95,
                         zorder=18,
+                        label=overlay_spec.fit_label or None,
                     )[0]
                 if overlay_spec.label_x is not None:
                     target_axes.annotate(
@@ -3382,6 +3606,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 for dataset in self.project.datasets
                 if dataset.visible and dataset.id in self._dataset_lines
             ]
+            for overlay in base_scene.peak_overlays:
+                artist = self._peak_overlay_artists.get(overlay.peak_id, {}).get(
+                    "fit_line"
+                )
+                if artist is not None and overlay.fit_label:
+                    handles.append(artist)
+                    labels.append(overlay.fit_label)
             if self.axes_gradient is not None:
                 gradient_handles, gradient_labels = (
                     self.axes_gradient.get_legend_handles_labels()
@@ -3603,16 +3834,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_edit_range_mode(self, enabled: bool):
         if enabled:
-            dataset = self._selected_dataset()
             row = self.peak_table.currentRow()
-            if dataset is None or not (0 <= row < len(dataset.peaks)):
+            peak = self._peak_at_table_row(row)
+            if peak is None or peak.is_fitted:
                 QtWidgets.QMessageBox.information(
                     self, APP_NAME, self.translator("select_peak")
                 )
                 self.edit_peak_button.setChecked(False)
                 return
             self._mouse_tool_toggled("edit_peak", True)
-            self._edit_range_peak_id = dataset.peaks[row].id
+            self._edit_range_peak_id = peak.id
             self._deactivate_toolbar_navigation()
             self.integrate_button.setChecked(False)
             self.split_peak_button.setChecked(False)
@@ -3638,9 +3869,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_split_mode(self, enabled: bool):
         if enabled:
-            dataset = self._selected_dataset()
             row = self.peak_table.currentRow()
-            if dataset is None or not (0 <= row < len(dataset.peaks)):
+            peak = self._peak_at_table_row(row)
+            if peak is None or peak.is_fitted:
                 QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("select_peak"))
                 self.split_peak_button.setChecked(False)
                 return
@@ -3839,17 +4070,31 @@ class MainWindow(QtWidgets.QMainWindow):
     def _split_selected_peak_at(self, displayed_time: float):
         dataset = self._selected_dataset()
         row = self.peak_table.currentRow()
-        if dataset is None or not (0 <= row < len(dataset.peaks)):
+        peak = self._peak_at_table_row(row, dataset)
+        if dataset is None or peak is None or peak.is_fitted:
+            return
+        peak_index = next(
+            (index for index, item in enumerate(dataset.peaks) if item.id == peak.id),
+            -1,
+        )
+        if peak_index < 0:
             return
         raw_time = float(displayed_time) - dataset.x_shift_min
         before = self._capture_analysis_state()
         try:
             left, right = split_peak_region(
                 dataset,
-                dataset.peaks[row],
+                peak,
                 raw_time,
             )
-            dataset.peaks[row : row + 1] = [left, right]
+            clear_legacy_fit(left)
+            clear_legacy_fit(right)
+            dataset.peaks[peak_index : peak_index + 1] = [left, right]
+            dataset.fitted_peaks = [
+                child
+                for child in dataset.fitted_peaks
+                if child.parent_peak_id != peak.id
+            ]
             recalculate_dataset_peaks(dataset)
         except ValueError as exc:
             self._restore_analysis_state(before)
@@ -4739,10 +4984,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def edit_peak_properties(self):
         dataset = self._selected_dataset()
         row = self.peak_table.currentRow()
-        if dataset is None or not (0 <= row < len(dataset.peaks)):
+        peak = self._peak_at_table_row(row, dataset)
+        if dataset is None or peak is None:
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
-        peak = dataset.peaks[row]
+        if peak.is_fitted:
+            self.fit_selected_peak()
+            return
         peak_id = peak.id
         before = self._capture_analysis_state()
         dialog = PeakRangeDialog(peak, float(dataset.time_min[0]), float(dataset.time_min[-1]), self._application_language, self)
@@ -4771,18 +5019,34 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def delete_peak(self):
         dataset = self._selected_dataset()
-        rows = self._selected_peak_rows()
-        if not rows and self.peak_table.currentRow() >= 0:
-            rows = [self.peak_table.currentRow()]
-        rows = [row for row in rows if 0 <= row < len(dataset.peaks)] if dataset is not None else []
-        if dataset is None or not rows:
+        peak_ids = set(self._selected_peak_ids())
+        current = self._peak_at_table_row(self.peak_table.currentRow(), dataset)
+        if not peak_ids and current is not None:
+            peak_ids.add(current.id)
+        if dataset is None or not peak_ids:
             return
         before = self._capture_analysis_state()
-        for row in sorted(rows, reverse=True):
-            del dataset.peaks[row]
-        recalculate_dataset_peaks(dataset)
+        removed_parent_ids = {
+            peak.id for peak in dataset.peaks if peak.id in peak_ids
+        }
+        affected_parent_ids = {
+            peak.parent_peak_id
+            for peak in dataset.fitted_peaks
+            if peak.id in peak_ids
+        }
+        dataset.peaks = [peak for peak in dataset.peaks if peak.id not in peak_ids]
+        dataset.fitted_peaks = [
+            peak
+            for peak in dataset.fitted_peaks
+            if peak.id not in peak_ids
+            and peak.parent_peak_id not in removed_parent_ids
+        ]
+        if removed_parent_ids:
+            recalculate_dataset_peaks(dataset)
+        for parent_id in affected_parent_ids - removed_parent_ids:
+            self._sync_legacy_fit_for_parent(dataset, parent_id)
         self._push_undo_snapshot(
-            before, self._history_label("積分ピークを削除", "Delete integrated peaks")
+            before, self._history_label("ピークを削除", "Delete peaks")
         )
         self.project.dirty = True
         self._refresh_peak_table()
@@ -4838,9 +5102,21 @@ class MainWindow(QtWidgets.QMainWindow):
     def fit_selected_peak(self):
         dataset = self._selected_dataset()
         row = self.peak_table.currentRow()
-        if dataset is None or not (0 <= row < len(dataset.peaks)):
+        selected_peak = self._peak_at_table_row(row, dataset)
+        if dataset is None or selected_peak is None:
             QtWidgets.QMessageBox.information(
                 self, APP_NAME, self.translator("select_peak")
+            )
+            return
+        fitted_peak = selected_peak if selected_peak.is_fitted else None
+        parent_peak = (
+            dataset.parent_peak_for(selected_peak)
+            if fitted_peak is not None
+            else selected_peak
+        )
+        if parent_peak is None:
+            QtWidgets.QMessageBox.warning(
+                self, self.translator("warning"), self.translator("missing_fit_parent")
             )
             return
         labels = (
@@ -4865,24 +5141,32 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         model = dict(labels).get(selected_label, "auto")
         before = self._capture_analysis_state()
-        peak = dataset.peaks[row]
         try:
-            result = fit_peak(dataset, peak, model)
+            result = fit_peak(dataset, parent_peak, model)
         except ValueError as exc:
             QtWidgets.QMessageBox.warning(
                 self, self.translator("warning"), str(exc)
             )
             return
-        peak.fit_model = result.model
-        peak.fit_parameters = dict(result.parameters)
-        peak.fit_retention_time_min = result.retention_time_min
-        peak.fit_rmse_uv = result.rmse_uv
-        peak.fit_r_squared = result.r_squared
-        peak.fit_aic = result.aic
+        if fitted_peak is None:
+            fitted_peak = fitted_peak_from_result(parent_peak, result)
+            dataset.fitted_peaks.append(fitted_peak)
+        else:
+            apply_fit_result(fitted_peak, parent_peak, result)
+        mirror_fitted_peak_for_legacy(parent_peak, fitted_peak)
         self._push_undo_snapshot(
-            before, self._history_label("ピークフィット", "Fit peak")
+            before,
+            self._history_label(
+                "フィット由来ピークを再計算"
+                if selected_peak.is_fitted
+                else "フィット由来ピークを追加",
+                "Recalculate fitted peak"
+                if selected_peak.is_fitted
+                else "Add fitted peak",
+            ),
         )
         self.project.dirty = True
+        self._refresh_peak_table([fitted_peak.id])
         self._plot()
         self._update_title()
         self.statusBar().showMessage(
@@ -4890,6 +5174,23 @@ class MainWindow(QtWidgets.QMainWindow):
             % (result.model.upper(), result.r_squared, result.rmse_uv),
             7000,
         )
+
+    def _sync_legacy_fit_for_parent(self, dataset: Dataset, parent_id: str):
+        parent = next(
+            (peak for peak in dataset.peaks if peak.id == parent_id),
+            None,
+        )
+        if parent is None:
+            return
+        children = [
+            peak
+            for peak in dataset.fitted_peaks
+            if peak.parent_peak_id == parent_id
+        ]
+        if children:
+            mirror_fitted_peak_for_legacy(parent, children[-1])
+        else:
+            clear_legacy_fit(parent)
 
     def _reset_view(self):
         self._push_view_history()

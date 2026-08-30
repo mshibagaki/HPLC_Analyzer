@@ -64,7 +64,14 @@ from hplc_app.parser import (
     load_ascii_file,
     load_chromatogram_file,
 )
-from hplc_app.peak_fitting import emg_profile, fit_peak, gaussian_profile
+from hplc_app.peak_fitting import (
+    PeakFitResult,
+    emg_profile,
+    fit_peak,
+    fitted_peak_from_result,
+    gaussian_profile,
+    mirror_fitted_peak_for_legacy,
+)
 from hplc_app.preset_store import (
     apply_preset_operation,
     build_preset_package,
@@ -1419,6 +1426,43 @@ class AnalysisTests(unittest.TestCase):
         self.assertGreater(tailed.parameters["tau_min"], 0.2)
         self.assertGreater(tailed.r_squared, 0.98)
 
+    def test_explicit_fitted_rows_do_not_enter_integration_denominator(self):
+        dataset = self.synthetic_dataset()
+        dataset.peaks = [
+            PeakRegion(start_min=3.5, end_min=6.5),
+            PeakRegion(start_min=6.6, end_min=8.0),
+        ]
+        recalculate_dataset_peaks(dataset)
+        parent = dataset.peaks[0]
+        original = (
+            parent.retention_time_min,
+            parent.raw_area_uv_sec,
+            parent.area_percent,
+            parent.fwhm_min,
+        )
+        fitted = fitted_peak_from_result(
+            parent, fit_peak(dataset, parent, "gaussian")
+        )
+        dataset.fitted_peaks = [fitted]
+        recalculate_dataset_peaks(dataset)
+        self.assertEqual(
+            (
+                parent.retention_time_min,
+                parent.raw_area_uv_sec,
+                parent.area_percent,
+                parent.fwhm_min,
+            ),
+            original,
+        )
+        self.assertAlmostEqual(
+            sum(peak.area_percent for peak in dataset.peaks), 100.0, places=6
+        )
+        self.assertIsNone(fitted.area_percent)
+        self.assertEqual(
+            [peak.id for peak in dataset.display_peaks()],
+            [dataset.peaks[0].id, fitted.id, dataset.peaks[1].id],
+        )
+
     def test_manual_baseline_is_saved_and_used(self):
         dataset = self.synthetic_dataset()
         peak = integrate_peak(
@@ -1584,6 +1628,46 @@ class ProjectTests(unittest.TestCase):
             migrated["datasets"][0]["peaks"][0]["future_peak_field"]
             ["kept_during_migration"]
         )
+
+    def test_schema_106_migrates_legacy_fit_to_parent_linked_child(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 106,
+            "datasets": [{
+                "peaks": [{
+                    "id": "peak-parent",
+                    "start_min": 1.0,
+                    "end_min": 2.0,
+                    "retention_time_min": 1.4,
+                    "raw_area_uv_sec": 123.5,
+                    "area_percent": 61.25,
+                    "fwhm_min": 0.15,
+                    "fit_model": "gaussian",
+                    "fit_parameters": {
+                        "amplitude_uv": 800.0,
+                        "center_min": 1.45,
+                        "sigma_min": 0.12,
+                    },
+                    "fit_retention_time_min": 1.45,
+                    "fit_r_squared": 0.998,
+                }],
+            }],
+        }
+        untouched = deepcopy(manifest)
+        migrated = migrate_project_manifest(manifest)
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
+        parent = migrated["datasets"][0]["peaks"][0]
+        child = migrated["datasets"][0]["fitted_peaks"][0]
+        self.assertEqual(parent["raw_area_uv_sec"], 123.5)
+        self.assertEqual(parent["area_percent"], 61.25)
+        self.assertEqual(parent["fwhm_min"], 0.15)
+        self.assertEqual(child["peak_kind"], "fitted")
+        self.assertEqual(child["parent_peak_id"], "peak-parent")
+        self.assertEqual(child["retention_time_min"], 1.45)
+        self.assertIsNone(child["raw_area_uv_sec"])
+        self.assertIsNone(child["area_percent"])
+        self.assertEqual(migrate_project_manifest(migrated), migrated)
 
     def test_schema_102_creates_one_stable_run_per_legacy_dataset(self):
         manifest = {
@@ -2835,6 +2919,20 @@ class ProjectTests(unittest.TestCase):
         dataset.peaks[0].fit_rmse_uv = 3.0
         dataset.peaks[0].fit_r_squared = 0.998
         dataset.peaks[0].fit_aic = 42.0
+        fitted_peak = fitted_peak_from_result(
+            dataset.peaks[0],
+            PeakFitResult(
+                "gaussian",
+                dict(dataset.peaks[0].fit_parameters),
+                1.5,
+                3.0,
+                0.998,
+                42.0,
+                25,
+            ),
+        )
+        dataset.fitted_peaks = [fitted_peak]
+        mirror_fitted_peak_for_legacy(dataset.peaks[0], fitted_peak)
         project = Project(datasets=[dataset])
         project.method.view_mode = "overview_detail"
         project.method.x_tick_mode = "manual"
@@ -2895,6 +2993,14 @@ class ProjectTests(unittest.TestCase):
                 loaded.datasets[0].peaks[0].fit_parameters["sigma_min"], 0.2
             )
             self.assertEqual(loaded.datasets[0].peaks[0].fit_r_squared, 0.998)
+            self.assertEqual(len(loaded.datasets[0].fitted_peaks), 1)
+            loaded_fit = loaded.datasets[0].fitted_peaks[0]
+            self.assertTrue(loaded_fit.is_fitted)
+            self.assertEqual(
+                loaded_fit.parent_peak_id, loaded.datasets[0].peaks[0].id
+            )
+            self.assertEqual(loaded_fit.fit_model, "gaussian")
+            self.assertIsNone(loaded_fit.area_percent)
             self.assertEqual(len(loaded.annotations), 1)
             self.assertEqual(loaded.annotations[0].text, "LL-37")
             self.assertEqual(loaded.annotations[0].dataset_id, dataset.id)
@@ -3174,6 +3280,19 @@ class ProjectTests(unittest.TestCase):
         dataset.measurement.aux_range_au_per_v = 2.0
         dataset.peaks = [PeakRegion(start_min=1.0, end_min=2.0)]
         recalculate_dataset_peaks(dataset)
+        fitted_peak = fitted_peak_from_result(
+            dataset.peaks[0],
+            PeakFitResult(
+                "gaussian",
+                {"amplitude_uv": 100.0, "center_min": 1.5, "sigma_min": 0.1},
+                1.5,
+                2.0,
+                0.99,
+                10.0,
+                20,
+            ),
+        )
+        dataset.fitted_peaks = [fitted_peak]
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "peaks.csv")
             export_peak_csv(path, [dataset])
@@ -3183,10 +3302,22 @@ class ProjectTests(unittest.TestCase):
             self.assertIn("area_mAU_sec", rows[0])
             self.assertNotIn("raw_area_uV_min", rows[0])
             self.assertNotIn("area_mAU_min", rows[0])
+            self.assertIn("peak_type", rows[0])
+            self.assertIn("parent_peak_id", rows[0])
+            self.assertEqual(len(rows), 3)
             raw_index = rows[0].index("raw_area_uV_sec")
             mau_index = rows[0].index("area_mAU_sec")
             self.assertAlmostEqual(float(rows[1][raw_index]), dataset.peaks[0].raw_area_uv_sec)
             self.assertAlmostEqual(float(rows[1][mau_index]), dataset.peaks[0].area_mau_sec)
+            type_index = rows[0].index("peak_type")
+            parent_index = rows[0].index("parent_peak_id")
+            model_index = rows[0].index("fit_model")
+            self.assertEqual(rows[1][type_index], "integrated")
+            self.assertEqual(rows[2][0], dataset.label)
+            self.assertEqual(rows[2][1], "F1")
+            self.assertEqual(rows[2][type_index], "fitted")
+            self.assertEqual(rows[2][parent_index], dataset.peaks[0].id)
+            self.assertEqual(rows[2][model_index], "gaussian")
 
     def test_metadata_table_csv_contains_sample_conditions_and_source(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -3662,6 +3793,19 @@ class ProjectTests(unittest.TestCase):
         dataset.label = "Report sample"
         dataset.peaks = [PeakRegion(start_min=1.0, end_min=2.0)]
         recalculate_dataset_peaks(dataset)
+        fitted_peak = fitted_peak_from_result(
+            dataset.peaks[0],
+            PeakFitResult(
+                "gaussian",
+                {"amplitude_uv": 1000.0, "center_min": 1.5, "sigma_min": 0.12},
+                1.5,
+                3.0,
+                0.995,
+                15.0,
+                30,
+            ),
+        )
+        dataset.fitted_peaks = [fitted_peak]
         project = Project(title="Report test", datasets=[dataset])
         figures = analysis_report_figures(project, [dataset], "en")
         plot_axis = next(
@@ -3684,6 +3828,11 @@ class ProjectTests(unittest.TestCase):
             for cell in table.get_celld().values()
         ]
         self.assertIn("Area (mAU·sec)", report_cells)
+        self.assertIn("F1", report_cells)
+        self.assertIn("Fit GAUSSIAN -> #1", report_cells)
+        self.assertTrue(
+            any(line.get_color() == "#c026d3" for line in plot_axis.lines)
+        )
         for figure in figures:
             figure.clear()
 

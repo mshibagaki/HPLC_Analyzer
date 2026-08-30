@@ -110,6 +110,7 @@ class PyQtGraphSceneConsumer:
         self.overview_items = []
         self.trace_items = {}
         self.overview_trace_items = {}
+        self.fit_items = {}
         self.marker_items = {}
         self._marker_specs = ()
         self.annotation_items = {}
@@ -632,6 +633,7 @@ class PyQtGraphSceneConsumer:
             self.trace_items.clear()
             self.overview_trace_items.clear()
 
+        self.fit_items.clear()
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
         self.annotation_items.clear()
@@ -739,14 +741,18 @@ class PyQtGraphSceneConsumer:
                         overlay.axis_id,
                     )
             if overlay.fit_x is not None:
-                self._add(
+                fit_item = self._add(
                     self.pg.PlotCurveItem(
                         overlay.fit_x,
                         overlay.fit_y,
-                        pen=self.pg.mkPen("#c026d3", width=1.2),
+                        pen=self.pg.mkPen(
+                            "#f59e0b" if overlay.is_selected else "#c026d3",
+                            width=1.8 if overlay.is_selected else 1.2,
+                        ),
                     ),
                     overlay.axis_id,
                 )
+                self.fit_items[overlay.peak_id] = fit_item
             if overlay.label_x is not None:
                 text = self.pg.TextItem(
                     text=overlay.label_text,

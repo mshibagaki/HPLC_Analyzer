@@ -40,7 +40,16 @@ from .preset_store import (
     stable_preset_names,
 )
 from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
-from .qt_compat import CHECKED, ITEM_IS_EDITABLE, UNCHECKED, USER_ROLE, QtGui, QtWidgets, dialog_exec
+from .qt_compat import (
+    CHECKED,
+    ITEM_IS_EDITABLE,
+    QT_API,
+    UNCHECKED,
+    USER_ROLE,
+    QtGui,
+    QtWidgets,
+    dialog_exec,
+)
 
 
 def optional_float(text: str) -> Optional[float]:
@@ -3443,3 +3452,52 @@ class PeakRangeDialog(QtWidgets.QDialog):
         manual = self.baseline_mode.currentData() == "manual"
         self.baseline_start.setEnabled(manual)
         self.baseline_end.setEnabled(manual)
+
+
+class IntegrationListDialog(QtWidgets.QDialog):
+    """Non-modal, synchronized view of integrations and fitted peaks."""
+
+    def __init__(self, column_count: int, language: str = "ja", parent=None):
+        super().__init__(parent)
+        self.setModal(False)
+        self.setWindowTitle(
+            "積分リスト" if language == "ja" else "Integration list"
+        )
+        self.resize(1180, 440)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.dataset_label = QtWidgets.QLabel()
+        layout.addWidget(self.dataset_label)
+        self.table = QtWidgets.QTableWidget(0, column_count)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        edit_triggers = (
+            QtWidgets.QAbstractItemView.EditTrigger.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditTrigger.EditKeyPressed
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.DoubleClicked
+            | QtWidgets.QAbstractItemView.EditKeyPressed
+        )
+        self.table.setEditTriggers(edit_triggers)
+        self.table.setWordWrap(False)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table, 1)
+        actions = QtWidgets.QHBoxLayout()
+        self.edit_button = QtWidgets.QPushButton(
+            "範囲編集…" if language == "ja" else "Edit range…"
+        )
+        self.fit_button = QtWidgets.QPushButton(
+            "フィット／再計算" if language == "ja" else "Fit / recalculate"
+        )
+        self.delete_button = QtWidgets.QPushButton(
+            "削除" if language == "ja" else "Delete"
+        )
+        actions.addWidget(self.edit_button)
+        actions.addWidget(self.fit_button)
+        actions.addWidget(self.delete_button)
+        actions.addStretch(1)
+        close_buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Close
+        )
+        close_buttons.rejected.connect(self.close)
+        actions.addWidget(close_buttons)
+        layout.addLayout(actions)

@@ -316,6 +316,86 @@ def migrate_105_to_106(manifest: Manifest) -> Manifest:
     return migrated
 
 
+_FITTED_EMPTY_FIELDS = (
+    "raw_height_uv",
+    "raw_area_uv_min",
+    "raw_area_uv_sec",
+    "height_mau",
+    "area_mau_min",
+    "area_mau_sec",
+    "area_percent",
+    "fwhm_min",
+    "gradient_a_pct",
+    "gradient_b_pct",
+    "gradient_c_pct",
+    "gradient_d_pct",
+    "amount_nmol",
+    "amount_ug",
+)
+
+
+def _migration_fitted_peak_id(parent_id: str, used_ids: set) -> str:
+    base = "%s-fit" % (parent_id or "peak")
+    candidate = base
+    suffix = 2
+    while candidate in used_ids:
+        candidate = "%s-%d" % (base, suffix)
+        suffix += 1
+    used_ids.add(candidate)
+    return candidate
+
+
+def migrate_106_to_107(manifest: Manifest) -> Manifest:
+    """Separate legacy fit results without changing their parent integration."""
+
+    migrated = _with_schema(manifest, 107)
+    datasets = migrated.get("datasets", [])
+    if not isinstance(datasets, list):
+        raise ProjectMigrationError("Project datasets must be an array")
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            raise ProjectMigrationError("Each project dataset must be an object")
+        peaks = dataset.get("peaks", [])
+        if not isinstance(peaks, list):
+            raise ProjectMigrationError("Dataset peaks must be an array")
+        fitted_peaks = dataset.setdefault("fitted_peaks", [])
+        if not isinstance(fitted_peaks, list):
+            raise ProjectMigrationError("Dataset fitted peaks must be an array")
+        used_ids = {
+            str(peak.get("id", "") or "")
+            for peak in peaks + fitted_peaks
+            if isinstance(peak, dict)
+        }
+        for peak in peaks:
+            if not isinstance(peak, dict):
+                raise ProjectMigrationError("Each peak must be an object")
+            model = str(peak.get("fit_model", "") or "")
+            parameters = peak.get("fit_parameters", {}) or {}
+            if not model or not isinstance(parameters, dict) or not parameters:
+                continue
+            parent_id = str(peak.get("id", "") or "")
+            if any(
+                isinstance(child, dict)
+                and str(child.get("parent_peak_id", "") or "") == parent_id
+                and str(child.get("fit_model", "") or "") == model
+                and child.get("fit_parameters", {}) == parameters
+                for child in fitted_peaks
+            ):
+                continue
+            child = deepcopy(peak)
+            child["id"] = _migration_fitted_peak_id(parent_id, used_ids)
+            child["peak_kind"] = "fitted"
+            child["parent_peak_id"] = parent_id
+            child["retention_time_min"] = peak.get("fit_retention_time_min")
+            child["integration_source"] = "fit"
+            child["split_group_id"] = ""
+            child["notes"] = ""
+            for field_name in _FITTED_EMPTY_FIELDS:
+                child[field_name] = None
+            fitted_peaks.append(child)
+    return migrated
+
+
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -334,6 +414,7 @@ V1_MIGRATIONS: Dict[int, Migration] = {
     103: migrate_103_to_104,
     104: migrate_104_to_105,
     105: migrate_105_to_106,
+    106: migrate_106_to_107,
 }
 
 

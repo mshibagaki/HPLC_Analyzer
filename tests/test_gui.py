@@ -47,6 +47,9 @@ from hplc_app.gui import (
     DATASET_TIMESTAMP_COLUMN,
     DATASET_WAVELENGTH_COLUMN,
     DATASET_X_SHIFT_COLUMN,
+    PEAK_COLUMN_COUNT,
+    PEAK_NOTES_COLUMN,
+    PEAK_TYPE_COLUMN,
     MainWindow,
 )
 from hplc_app.models import (
@@ -59,7 +62,11 @@ from hplc_app.models import (
     WorkDirectory,
 )
 from hplc_app.parser import load_ascii_file
-from hplc_app.peak_fitting import PeakFitResult
+from hplc_app.peak_fitting import (
+    PeakFitResult,
+    fitted_peak_from_result,
+    mirror_fitted_peak_for_legacy,
+)
 from hplc_app.preset_store import (
     load_preset_store,
     load_preset_store_with_metadata,
@@ -2649,13 +2656,33 @@ class GuiTests(unittest.TestCase):
 
     def test_split_mode_uses_clicked_time_without_resetting_view(self):
         window = self.make_window()
-        window.project.datasets[0].peaks[0].start_min = 5.0
-        window.project.datasets[0].peaks[0].end_min = 10.0
+        dataset = window.project.datasets[0]
+        dataset.peaks[0].start_min = 5.0
+        dataset.peaks[0].end_min = 10.0
+        fitted = fitted_peak_from_result(
+            dataset.peaks[0],
+            PeakFitResult(
+                "gaussian",
+                {"amplitude_uv": 1000.0, "center_min": 7.0, "sigma_min": 0.5},
+                7.0,
+                2.0,
+                0.99,
+                12.0,
+                40,
+            ),
+        )
+        dataset.fitted_peaks = [fitted]
+        mirror_fitted_peak_for_legacy(dataset.peaks[0], fitted)
+        window._refresh_peak_table()
         window.axes.set_xlim(4.0, 12.0)
         window.peak_table.selectRow(0)
         window.split_peak_button.setChecked(True)
         window._split_selected_peak_at(7.5)
         self.assertEqual(len(window.project.datasets[0].peaks), 2)
+        self.assertEqual(window.project.datasets[0].fitted_peaks, [])
+        self.assertTrue(
+            all(not peak.fit_model for peak in window.project.datasets[0].peaks)
+        )
         self.assertEqual(window._selected_peak_rows(), [1])
         self.assertEqual(window.peak_table.currentRow(), 1)
         self.assertTrue(window.split_peak_button.isChecked())
@@ -2777,8 +2804,8 @@ class GuiTests(unittest.TestCase):
 
     def test_peak_notes_are_inline_editable_and_undoable(self):
         window = self.make_window()
-        self.assertEqual(window.peak_table.columnCount(), 19)
-        note_item = window.peak_table.item(0, 18)
+        self.assertEqual(window.peak_table.columnCount(), PEAK_COLUMN_COUNT)
+        note_item = window.peak_table.item(0, PEAK_NOTES_COLUMN)
         self.assertTrue(bool(note_item.flags() & ITEM_IS_EDITABLE))
         note_item.setText("LL-37 identified by MALDI-TOF MS")
         self.app.processEvents()
@@ -6720,6 +6747,14 @@ class GuiTests(unittest.TestCase):
 
     def test_peak_fit_result_is_saved_plotted_and_undoable(self):
         window = self.make_window()
+        parent = window.project.datasets[0].peaks[0]
+        original_metrics = (
+            parent.retention_time_min,
+            parent.raw_area_uv_sec,
+            parent.area_mau_sec,
+            parent.area_percent,
+            parent.fwhm_min,
+        )
         window.peak_table.selectRow(0)
         result = PeakFitResult(
             model="gaussian",
@@ -6741,17 +6776,173 @@ class GuiTests(unittest.TestCase):
         ), patch("hplc_app.gui.fit_peak", return_value=result):
             window._application_language = "en"
             window.fit_selected_peak()
-        peak = window.project.datasets[0].peaks[0]
+        dataset = window.project.datasets[0]
+        self.assertEqual(len(dataset.peaks), 1)
+        self.assertEqual(len(dataset.fitted_peaks), 1)
+        peak = dataset.fitted_peaks[0]
+        self.assertTrue(peak.is_fitted)
+        self.assertEqual(peak.parent_peak_id, parent.id)
         self.assertEqual(peak.fit_model, "gaussian")
         self.assertEqual(peak.fit_parameters["sigma_min"], 0.5)
         self.assertAlmostEqual(peak.fit_r_squared, 0.999)
+        self.assertEqual(
+            (
+                parent.retention_time_min,
+                parent.raw_area_uv_sec,
+                parent.area_mau_sec,
+                parent.area_percent,
+                parent.fwhm_min,
+            ),
+            original_metrics,
+        )
+        self.assertEqual(window.peak_table.rowCount(), 2)
+        self.assertEqual(window.peak_table.item(1, 0).text(), "F1")
+        self.assertEqual(window.peak_table.item(1, 20).text(), "#1")
         self.assertIsNotNone(
             window._peak_overlay_artists[peak.id]["fit_line"]
         )
+        self.assertTrue(
+            any("Fit GAUSSIAN (#1)" in text.get_text()
+                for text in window.axes.get_legend().get_texts())
+        )
         window.undo()
         self.assertEqual(window.project.datasets[0].peaks[0].fit_model, "")
+        self.assertEqual(window.project.datasets[0].fitted_peaks, [])
+        self.assertEqual(window.peak_table.rowCount(), 1)
         window.project.dirty = False
         window.close()
+
+    def test_fitted_peak_recalculates_and_deletes_independently(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        parent = dataset.peaks[0]
+        original_area = parent.raw_area_uv_sec
+        first_result = PeakFitResult(
+            "gaussian",
+            {"amplitude_uv": 900.0, "center_min": 7.0, "sigma_min": 0.4},
+            7.0,
+            3.0,
+            0.99,
+            14.0,
+            50,
+        )
+        second_result = PeakFitResult(
+            "gaussian",
+            {"amplitude_uv": 950.0, "center_min": 7.2, "sigma_min": 0.45},
+            7.2,
+            2.0,
+            0.995,
+            11.0,
+            50,
+        )
+        with patch.object(
+            QtWidgets.QInputDialog, "getItem", return_value=("Automatic", True)
+        ), patch("hplc_app.gui.fit_peak", side_effect=(first_result, second_result)):
+            window._application_language = "en"
+            window.peak_table.selectRow(0)
+            window.fit_selected_peak()
+            child_id = dataset.fitted_peaks[0].id
+            window.peak_table.selectRow(1)
+            window.fit_selected_peak()
+        self.assertEqual(len(dataset.fitted_peaks), 1)
+        self.assertEqual(dataset.fitted_peaks[0].id, child_id)
+        self.assertEqual(dataset.fitted_peaks[0].retention_time_min, 7.2)
+        self.assertEqual(parent.raw_area_uv_sec, original_area)
+
+        window.peak_table.selectRow(1)
+        window.delete_peak()
+        self.assertEqual(len(dataset.peaks), 1)
+        self.assertEqual(dataset.fitted_peaks, [])
+        self.assertEqual(parent.raw_area_uv_sec, original_area)
+        self.assertEqual(parent.fit_model, "")
+        window.undo()
+        self.assertEqual(len(window.project.datasets[0].fitted_peaks), 1)
+        window.project.dirty = False
+        window.close()
+
+    def test_detached_integration_list_stays_synchronized_without_data_loss(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        parent = dataset.peaks[0]
+        result = PeakFitResult(
+            "gaussian",
+            {"amplitude_uv": 1000.0, "center_min": 7.0, "sigma_min": 0.5},
+            7.0,
+            2.5,
+            0.999,
+            12.0,
+            50,
+        )
+        child = fitted_peak_from_result(parent, result)
+        dataset.fitted_peaks.append(child)
+        mirror_fitted_peak_for_legacy(parent, child)
+        window._refresh_peak_table()
+
+        window.open_integration_list()
+        dialog = window._integration_list_dialog
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.table.rowCount(), 2)
+        dialog.table.selectRow(1)
+        self.app.processEvents()
+        self.assertEqual(window._selected_peak_ids(), [child.id])
+        window.peak_table.selectRow(0)
+        self.app.processEvents()
+        self.assertEqual(
+            window._selected_peak_ids_from_table(dialog.table), [parent.id]
+        )
+
+        dialog.table.item(1, PEAK_NOTES_COLUMN).setText("confirmed fit")
+        self.app.processEvents()
+        self.assertEqual(child.notes, "confirmed fit")
+        self.assertEqual(
+            window.peak_table.item(1, PEAK_NOTES_COLUMN).text(),
+            "confirmed fit",
+        )
+        dialog.close()
+        self.app.processEvents()
+        self.assertFalse(dialog.isVisible())
+        self.assertEqual(len(dataset.fitted_peaks), 1)
+        window.project.dirty = False
+        window.close()
+
+    def test_native_preview_distinguishes_fitted_peak_in_curve_and_legend(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            dataset = window.project.datasets[0]
+            child = fitted_peak_from_result(
+                dataset.peaks[0],
+                PeakFitResult(
+                    "gaussian",
+                    {
+                        "amplitude_uv": 1000.0,
+                        "center_min": 7.0,
+                        "sigma_min": 0.5,
+                    },
+                    7.0,
+                    2.5,
+                    0.999,
+                    12.0,
+                    50,
+                ),
+            )
+            dataset.fitted_peaks.append(child)
+            mirror_fitted_peak_for_legacy(dataset.peaks[0], child)
+            window._refresh_peak_table([child.id])
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            self.assertIn(child.id, preview.consumer.fit_items)
+            labels = [label.text for _sample, label in preview._legend.items]
+            self.assertTrue(
+                any("Fit GAUSSIAN (#1)" in label for label in labels)
+            )
+            self.assertEqual(
+                window.peak_table.item(1, PEAK_TYPE_COLUMN).text(), "フィット"
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_presets_are_remembered_across_projects(self):
         first = MainWindow()

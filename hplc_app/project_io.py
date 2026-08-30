@@ -367,6 +367,11 @@ def load_project(path: str) -> Project:
                     for peak in item.get("peaks", [])
                     if isinstance(peak, dict)
                 ]
+                dataset.fitted_peaks = [
+                    _peak_from_dict(peak)
+                    for peak in item.get("fitted_peaks", [])
+                    if isinstance(peak, dict)
+                ]
                 try:
                     run = project.run_for(dataset)
                 except ValueError as exc:

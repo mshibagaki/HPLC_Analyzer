@@ -1,3 +1,3 @@
-# Optional experimental screen-renderer dependency for Windows 11 validation.
-# This file is intentionally not included by the normal build requirements.
+# Qt 6 screen-renderer dependency installed by the Windows 11 build.
+# Kept separate so it never enters the pinned Windows 7 offline dependency set.
 pyqtgraph==0.13.7

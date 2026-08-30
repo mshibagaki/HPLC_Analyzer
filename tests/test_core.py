@@ -150,6 +150,7 @@ from hplc_app.settings_store import (
     LEGACY_GRADIENT_PRESETS,
     NAMING_AUTHOR,
     RENDERING_QUALITY,
+    SCREEN_RENDERER,
     SAVE_DIRECTORY,
     SETTING_SPECS,
     UI_LANGUAGE,
@@ -3617,6 +3618,7 @@ class ApplicationSettingsTests(unittest.TestCase):
             "paths/last_project_directory",
             "database/path",
             "rendering/quality",
+            "rendering/screen_renderer",
             "export/figure_format",
             "naming/author",
             "presets/conditions",
@@ -3635,6 +3637,7 @@ class ApplicationSettingsTests(unittest.TestCase):
             LAST_PROJECT_DIRECTORY: "C:/HPLC/projects",
             DATABASE_PATH: "C:/HPLC/lab.sqlite3",
             RENDERING_QUALITY: "lightweight",
+            SCREEN_RENDERER: "matplotlib",
             FIGURE_FORMAT: "SVG",
             NAMING_AUTHOR: "M Shiba",
             LEGACY_CONDITION_PRESETS: {"C4": {"wavelength_nm": 280.0}},
@@ -3650,6 +3653,7 @@ class ApplicationSettingsTests(unittest.TestCase):
         self.assertEqual(store.get(LAST_PROJECT_DIRECTORY), "C:/HPLC/projects")
         self.assertEqual(store.get(DATABASE_PATH), "C:/HPLC/lab.sqlite3")
         self.assertEqual(store.get(RENDERING_QUALITY), "lightweight")
+        self.assertEqual(store.get(SCREEN_RENDERER), "matplotlib")
         self.assertEqual(store.get(FIGURE_FORMAT), "svg")
         self.assertEqual(store.get(NAMING_AUTHOR), "M Shiba")
         self.assertEqual(
@@ -3668,6 +3672,7 @@ class ApplicationSettingsTests(unittest.TestCase):
                 UI_LANGUAGE: "de",
                 IMPORT_DIRECTORY: 123,
                 RENDERING_QUALITY: "unsupported",
+                SCREEN_RENDERER: "unsupported",
                 FIGURE_FORMAT: "bmp",
                 LEGACY_CONDITION_PRESETS: "not-json",
                 LEGACY_GRADIENT_PRESETS: "[]",
@@ -3677,6 +3682,7 @@ class ApplicationSettingsTests(unittest.TestCase):
         self.assertEqual(store.get(UI_LANGUAGE), "ja")
         self.assertEqual(store.get(IMPORT_DIRECTORY), "")
         self.assertEqual(store.get(RENDERING_QUALITY), default_render_quality())
+        self.assertEqual(store.get(SCREEN_RENDERER), "pyqtgraph")
         self.assertEqual(store.get(FIGURE_FORMAT), "png")
         self.assertEqual(store.get(LEGACY_CONDITION_PRESETS), {})
         self.assertEqual(store.get(LEGACY_GRADIENT_PRESETS), {})

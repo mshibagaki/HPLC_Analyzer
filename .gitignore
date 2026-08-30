@@ -5,17 +5,20 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-*/
 venv/
 env/
 
 # Build outputs
 build/
 dist/
+HPLC_Analyzer_MVP_*/
 *.spec.bak
 
 # Installer/build temporary files
 installer/output/
 output/
+.build-test-settings/
 
 # Windows
 Thumbs.db

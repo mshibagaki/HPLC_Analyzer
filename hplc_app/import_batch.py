@@ -9,6 +9,10 @@ SUPPORTED_CHROMATOGRAM_SUFFIXES = {".gcd", ".txt"}
 
 
 def discover_chromatogram_files(directory, recursive=False):
+    # Path("") silently means the current directory, which would scan wherever
+    # the application happens to run from instead of failing.
+    if not str(directory).strip():
+        raise ValueError("Import directory does not exist: {0!r}".format(directory))
     root = Path(directory)
     if not root.is_dir():
         raise ValueError("Import directory does not exist: {0}".format(root))

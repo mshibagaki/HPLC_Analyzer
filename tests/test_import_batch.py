@@ -42,6 +42,11 @@ class ImportBatchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not exist"):
                 discover_chromatogram_files(missing)
 
+    def test_blank_directory_fails_instead_of_scanning_the_working_directory(self):
+        for value in ("", "   "):
+            with self.assertRaisesRegex(ValueError, "does not exist"):
+                discover_chromatogram_files(value, True)
+
     def test_reload_classifies_new_duplicate_and_changed_files_across_directories(self):
         with tempfile.TemporaryDirectory() as first_dir, tempfile.TemporaryDirectory() as second_dir:
             first = Path(first_dir) / "first.gcd"

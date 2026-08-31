@@ -132,6 +132,7 @@ class RowDropEvent:
         self._mime_data = QtCore.QMimeData()
         self.accepted = False
         self.ignored = False
+        self.drop_action = None
 
     def mimeData(self):
         return self._mime_data
@@ -143,6 +144,12 @@ class RowDropEvent:
         return QtCore.QPointF(self._position)
 
     def acceptProposedAction(self):
+        self.accepted = True
+
+    def setDropAction(self, action):
+        self.drop_action = action
+
+    def accept(self):
         self.accepted = True
 
     def ignore(self):
@@ -5798,7 +5805,7 @@ class GuiTests(unittest.TestCase):
         warning.assert_called_once()
         self.assertEqual(dialog.table.item(0, 0).checkState(), original_check)
 
-        dialog.table.setCurrentCell(1, 14)
+        dialog.table.setCurrentCell(1, dialog.table.columnCount() - 1)
         QtWidgets.QApplication.clipboard().setText("1\t2\t3")
         with patch.object(QtWidgets.QMessageBox, "warning") as warning:
             dialog._paste_clipboard()
@@ -6312,7 +6319,7 @@ class GuiTests(unittest.TestCase):
 
         question.assert_called_once()
         self.assertIn("Ch1", question.call_args.args[2])
-        self.assertIn("元に戻せません", question.call_args.args[2])
+        self.assertIn("1件", question.call_args.args[2])
         self.assertEqual(
             [dataset.id for dataset in window.project.datasets], dataset_ids
         )
@@ -6341,8 +6348,14 @@ class GuiTests(unittest.TestCase):
             [dataset.label for dataset in window.project.datasets], ["Ch1"]
         )
         self.assertTrue(window.project.dirty)
-        self.assertEqual(window._undo_stack, [])
+        # Removal is now one undoable step appended to the existing history.
+        self.assertEqual(window._undo_stack[0], "discard undo")
+        self.assertEqual(len(window._undo_stack), 2)
         self.assertEqual(window._redo_stack, [])
+        window.undo()
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets], ["Ch1", "Ch2"]
+        )
         window.project.dirty = False
         window.close()
 
@@ -6446,6 +6459,269 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_remove_dataset_deletes_every_selected_row_in_one_undo_step(self):
+        window = self.make_window()
+        third = load_ascii_file(str(SAMPLES / "191720.TXT"))
+        third.label = third.short_label = "Ch3"
+        window.project.add_dataset(third)
+        window._refresh_all(0)
+        original = [dataset.id for dataset in window.project.datasets]
+        original_labels = [dataset.label for dataset in window.project.datasets]
+        # The selection checkbox is the other way of picking rows, so drive the
+        # multiple selection through it rather than through Shift/Ctrl.
+        window.dataset_table.item(0, DATASET_SELECTED_COLUMN).setCheckState(CHECKED)
+        window.dataset_table.item(2, DATASET_SELECTED_COLUMN).setCheckState(CHECKED)
+        self.assertEqual(window._selected_dataset_rows(), [0, 2])
+        undo_depth = len(window._undo_stack)
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.No,
+        ) as question:
+            window.remove_dataset()
+
+        question.assert_called_once()
+        self.assertIn("2", question.call_args.args[2])
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original
+        )
+        self.assertEqual(len(window._undo_stack), undo_depth)
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ) as question:
+            window.remove_dataset()
+
+        self.assertIn("2", question.call_args.args[2])
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets], ["Ch2"]
+        )
+        self.assertEqual(len(window._undo_stack), undo_depth + 1)
+        self.assertEqual(window.dataset_table.rowCount(), 1)
+
+        window.undo()
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets], original
+        )
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets], original_labels
+        )
+        window.redo()
+        self.assertEqual(
+            [dataset.label for dataset in window.project.datasets], ["Ch2"]
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_chromatogram_drag_keeps_every_row_and_ignores_the_drop_action(self):
+        window = self.make_window()
+        third = load_ascii_file(str(SAMPLES / "191720.TXT"))
+        third.label = third.short_label = "Ch3"
+        window.project.add_dataset(third)
+        window._refresh_all(0)
+        window.show()
+        self.app.processEvents()
+        original = [dataset.id for dataset in window.project.datasets]
+        window.dataset_table.selectRow(0)
+        target_rect = window.dataset_table.visualItemRect(
+            window.dataset_table.item(1, 0)
+        )
+        event = RowDropEvent(
+            QtCore.QPoint(target_rect.center().x(), target_rect.bottom() - 1)
+        )
+
+        window.dataset_table.dropEvent(event)
+
+        ignore_action = (
+            QtCore.Qt.DropAction.IgnoreAction
+            if QT_API == 6
+            else QtCore.Qt.IgnoreAction
+        )
+        # Reporting the drop as ignored stops QAbstractItemView.startDrag from
+        # deleting the source row out of the already rebuilt table.
+        self.assertEqual(event.drop_action, ignore_action)
+        self.assertTrue(event.accepted)
+        self.assertEqual(
+            [dataset.id for dataset in window.project.datasets],
+            [original[1], original[0], original[2]],
+        )
+        self.assertEqual(window.dataset_table.rowCount(), 3)
+        self.assertEqual(
+            sorted(
+                window.dataset_table.item(row, DATASET_SELECTED_COLUMN).data(
+                    USER_ROLE
+                )
+                for row in range(window.dataset_table.rowCount())
+            ),
+            sorted(original),
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_chromatogram_drag_refuses_a_drop_onto_another_row(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        table = window.dataset_table
+        table.selectRow(0)
+        model = table.model()
+        mime = model.mimeData([model.index(0, 0)])
+        target_rect = table.visualItemRect(table.item(1, 0))
+        move_action = (
+            QtCore.Qt.DropAction.MoveAction if QT_API == 6 else QtCore.Qt.MoveAction
+        )
+        left_button = (
+            QtCore.Qt.MouseButton.LeftButton if QT_API == 6 else QtCore.Qt.LeftButton
+        )
+        no_modifier = (
+            QtCore.Qt.KeyboardModifier.NoModifier
+            if QT_API == 6
+            else QtCore.Qt.NoModifier
+        )
+        positions = (
+            QtWidgets.QAbstractItemView.DropIndicatorPosition
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView
+        )
+
+        def drag_event(point):
+            return QtGui.QDragMoveEvent(
+                point, move_action, mime, left_button, no_modifier
+            )
+
+        # Qt computes the indicator position from the live drag; drive that one
+        # value directly so the decision this class owns is what gets tested.
+        for indicator, rejected in (
+            (positions.OnItem, True),
+            (positions.AboveItem, False),
+            (positions.BelowItem, False),
+            (positions.OnViewport, False),
+        ):
+            with self.subTest(indicator=indicator):
+                with patch.object(
+                    type(table), "dropIndicatorPosition", return_value=indicator
+                ):
+                    event = drag_event(target_rect.center())
+                    self.assertEqual(table._drops_onto_row(event), rejected)
+                    table.dragMoveEvent(event)
+                    if rejected:
+                        self.assertFalse(event.isAccepted())
+
+        # A file drop keeps its own path and is never judged by the indicator.
+        urls = QtCore.QMimeData()
+        urls.setUrls([QtCore.QUrl.fromLocalFile(str(SAMPLES / "210601.TXT"))])
+        with patch.object(
+            type(table), "dropIndicatorPosition", return_value=positions.OnItem
+        ):
+            self.assertFalse(
+                table._drops_onto_row(
+                    QtGui.QDragMoveEvent(
+                        target_rect.center(),
+                        move_action,
+                        urls,
+                        left_button,
+                        no_modifier,
+                    )
+                )
+            )
+        self.assertEqual(len(window.project.datasets), 2)
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_dialog_shows_the_run_id_of_every_row(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        dialog = BatchMetadataDialog(window.project, first.id, "en")
+
+        header = dialog.table.horizontalHeader()
+        self.assertEqual(
+            dialog.table.horizontalHeaderItem(dialog.RUN_ID_COLUMN).text(), "Run ID"
+        )
+        # Appended logically, shown next to "Use" so a row's Run is readable
+        # without disturbing the existing column numbers.
+        self.assertEqual(header.visualIndex(dialog.RUN_ID_COLUMN), 1)
+        self.assertEqual(
+            [
+                dialog.table.item(row, dialog.RUN_ID_COLUMN).text()
+                for row in range(dialog.table.rowCount())
+            ],
+            [first.run_id, second.run_id],
+        )
+        self.assertNotEqual(first.run_id, second.run_id)
+        self.assertFalse(
+            bool(dialog.table.item(0, dialog.RUN_ID_COLUMN).flags() & ITEM_IS_EDITABLE)
+        )
+        self.assertNotIn(dialog.RUN_ID_COLUMN, dialog.EDITABLE_COLUMNS)
+        dialog.close()
+
+        shared_run = window.project.run_for(first)
+        second.bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+        grouped = BatchMetadataDialog(window.project, first.id, "en")
+        self.assertEqual(
+            [
+                grouped.table.item(row, grouped.RUN_ID_COLUMN).text()
+                for row in range(grouped.table.rowCount())
+            ],
+            [shared_run.id, shared_run.id],
+        )
+        grouped.close()
+        window.project.dirty = False
+        window.close()
+
+    def test_import_leaves_the_label_blank_and_shows_the_acquisition_timestamp(self):
+        window = self.make_window()
+        while window.project.datasets:
+            window.project.remove_dataset_at(0)
+        window._refresh_all(0)
+
+        imported = window._import_chromatogram_paths([str(SAMPLES / "210601.TXT")])
+
+        self.assertEqual(imported, 1)
+        dataset = window.project.datasets[0]
+        run = window.project.run_for(dataset)
+        self.assertEqual(dataset.label, "")
+        self.assertEqual(dataset.short_label, "")
+        self.assertEqual(run.label, "")
+        self.assertEqual(
+            window.dataset_table.item(0, DATASET_LABEL_COLUMN).text(), ""
+        )
+        timestamp = dataset.measurement.acquisition_datetime
+        self.assertTrue(timestamp)
+        self.assertEqual(
+            window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).text(), timestamp
+        )
+        # A blank label costs no identity: the Run ID and the legend keep their
+        # own filename fallback.
+        self.assertTrue(dataset.run_id)
+        self.assertIn("210601", dataset.run_id)
+        self.assertIn("210601", window.project.legend_label_for(dataset))
+
+        # The label stays a user field: typing one keeps it, and reopening the
+        # saved project restores both the label and the timestamp.
+        window.dataset_table.item(0, DATASET_LABEL_COLUMN).setText("Fraction A")
+        window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).setText(
+            "2026-08-31T10:11:12"
+        )
+        self.assertEqual(window.project.datasets[0].label, "Fraction A")
+        from hplc_app.project_io import load_project, save_project
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "labelled.hplcproj")
+            save_project(path, window.project)
+            restored = load_project(path)
+        self.assertEqual(restored.datasets[0].label, "Fraction A")
+        self.assertEqual(
+            restored.datasets[0].measurement.acquisition_datetime,
+            "2026-08-31T10:11:12",
+        )
+        window.project.dirty = False
+        window.close()
+
     def test_dataset_table_forwards_external_file_drops_to_main_window(self):
         window = self.make_window()
         mime_data = QtCore.QMimeData()
@@ -6531,7 +6807,12 @@ class GuiTests(unittest.TestCase):
 
         self.assertTrue(header.sectionsMovable())
         self.assertEqual(visible_order, list(DEFAULT_DATASET_COLUMN_ORDER))
-        self.assertTrue(window.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
+        # The acquisition time has its own visible column, directly left of the
+        # label, so a Run ID derived from it is no longer read as the label.
+        self.assertFalse(window.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
+        self.assertEqual(
+            visible_order[visible_order.index("timestamp") + 1], "label"
+        )
         self.assertTrue(window.dataset_table.isColumnHidden(DATASET_GROUP_COLUMN))
         self.assertEqual(
             window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).text(), timestamp
@@ -6568,7 +6849,9 @@ class GuiTests(unittest.TestCase):
 
         restored = self.make_window()
         self.assertEqual(restored._current_dataset_column_order(), expected)
-        self.assertTrue(restored.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
+        self.assertFalse(
+            restored.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN)
+        )
         restored.project.dirty = False
         restored.close()
 

@@ -47,6 +47,7 @@ DEFAULT_DATASET_COLUMN_ORDER = (
     "selected",
     "visible",
     "run_id",
+    "timestamp",
     "label",
     "wavelength",
     "y_axis",

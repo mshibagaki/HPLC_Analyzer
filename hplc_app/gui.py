@@ -240,7 +240,7 @@ DATASET_COLUMNS_BY_ID = {
     column_id: logical_column
     for logical_column, column_id in DATASET_COLUMN_IDS.items()
 }
-DATASET_HIDDEN_COLUMN_IDS = ("timestamp", "group")
+DATASET_HIDDEN_COLUMN_IDS = ("group",)
 
 MOUSE_MODE_IDS = (
     "normal",
@@ -457,10 +457,31 @@ class DatasetTableWidget(QtWidgets.QTableWidget):
             event.ignore()
         return True
 
+    def _drops_onto_row(self, event) -> bool:
+        """Reject a drop landing on a row; only gaps between rows reorder."""
+        if event.mimeData() is not None and event.mimeData().hasUrls():
+            return False
+        positions = (
+            QtWidgets.QAbstractItemView.DropIndicatorPosition
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView
+        )
+        return self.dropIndicatorPosition() == positions.OnItem
+
     def dragEnterEvent(self, event):
         if self._forward_file_drop("dragEnterEvent", event):
             return
         super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if event.mimeData() is not None and event.mimeData().hasUrls():
+            super().dragMoveEvent(event)
+            return
+        # Let the base class place the indicator first, then refuse the position
+        # that would overwrite a chromatogram instead of reordering the list.
+        super().dragMoveEvent(event)
+        if self._drops_onto_row(event):
+            event.ignore()
 
     def dropEvent(self, event):
         if self._forward_file_drop("dropEvent", event):
@@ -483,7 +504,15 @@ class DatasetTableWidget(QtWidgets.QTableWidget):
         target_row = insertion_row - 1 if insertion_row > source_row else insertion_row
         if 0 <= target_row < self.rowCount() and target_row != source_row:
             self.rowMoveRequested.emit(source_row, target_row)
-        event.acceptProposedAction()
+        # QAbstractItemView.startDrag removes the dragged row itself when an
+        # internal move succeeds. The Project-backed reorder has already rebuilt
+        # the table, so that removal would delete whichever chromatogram now sits
+        # at the old position. Report the drop as ignored to keep it from running.
+        ignore_action = (
+            QtCore.Qt.DropAction.IgnoreAction if QT_API == 6 else QtCore.Qt.IgnoreAction
+        )
+        event.setDropAction(ignore_action)
+        event.accept()
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -1628,6 +1657,12 @@ class MainWindow(QtWidgets.QMainWindow):
             "condition_presets": deepcopy(self.project.condition_presets),
             "gradient_presets": deepcopy(self.project.gradient_presets),
             "dataset_order": [dataset.id for dataset in self.project.datasets],
+            # References, not copies: raw arrays are never mutated in place, so
+            # holding the objects lets Undo restore a removed Dataset without
+            # duplicating its time/intensity data in every history entry.
+            "dataset_objects": {
+                dataset.id: dataset for dataset in self.project.datasets
+            },
             "datasets": {
                 dataset.id: {
                     field: deepcopy(getattr(dataset, field)) for field in dataset_fields
@@ -1654,12 +1689,22 @@ class MainWindow(QtWidgets.QMainWindow):
         order = state.get("dataset_order", [])
         if order:
             by_id = {dataset.id: dataset for dataset in self.project.datasets}
+            # A Dataset missing from the Project was removed after the snapshot;
+            # restore the recorded object itself so Undo brings it back in place.
+            by_id.update({
+                item_id: dataset
+                for item_id, dataset in state.get("dataset_objects", {}).items()
+                if item_id not in by_id
+            })
             reordered = [by_id[item_id] for item_id in order if item_id in by_id]
-            reordered.extend(
-                dataset
-                for dataset in self.project.datasets
-                if dataset.id not in set(order)
-            )
+            if "dataset_objects" not in state:
+                # Legacy in-memory state without the recorded objects: keep any
+                # Dataset it does not know about rather than dropping it.
+                reordered.extend(
+                    dataset
+                    for dataset in self.project.datasets
+                    if dataset.id not in set(order)
+                )
             self.project.datasets[:] = reordered
         datasets = state.get("datasets", {})
         for dataset in self.project.datasets:
@@ -5348,6 +5393,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 dataset.color = default_trace_color(
                     wavelength, same_wavelength_count
                 ) or COLORS[len(self.project.datasets) % len(COLORS)]
+                # The label is a free user field. It stays blank on import so the
+                # acquisition time is read in the timestamp column instead of
+                # looking like a label. Run IDs and legends keep their own
+                # filename fallback, so nothing downstream loses its identity.
+                dataset.label = ""
+                dataset.short_label = ""
                 self.project.add_dataset(dataset)
                 imported += 1
             except Exception as exc:
@@ -5774,22 +5825,39 @@ class MainWindow(QtWidgets.QMainWindow):
         dialog_exec(dialog)
 
     def remove_dataset(self):
-        row = self.dataset_table.currentRow()
-        if not (0 <= row < len(self.project.datasets)):
+        # The selection checkbox mirrors the row selection, so either way of
+        # picking several chromatograms reaches the same rows.
+        rows = self._selected_dataset_rows()
+        if not rows:
+            row = self.dataset_table.currentRow()
+            rows = [row] if 0 <= row < len(self.project.datasets) else []
+        if not rows:
             return
-        dataset = self.project.datasets[row]
+        if len(rows) == 1:
+            message = self.translator(
+                "confirm_remove_dataset",
+                label=self.project.datasets[rows[0]].label
+                or self.project.datasets[rows[0]].original_filename,
+            )
+        else:
+            message = self.translator("confirm_remove_datasets", count=len(rows))
         answer = QtWidgets.QMessageBox.question(
             self,
             self.translator("warning"),
-            self.translator("confirm_remove_dataset", label=dataset.label),
+            message,
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:
             return
-        self.project.remove_dataset_at(row)
-        self._reset_undo_history()
+        before_state = self._capture_analysis_state()
+        for row in sorted(rows, reverse=True):
+            self.project.remove_dataset_at(row)
+        self._push_undo_snapshot(
+            before_state,
+            self._history_label("クロマトグラム削除", "Remove chromatograms"),
+        )
         self.project.dirty = True
-        self._refresh_all(max(0, row - 1))
+        self._refresh_all(max(0, rows[0] - 1))
 
     def edit_metadata(self):
         dataset = self._selected_dataset()

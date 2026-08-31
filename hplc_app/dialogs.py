@@ -7,6 +7,8 @@ import math
 from pathlib import Path
 from typing import Dict, Optional
 
+from matplotlib.figure import Figure
+
 from .analysis import validate_gradient
 from .auto_peak_settings import (
     AUTO_PEAK_FIELDS,
@@ -45,9 +47,11 @@ from .preset_store import (
     record_preset_used,
     stable_preset_names,
 )
+from .plot3d import COLORMAP_ALIASES, ThreeDPlotOptions, build_3d_chromatogram_figure
 from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
 from .qt_compat import (
     CHECKED,
+    HORIZONTAL,
     ITEM_IS_EDITABLE,
     QT_API,
     UNCHECKED,
@@ -56,6 +60,11 @@ from .qt_compat import (
     QtWidgets,
     dialog_exec,
 )
+
+if QT_API == 6:
+    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+else:
+    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 
 
 def optional_float(text: str) -> Optional[float]:
@@ -3101,6 +3110,203 @@ class GradientDialog(QtWidgets.QDialog):
         self.dataset.measurement.solvents = solvents
         self.dataset.gradient_preset_name = self.applied_preset_name
         self.accept()
+
+
+class ThreeDChromatogramDialog(QtWidgets.QDialog):
+    """Session-only 3D settings with a full-data Matplotlib preview."""
+
+    def __init__(
+        self,
+        datasets,
+        method,
+        x_limits,
+        options: ThreeDPlotOptions,
+        language="ja",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.datasets = list(datasets)
+        self.method = method
+        self.x_limits = tuple(x_limits)
+        self.language = language
+        self.setWindowTitle(
+            "3Dクロマトグラム" if language == "ja" else "3D chromatogram"
+        )
+        self.resize(1050, 720)
+        root = QtWidgets.QHBoxLayout(self)
+        controls = QtWidgets.QWidget()
+        controls.setMaximumWidth(340)
+        form = QtWidgets.QFormLayout(controls)
+
+        self.y_title_edit = QtWidgets.QLineEdit(options.y_axis_title)
+        form.addRow("系列軸タイトル" if language == "ja" else "Series-axis title", self.y_title_edit)
+
+        z_widget = QtWidgets.QWidget()
+        z_row = QtWidgets.QHBoxLayout(z_widget)
+        z_row.setContentsMargins(0, 0, 0, 0)
+        self.z_min_edit = QtWidgets.QLineEdit(format_optional(options.z_min))
+        self.z_max_edit = QtWidgets.QLineEdit(format_optional(options.z_max))
+        self.z_min_edit.setPlaceholderText("Auto")
+        self.z_max_edit.setPlaceholderText("Auto")
+        z_row.addWidget(self.z_min_edit)
+        z_row.addWidget(QtWidgets.QLabel("–"))
+        z_row.addWidget(self.z_max_edit)
+        form.addRow("Z範囲" if language == "ja" else "Z range", z_widget)
+
+        def spin(value, minimum, maximum, step=1.0):
+            widget = QtWidgets.QDoubleSpinBox()
+            widget.setRange(minimum, maximum)
+            widget.setDecimals(2)
+            widget.setSingleStep(step)
+            widget.setValue(value)
+            return widget
+
+        view_widget = QtWidgets.QWidget()
+        view_row = QtWidgets.QHBoxLayout(view_widget)
+        view_row.setContentsMargins(0, 0, 0, 0)
+        self.elevation_spin = spin(options.elevation_deg, -90.0, 90.0, 5.0)
+        self.azimuth_spin = spin(options.azimuth_deg, -180.0, 180.0, 5.0)
+        view_row.addWidget(self.elevation_spin)
+        view_row.addWidget(self.azimuth_spin)
+        form.addRow("仰角 / 方位角" if language == "ja" else "Elevation / azimuth", view_widget)
+
+        aspect_widget = QtWidgets.QWidget()
+        aspect_row = QtWidgets.QHBoxLayout(aspect_widget)
+        aspect_row.setContentsMargins(0, 0, 0, 0)
+        self.aspect_x_spin = spin(options.aspect_x, 0.1, 10.0, 0.1)
+        self.aspect_y_spin = spin(options.aspect_y, 0.1, 10.0, 0.1)
+        self.aspect_z_spin = spin(options.aspect_z, 0.1, 10.0, 0.1)
+        for widget in (self.aspect_x_spin, self.aspect_y_spin, self.aspect_z_spin):
+            aspect_row.addWidget(widget)
+        form.addRow("X / Y / Z 比" if language == "ja" else "X / Y / Z aspect", aspect_widget)
+
+        ticks_widget = QtWidgets.QWidget()
+        ticks_row = QtWidgets.QHBoxLayout(ticks_widget)
+        ticks_row.setContentsMargins(0, 0, 0, 0)
+        self.x_tick_spin = spin(options.x_tick_interval, 0.001, 1000000.0, 1.0)
+        self.z_tick_spin = spin(options.z_tick_interval, 0.001, 1000000000.0, 1.0)
+        ticks_row.addWidget(self.x_tick_spin)
+        ticks_row.addWidget(self.z_tick_spin)
+        form.addRow("X / Z 目盛間隔" if language == "ja" else "X / Z tick interval", ticks_widget)
+
+        self.color_mode_combo = QtWidgets.QComboBox()
+        self.color_mode_combo.addItem(
+            "トレース色を使う" if language == "ja" else "Use trace colors", "trace"
+        )
+        self.color_mode_combo.addItem(
+            "グラデーション" if language == "ja" else "Gradient", "gradient"
+        )
+        self.color_mode_combo.setCurrentIndex(
+            max(0, self.color_mode_combo.findData(options.color_mode))
+        )
+        form.addRow("配色" if language == "ja" else "Colors", self.color_mode_combo)
+        self.colormap_combo = QtWidgets.QComboBox()
+        self.colormap_combo.addItems(tuple(COLORMAP_ALIASES))
+        self.colormap_combo.setCurrentText(options.colormap)
+        form.addRow("カラーマップ" if language == "ja" else "Colormap", self.colormap_combo)
+        self.density_slider = QtWidgets.QSlider(HORIZONTAL)
+        self.density_slider.setRange(10, 100)
+        self.density_slider.setTickInterval(10)
+        self.density_slider.setValue(options.density_percent)
+        self.density_value_label = QtWidgets.QLabel()
+        density_widget = QtWidgets.QWidget()
+        density_row = QtWidgets.QHBoxLayout(density_widget)
+        density_row.setContentsMargins(0, 0, 0, 0)
+        density_row.addWidget(self.density_slider, 1)
+        density_row.addWidget(self.density_value_label)
+        form.addRow("濃い側" if language == "ja" else "Dense end", density_widget)
+        self.axis_width_spin = spin(options.axis_line_width, 0.1, 10.0, 0.1)
+        form.addRow("軸線幅" if language == "ja" else "Axis line width", self.axis_width_spin)
+
+        form.addItem(QtWidgets.QSpacerItem(1, 1, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding))
+        self.error_label = QtWidgets.QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet("color: #b91c1c;")
+        form.addRow(self.error_label)
+        self.export_button = QtWidgets.QPushButton(
+            "PNG / SVG / PDFへ出力…" if language == "ja" else "Export PNG / SVG / PDF…"
+        )
+        self.close_button = QtWidgets.QPushButton("閉じる" if language == "ja" else "Close")
+        form.addRow(self.export_button)
+        form.addRow(self.close_button)
+        root.addWidget(controls)
+
+        self.figure = Figure(figsize=(8.0, 8.0))
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        root.addWidget(self.canvas, 1)
+
+        widgets = (
+            self.y_title_edit,
+            self.z_min_edit,
+            self.z_max_edit,
+            self.elevation_spin,
+            self.azimuth_spin,
+            self.aspect_x_spin,
+            self.aspect_y_spin,
+            self.aspect_z_spin,
+            self.x_tick_spin,
+            self.z_tick_spin,
+            self.color_mode_combo,
+            self.colormap_combo,
+            self.density_slider,
+            self.axis_width_spin,
+        )
+        for widget in widgets:
+            signal = (
+                widget.textChanged
+                if isinstance(widget, QtWidgets.QLineEdit)
+                else widget.currentIndexChanged
+                if isinstance(widget, QtWidgets.QComboBox)
+                else widget.valueChanged
+            )
+            signal.connect(self.refresh_preview)
+        self.color_mode_combo.currentIndexChanged.connect(self._update_color_controls)
+        self.close_button.clicked.connect(self.accept)
+        self._update_color_controls()
+        self.refresh_preview()
+
+    def plot_options(self):
+        return ThreeDPlotOptions(
+            y_axis_title=self.y_title_edit.text().strip(),
+            z_min=optional_float(self.z_min_edit.text()),
+            z_max=optional_float(self.z_max_edit.text()),
+            elevation_deg=self.elevation_spin.value(),
+            azimuth_deg=self.azimuth_spin.value(),
+            aspect_x=self.aspect_x_spin.value(),
+            aspect_y=self.aspect_y_spin.value(),
+            aspect_z=self.aspect_z_spin.value(),
+            x_tick_interval=self.x_tick_spin.value(),
+            z_tick_interval=self.z_tick_spin.value(),
+            color_mode=self.color_mode_combo.currentData(),
+            colormap=self.colormap_combo.currentText(),
+            density_percent=self.density_slider.value(),
+            axis_line_width=self.axis_width_spin.value(),
+        )
+
+    def _update_color_controls(self, *_args):
+        enabled = self.color_mode_combo.currentData() == "gradient"
+        self.colormap_combo.setEnabled(enabled)
+        self.density_slider.setEnabled(enabled)
+        self.density_value_label.setEnabled(enabled)
+
+    def refresh_preview(self, *_args):
+        self.density_value_label.setText("%d%%" % self.density_slider.value())
+        try:
+            options = self.plot_options()
+            build_3d_chromatogram_figure(
+                self.datasets,
+                self.method,
+                self.x_limits,
+                options,
+                figure=self.figure,
+            )
+        except (TypeError, ValueError) as exc:
+            self.error_label.setText(str(exc))
+            self.export_button.setEnabled(False)
+            return
+        self.error_label.clear()
+        self.export_button.setEnabled(True)
+        self.canvas.draw_idle()
 
 
 class LegendComposerDialog(QtWidgets.QDialog):

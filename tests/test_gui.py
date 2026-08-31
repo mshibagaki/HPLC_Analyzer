@@ -34,6 +34,7 @@ from hplc_app.dialogs import (
     ReportOptionsDialog,
     ReportScopeDialog,
     TextAnnotationDialog,
+    ThreeDChromatogramDialog,
     WorkDirectoriesDialog,
 )
 from hplc_app.auto_peak_settings import default_auto_peak_sensitivity_presets
@@ -7865,6 +7866,7 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(hasattr(window, "figure_format_combo"))
         self.assertFalse(hasattr(window, "export_figure_button"))
         self.assertIn(window.export_figure_action, window.file_menu.actions())
+        self.assertIn(window.three_d_figure_action, window.file_menu.actions())
         self.assertIn(window.copy_view_action, window.file_menu.actions())
         self.assertIn(window.print_view_action, window.file_menu.actions())
         self.assertEqual(window._figure_export_format, "png")
@@ -7938,6 +7940,77 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(options.baseline)
         self.assertTrue(options.retention_time)
         options_dialog.close()
+        window.project.dirty = False
+        window.close()
+
+    def test_3d_dialog_uses_selected_table_order_session_settings_and_shared_export(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        window.dataset_table.selectAll()
+        before = _trace_edit_state(window.project.datasets)
+        raw = [
+            (dataset.time_min.copy(), dataset.intensity_uv.copy())
+            for dataset in window.project.datasets
+        ]
+        x_limits = tuple(window._screen_view_state().x)
+        captured = []
+
+        def configure(dialog):
+            captured.append(dialog)
+            dialog.z_tick_spin.setValue(250.0)
+            dialog.y_title_edit.setText("Injection order")
+            dialog.color_mode_combo.setCurrentIndex(
+                dialog.color_mode_combo.findData("gradient")
+            )
+            dialog.colormap_combo.setCurrentText("Viridis")
+            dialog.density_slider.setValue(40)
+            dialog.z_min_edit.setText("-100")
+            dialog.z_max_edit.setText("5000")
+            dialog.refresh_preview()
+            return True
+
+        window.project.dirty = False
+        with patch("hplc_app.gui.dialog_exec", side_effect=configure):
+            window.open_3d_chromatogram()
+        self.assertEqual(len(captured), 1)
+        dialog = captured[0]
+        self.assertEqual(dialog.plot_options(), window._three_d_plot_options)
+        self.assertEqual(dialog.plot_options().density_percent, 40)
+        axis = dialog.figure.axes[0]
+        self.assertEqual(
+            [item.get_text() for item in axis.get_yticklabels()], ["Ch1", "Ch2"]
+        )
+        self.assertEqual(tuple(round(value, 6) for value in axis.get_xlim()),
+                         tuple(round(value, 6) for value in sorted(x_limits)))
+        self.assertEqual(len(axis.lines), 2)
+        self.assertEqual(_trace_edit_state(window.project.datasets), before)
+        self.assertFalse(window.project.dirty)
+        for dataset, (time, intensity) in zip(window.project.datasets, raw):
+            np.testing.assert_array_equal(dataset.time_min, time)
+            np.testing.assert_array_equal(dataset.intensity_uv, intensity)
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "selected-3d.svg"
+            with patch.object(
+                QtWidgets.QFileDialog,
+                "getSaveFileName",
+                return_value=(str(destination), "SVG画像 (*.svg)"),
+            ) as chooser:
+                window.export_3d_chromatogram(dialog)
+            self.assertTrue(destination.exists())
+            self.assertEqual(
+                chooser.call_args.args[2],
+                str(Path(window._save_directory) / "chromatogram_3d.png"),
+            )
+            self.assertIn("<svg", destination.read_text(encoding="utf-8")[:500])
+        dialog.close()
+
+        window.dataset_table.clearSelection()
+        window.dataset_table.selectRow(0)
+        with patch.object(QtWidgets.QMessageBox, "information") as information:
+            window.open_3d_chromatogram()
+        information.assert_called_once()
         window.project.dirty = False
         window.close()
 

@@ -44,6 +44,7 @@ from .dialogs import (
     ReportOptionsDialog,
     ReportScopeDialog,
     TextAnnotationDialog,
+    ThreeDChromatogramDialog,
     WorkDirectoriesDialog,
     dialog_exec,
 )
@@ -83,6 +84,7 @@ from .peak_fitting import (
     fitted_peak_from_result,
     mirror_fitted_peak_for_legacy,
 )
+from .plot3d import ThreeDPlotOptions, suggest_z_tick_interval
 from .preset_store import (
     load_preset_store_with_metadata,
     merge_preset_sources,
@@ -1840,6 +1842,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.work_directories_action = self._action(self.edit_work_directories)
         self.reload_work_directories_action = self._action(self.reload_work_directories)
         self.export_figure_action = self._action(self.export_figure)
+        self.three_d_figure_action = self._action(self.open_3d_chromatogram)
         self.copy_view_action = self._action(self.copy_view_to_clipboard)
         self.print_view_action = self._action(self.print_current_view)
         self.export_peaks_action = self._action(self.export_peaks)
@@ -1865,6 +1868,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.file_menu.addSeparator()
         for action in (
             self.export_figure_action,
+            self.three_d_figure_action,
             self.copy_view_action,
             self.print_view_action,
             self.export_peaks_action,
@@ -1939,6 +1943,7 @@ class MainWindow(QtWidgets.QMainWindow):
             (self.work_directories_action, "work_directories"),
             (self.reload_work_directories_action, "reload_work_directories"),
             (self.export_figure_action, "export_figure"),
+            (self.three_d_figure_action, "three_d_chromatogram"),
             (self.copy_view_action, "copy_view"),
             (self.print_view_action, "print_view"),
             (self.export_peaks_action, "export_peaks"),
@@ -6035,28 +6040,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.project_path = path
         return self.save_project()
 
+    def _save_static_figure(self, figure, path: str):
+        old_size = figure.get_size_inches().copy()
+        try:
+            figure.set_size_inches(
+                self.project.method.figure_width_mm / 25.4,
+                self.project.method.figure_height_mm / 25.4,
+            )
+            figure.savefig(path, dpi=self.project.method.dpi, bbox_inches="tight")
+        finally:
+            figure.set_size_inches(old_size)
+
     def _save_figure_file(self, path: str):
         """Save PNG/SVG/PDF from full data regardless of screen quality."""
 
         with self._full_quality_export_figure():
-            old_size = self.figure.get_size_inches().copy()
-            try:
-                self.figure.set_size_inches(
-                    self.project.method.figure_width_mm / 25.4,
-                    self.project.method.figure_height_mm / 25.4,
-                )
-                self.figure.savefig(
-                    path,
-                    dpi=self.project.method.dpi,
-                    bbox_inches="tight",
-                )
-            finally:
-                self.figure.set_size_inches(old_size)
+            self._save_static_figure(self.figure, path)
 
-    def export_figure(self):
-        if not self.project.datasets:
-            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
-            return
+    def _select_figure_output_path(self, title: str, basename: str):
         selected_format = self._figure_export_format
         filters = self.translator("figure_filter")
         preferred_filter = next(
@@ -6069,13 +6070,13 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
-            self.translator("export_figure"),
-            self._default_save_path("chromatogram.%s" % selected_format),
+            title,
+            self._default_save_path("%s.%s" % (basename, selected_format)),
             filters,
             preferred_filter,
         )
         if not path:
-            return
+            return ""
         for candidate in ("png", "svg", "pdf"):
             if "*.%s" % candidate in (_selected_filter or "").lower():
                 selected_format = candidate
@@ -6087,6 +6088,17 @@ class MainWindow(QtWidgets.QMainWindow):
             path += ".%s" % selected_format
         self._figure_export_format = selected_format
         self._settings.set(FIGURE_FORMAT, selected_format, sync=True)
+        return path
+
+    def export_figure(self):
+        if not self.project.datasets:
+            QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
+            return
+        path = self._select_figure_output_path(
+            self.translator("export_figure"), "chromatogram"
+        )
+        if not path:
+            return
         try:
             self._save_figure_file(path)
             self._remember_save_path(path)
@@ -6095,6 +6107,51 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
         finally:
             self._request_canvas_draw(force=True)
+
+    def open_3d_chromatogram(self):
+        rows = self._selected_dataset_rows()
+        if len(rows) < 2:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("select_multiple_3d")
+            )
+            return
+        datasets = [self.project.datasets[row] for row in rows]
+        options = getattr(self, "_three_d_plot_options", None)
+        x_limits = self._screen_view_state().x
+        if options is None:
+            options = ThreeDPlotOptions(
+                x_tick_interval=max(0.001, self.project.method.x_major_tick_min),
+                z_tick_interval=suggest_z_tick_interval(
+                    datasets, self.project.method, x_limits
+                ),
+            )
+        dialog = ThreeDChromatogramDialog(
+            datasets,
+            self.project.method,
+            x_limits,
+            options,
+            self._application_language,
+            self,
+        )
+        dialog.export_button.clicked.connect(
+            lambda _checked=False: self.export_3d_chromatogram(dialog)
+        )
+        dialog_exec(dialog)
+        if dialog.export_button.isEnabled():
+            self._three_d_plot_options = dialog.plot_options()
+
+    def export_3d_chromatogram(self, dialog):
+        path = self._select_figure_output_path(
+            self.translator("export_3d_figure"), "chromatogram_3d"
+        )
+        if not path:
+            return
+        try:
+            self._save_static_figure(dialog.figure, path)
+            self._remember_save_path(path)
+            self.statusBar().showMessage(self.translator("saved", path=path), 5000)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
 
     def _current_view_pixmap(self):
         if self._screen_preview is not None:

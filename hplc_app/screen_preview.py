@@ -417,7 +417,12 @@ class ExperimentalScreenPreview:
                 return True
             if name == "scroll_event":
                 return True
-            if (not valid or event.axis_role != target["role"] or event.button != 1):
+            # Only the split layout puts the Y2 data on its own panel. In the
+            # single panel the pointer always reports "y1" while a Y2 trace keeps
+            # its own coordinate system, so the roles must not be compared there.
+            if (not valid or event.button != 1
+                    or (self.consumer.split_y_axes
+                        and event.axis_role != target["role"])):
                 self.cancel_move_drag()
                 return True
             if name == "motion_notify_event":

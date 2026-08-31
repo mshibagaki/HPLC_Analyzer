@@ -1634,6 +1634,90 @@ class GuiTests(unittest.TestCase):
                 navigation.close()
             consumer.close()
 
+    def test_pyqtgraph_pan_ends_on_buttonless_motion_and_outside_release(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional PyQtGraph dependency is not installed")
+        consumer = PyQtGraphSceneConsumer(size=(800, 500))
+        navigation = None
+        try:
+            initial = ScreenViewState(
+                x=(0.0, 100.0), y1=(0.0, 1000.0),
+                y2=None, gradient=None,
+            )
+
+            def restart():
+                consumer.apply_view_state(
+                    initial, compose_overview_state(False, initial.x, initial.x)
+                )
+                navigation.reset_history()
+
+            consumer.apply_view_state(
+                initial, compose_overview_state(False, initial.x, initial.x)
+            )
+            consumer.snapshot()
+            navigation = PyQtGraphNavigationController(consumer)
+            navigation.set_pan_enabled(True)
+            press = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=200.0, canvas_y=200.0,
+            )
+            # A fast drag leaves the plot before the button is released.
+            far_motion = ScreenPointerEvent(
+                button=1, axis_role="outside", hit_region="",
+                canvas_x=760.0, canvas_y=470.0,
+            )
+            outside_release = ScreenPointerEvent(
+                button=1, axis_role="outside", hit_region="",
+                canvas_x=760.0, canvas_y=470.0,
+            )
+            later_motion = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=300.0, canvas_y=300.0,
+            )
+            navigation.handle_event("button_press_event", press)
+            navigation.handle_event("motion_notify_event", far_motion)
+            self.assertIsNotNone(navigation._pan)
+            navigation.handle_event("button_release_event", outside_release)
+            self.assertIsNone(navigation._pan)
+            released = consumer.capture_view_state()
+            navigation.handle_event("motion_notify_event", later_motion)
+            self.assertEqual(consumer.capture_view_state(), released)
+
+            # A release delivered to another widget never reaches the handler, so
+            # the next button-less motion has to end the gesture on its own.
+            restart()
+            navigation.handle_event("button_press_event", press)
+            navigation.handle_event("motion_notify_event", far_motion)
+            self.assertIsNotNone(navigation._pan)
+            navigation.handle_event(
+                "motion_notify_event",
+                ScreenPointerEvent(
+                    button=None, axis_role="y1", hit_region="plot",
+                    canvas_x=400.0, canvas_y=250.0,
+                ),
+            )
+            self.assertIsNone(navigation._pan)
+            abandoned = consumer.capture_view_state()
+            navigation.handle_event("motion_notify_event", later_motion)
+            self.assertIsNone(navigation._pan)
+            self.assertEqual(consumer.capture_view_state(), abandoned)
+
+            # A button-less motion outside the plot must end it just as reliably.
+            restart()
+            navigation.handle_event("button_press_event", press)
+            navigation.handle_event(
+                "motion_notify_event",
+                ScreenPointerEvent(
+                    button=None, axis_role="outside", hit_region="",
+                    canvas_x=790.0, canvas_y=490.0,
+                ),
+            )
+            self.assertIsNone(navigation._pan)
+        finally:
+            if navigation is not None:
+                navigation.close()
+            consumer.close()
+
     def test_lightweight_overview_is_coarser_and_peak_selection_reuses_patch(self):
         window = self.make_lightweight_window()
         window.project.method.view_mode = "overview_detail"
@@ -3441,6 +3525,112 @@ class GuiTests(unittest.TestCase):
             for dataset, (times, values) in zip(window.project.datasets, raw):
                 np.testing.assert_array_equal(dataset.time_min, times)
                 np.testing.assert_array_equal(dataset.intensity_uv, values)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_trace_move_supports_second_axis_in_single_view(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            # The second dataset is assigned to Y2 while the single panel keeps
+            # every trace on one view, so the pointer always reports role "y1".
+            row = 1
+            selected = window.project.datasets[row]
+            self.assertEqual(selected.y_axis, 2)
+            window.dataset_table.selectRow(row)
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("single")
+            )
+            window.move_axis_combo.setCurrentIndex(
+                window.move_axis_combo.findData("both")
+            )
+            window._plot()
+            before = deepcopy(selected)
+            other = _trace_edit_state([window.project.datasets[0]])
+            window.move_trace_button.setChecked(True)
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            core, gui = consumer.qt_core, consumer.qt_gui
+            self.assertFalse(consumer.split_y_axes)
+
+            def raw_digest():
+                digest = hashlib.sha256()
+                for current in window.project.datasets:
+                    digest.update(np.ascontiguousarray(current.time_min).tobytes())
+                    digest.update(np.ascontiguousarray(current.intensity_uv).tobytes())
+                return digest.hexdigest()
+
+            before_digest = raw_digest()
+            view = consumer.secondary
+            viewport = consumer.widget.viewport()
+            dx, dy = 0.75, -425.0
+            x0, y0 = 8.0, sum(view.viewRange()[1]) / 2.0
+
+            def point(x, y):
+                return consumer.widget.mapFromScene(
+                    view.mapViewToScene(core.QPointF(x, y))
+                )
+
+            start, end = point(x0, y0), point(x0 + dx, y0 + dy)
+            start_event = consumer.pointer_event(consumer.widget.mapToScene(start))
+            end_event = consumer.pointer_event(consumer.widget.mapToScene(end))
+            # The regression this covers: the drag ran on "y2" data while every
+            # pointer sample reported the single panel's "y1" role.
+            self.assertEqual(start_event.axis_role, "y1")
+            self.assertEqual(end_event.axis_role, "y1")
+            effective_dx = end_event.data_for("y2")[0] - start_event.data_for("y2")[0]
+            effective_dy = end_event.data_for("y2")[1] - start_event.data_for("y2")[1]
+            expected = deepcopy(selected)
+            expected.x_shift_min += effective_dx
+            expected.offset += effective_dy
+            recalculate_dataset_peaks(expected)
+            item = consumer.trace_items[selected.id]
+            undo_count = len(window._undo_stack)
+            state = window._screen_view_state()
+            window.project.dirty = False
+
+            def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
+                      held=core.Qt.MouseButton.NoButton):
+                self.app.sendEvent(viewport, gui.QMouseEvent(
+                    kind, core.QPointF(position),
+                    core.QPointF(viewport.mapToGlobal(position)),
+                    button, held, core.Qt.KeyboardModifier.NoModifier))
+
+            mouse(core.QEvent.Type.MouseButtonPress, start,
+                  core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
+            mouse(core.QEvent.Type.MouseMove, end,
+                  held=core.Qt.MouseButton.LeftButton)
+            self.assertIsNotNone(preview._move_target)
+            self.assertAlmostEqual(
+                selected.x_shift_min, expected.x_shift_min, places=6
+            )
+            self.assertAlmostEqual(selected.offset, expected.offset, places=5)
+            self.assertAlmostEqual(item.pos().x(), effective_dx, places=6)
+            self.assertAlmostEqual(item.pos().y(), effective_dy, places=5)
+            mouse(core.QEvent.Type.MouseButtonRelease, end,
+                  core.Qt.MouseButton.LeftButton)
+            self.assertIsNone(preview._move_target)
+            self.assertIsNone(window._move_drag)
+            self.assertEqual(len(window._undo_stack), undo_count + 1)
+            self.assertEqual(selected.peaks, expected.peaks)
+            self.assertEqual(
+                _trace_edit_state([window.project.datasets[0]]), other
+            )
+            self.assertEqual(window._screen_view_state(), state)
+            self.assertEqual(raw_digest(), before_digest)
+            window.undo()
+            self.assertEqual(selected.x_shift_min, before.x_shift_min)
+            self.assertEqual(selected.offset, before.offset)
+            window.redo()
+            self.assertAlmostEqual(
+                selected.x_shift_min, expected.x_shift_min, places=6
+            )
+            self.assertAlmostEqual(selected.offset, expected.offset, places=5)
+            self.assertEqual(raw_digest(), before_digest)
         finally:
             window.project.dirty = False
             window.close()

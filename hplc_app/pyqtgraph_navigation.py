@@ -95,6 +95,15 @@ class PyQtGraphNavigationController:
         # A wheel sample during a drag must not replace its initial view/history.
         if self._pan is not None and name == "scroll_event":
             return True
+        # A release delivered outside the viewport can bypass the event filter and
+        # never reach this handler. Motion without a pressed button then proves the
+        # gesture already ended, so the pan must not stay grabbed.
+        if (
+            self._pan is not None
+            and name == "motion_notify_event"
+            and event.button is None
+        ):
+            self._pan = None
         # Keep ownership until release even when the pointer leaves the plot.
         if self._pan is not None and name in (
             "motion_notify_event", "button_release_event",

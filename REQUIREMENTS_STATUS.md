@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-31 (Issue #202 delivery)
+Updated: 2026-08-31 (Issues #190 and #202 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -29,7 +29,7 @@ This tracked file is the source of truth for the original product requests. Upda
 | Priority | Requirement | Current boundary | Next coherent delivery |
 |---|---|---|---|
 | High | Spectrum-domain selection and retention labels | Chromatogram multi-selection/labels are complete, but there is no separate spectrum data model, importer, view, or shared chromatogram/spectrum selection contract | Specify supported spectrum source format and semantics, then add the persisted model/import/view before enabling common labels |
-| Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
+| Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution. Issue #190 settled the distribution channel the check depends on — public GitHub Releases plus offline media, recorded in `DISTRIBUTION.md` — without changing any application behavior | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
 
 The following are useful extensions, but are not gaps in the original requested minimum: a shared analyte master library beyond the persisted Run snapshot, multi-peak deconvolution/curved baseline fitting beyond Gaussian/EMG single-peak fitting, and the long-term TraceLab platform split.
 

@@ -398,7 +398,7 @@ SQLiteは単一ファイル内でトランザクション更新し、別PCの書
 
 ## セットアップEXEでインストールする
 
-配布先PCへは、対象OSに合う次のセットアップEXEを1本だけコピーします。Python、Qt、Inno Setup、ソースコード、インターネット接続は配布先PCには不要です。
+配布先PCへは、対象OSに合う次のセットアップEXEを1本だけコピーします。Python、Qt、Inno Setup、ソースコード、インターネット接続は配布先PCには不要です。セットアップEXEの入手先と`SHA256SUMS.txt`による照合手順は[配布チャネル](DISTRIBUTION.md)にあります。
 
 - Windows 11 64-bit：`HPLC_Analyzer_Setup_1.2.4_Windows11_x64.exe`
 - Windows 7 SP1 32-bit：`HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe`
@@ -479,7 +479,7 @@ HPLC Analyzerは、`MAJOR.MINOR.PATCH`形式のSemantic Versioningに近いル�
 
 最新の公開Stable版は`v1.2.4`、現在のmain開発版は`1.3.0-dev.1`です。開発版はtagや公開Releaseを意味しません。機能凍結後は`1.3.0-rc.N`、全Release gateを通す最終Stable候補では`1.3.0`へ進め、検証済みのStable候補commitへだけ`v1.3.0`tagを付けます。
 
-公開GitHub ReleasesのmetadataだけをHTTPSで確認する更新通知を用意しています。`ヘルプ → 更新を確認…`から手動確認でき、環境設定で起動後のStable版自動確認を無効化できます。確認はGUI thread外で行い、自動確認時の最新版・offline・proxy・rate limit・壊れた応答は通常操作へ通知しません。Stable確認ではdraft/prereleaseを除外し、SemVerと公式repository配下のRelease URLを検証します。現段階ではApplication UIからinstallerのdownloadや起動は行いません。
+公開GitHub ReleasesのmetadataだけをHTTPSで確認する更新通知を用意しています。`ヘルプ → 更新を確認…`から手動確認でき、環境設定で起動後のStable版自動確認を無効化できます。確認はGUI thread外で行い、自動確認時の最新版・offline・proxy・rate limit・壊れた応答は通常操作へ通知しません。Stable確認ではdraft/prereleaseを除外し、SemVerと公式repository配下のRelease URLを検証します。現段階ではApplication UIからinstallerのdownloadや起動は行いません。この確認は無認証でGitHubのReleases endpointへ要求するため、公開Releasesがある場合だけ機能します。チャネル別の挙動、ネットワーク隔離機で起動後の自動確認を無効化する運用、更新確認が使えない場合の手動バージョン比較は[配布チャネル](DISTRIBUTION.md)にあります。
 
 installer更新用の非実行型検証基盤では、公式repositoryのRelease asset URL、download上限、専用一時directory、安全なfilename、SHA-256 manifestとの一致、Windows Authenticode状態と署名者thumbprintを検証できます。bounded chunk単位の進捗通知と協調的なキャンセルにも対応し、キャンセル時はUpdaterが作成した途中ファイルを残しません。Qt workerと日英progress/cancel/error dialogもsynthetic fixtureで検証していますが、正式な署名identityが設定されていない現段階ではend-userの更新操作へ接続していません。この検証に成功してもinstaller起動許可は常にfalseです。
 

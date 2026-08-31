@@ -8242,6 +8242,9 @@ class GuiTests(unittest.TestCase):
                 ["a.gcd", "B.TXT", "sub/a.txt", "sub/c.TXT"],
             )
             self.assertEqual(dialog.duplicate_txt_skip_count, 1)
+            self.assertTrue(dialog.register_work_directory_checkbox.isChecked())
+            self.assertTrue(dialog.register_work_directory)
+            self.assertIn("work directory", dialog.register_work_directory_checkbox.text())
             dialog.close()
 
         with tempfile.TemporaryDirectory() as empty_directory:
@@ -8338,6 +8341,60 @@ class GuiTests(unittest.TestCase):
             with patch(
                 "hplc_app.gui.DirectoryImportDialog",
                 return_value=duplicate_dialog,
+            ), patch(
+                "hplc_app.gui.dialog_exec",
+                return_value=True,
+            ), patch.object(
+                window,
+                "_import_chromatogram_paths",
+                return_value=0,
+            ), patch.object(
+                QtWidgets.QMessageBox,
+                "information",
+            ):
+                self.assertEqual(window.import_directory(), 0)
+            self.assertEqual(len(window.project.work_directories), 1)
+
+            opt_out_root = root / "opt-out"
+            opt_out_root.mkdir()
+            opt_out_dialog = SimpleNamespace(
+                directory_path=opt_out_root,
+                group_label="not registered",
+                files=[earlier],
+                recursive=False,
+                register_work_directory=False,
+                duplicate_txt_skip_count=0,
+            )
+            with patch(
+                "hplc_app.gui.DirectoryImportDialog",
+                return_value=opt_out_dialog,
+            ), patch(
+                "hplc_app.gui.dialog_exec",
+                return_value=True,
+            ), patch.object(
+                window,
+                "_import_chromatogram_paths",
+                return_value=1,
+            ), patch.object(
+                QtWidgets.QMessageBox,
+                "information",
+            ):
+                self.assertEqual(window.import_directory(), 1)
+            self.assertEqual(len(window.project.work_directories), 1)
+
+            failed_root = root / "failed"
+            failed_root.mkdir()
+            failed_dialog = SimpleNamespace(
+                directory_path=failed_root,
+                group_label="failed import",
+                files=[earlier],
+                recursive=False,
+                register_work_directory=True,
+                duplicate_txt_skip_count=0,
+            )
+            with patch(
+                "hplc_app.gui.DirectoryImportDialog",
+                return_value=failed_dialog,
             ), patch(
                 "hplc_app.gui.dialog_exec",
                 return_value=True,

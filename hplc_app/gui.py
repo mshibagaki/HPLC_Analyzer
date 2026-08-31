@@ -5552,11 +5552,12 @@ class MainWindow(QtWidgets.QMainWindow):
             dialog.files,
             show_progress=True,
         )
-        self._register_work_directory(
-            directory,
-            dialog.group_label,
-            getattr(dialog, "recursive", False),
-        )
+        if imported > 0 and getattr(dialog, "register_work_directory", True):
+            self._register_work_directory(
+                directory,
+                dialog.group_label,
+                getattr(dialog, "recursive", False),
+            )
         skipped_txt_count = getattr(dialog, "duplicate_txt_skip_count", 0)
         QtWidgets.QMessageBox.information(
             self,

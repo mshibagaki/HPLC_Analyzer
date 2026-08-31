@@ -399,7 +399,9 @@ class Dataset:
         local_label = object.__getattribute__(self, "label")
         local_short_label = object.__getattribute__(self, "short_label")
         if not run.label:
-            run.label = str(local_label or self.original_filename or "")
+            # A blank label is a real choice, not missing data: the Run keeps it
+            # and every display path falls back to the filename on its own.
+            run.label = str(local_label or "")
         if not run.short_label:
             run.short_label = str(local_short_label or run.label or "")
         self.run_id = run.id

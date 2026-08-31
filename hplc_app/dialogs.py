@@ -1229,6 +1229,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
     }
     COLUMN_FIELDS = {column: field for field, column in FIELD_COLUMNS.items()}
     GRADIENT_COLUMN = 15
+    # Appended after the editable range so the existing column numbers, their
+    # validation and the clipboard rectangle contract all stay unchanged.
+    RUN_ID_COLUMN = 16
     EDITABLE_COLUMNS = frozenset(range(1, GRADIENT_COLUMN))
     RUN_SHARED_COLUMNS = frozenset((1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14))
     POSITIVE_FIELDS = frozenset(
@@ -1366,6 +1369,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             "ε280",
             "分子量" if language == "ja" else "Molecular weight",
             "グラジエント" if language == "ja" else "Gradient",
+            "Run ID",
         )
         self.table = BatchConditionTable(len(project.datasets), len(headers))
         self.table.setHorizontalHeaderLabels(headers)
@@ -1405,6 +1409,12 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 if column not in self.EDITABLE_COLUMNS:
                     item.setFlags(item.flags() & ~ITEM_IS_EDITABLE)
                 self.table.setItem(row, column, item)
+            run_id = QtWidgets.QTableWidgetItem(dataset.run_id)
+            run_id.setFlags(run_id.flags() & ~ITEM_IS_EDITABLE)
+            run_id.setToolTip(dataset.run_id)
+            self.table.setItem(row, self.RUN_ID_COLUMN, run_id)
+        header = self.table.horizontalHeader()
+        header.moveSection(header.visualIndex(self.RUN_ID_COLUMN), 1)
         self.table.resizeColumnsToContents()
 
         self.save_preset_button.clicked.connect(self._save_preset)

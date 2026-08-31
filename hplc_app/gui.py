@@ -590,6 +590,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._mouse_mode = "normal"
         self._selected_time_range = None
         self._edit_range_peak_id = None
+        self._peak_edit_return_mouse_mode = None
         self._overview_view_patch = None
         self._overview_window_state = ScreenOverviewState(
             enabled=False,
@@ -2739,7 +2740,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._edit_range_peak_id = None
                 self.edit_peak_button.setChecked(False)
                 return
-        if (self._screen_preview is None and self._is_lightweight_rendering()
+        if self._screen_preview is not None:
+            try:
+                self._screen_preview.set_peak_selection(
+                    self._selected_peak_ids()
+                )
+            except Exception:
+                self._stop_screen_preview(failed=True)
+                self._plot()
+        elif (self._is_lightweight_rendering()
                 and self._peak_overlay_artists):
             self._apply_peak_selection_styles()
             self._request_canvas_draw(throttled=True)
@@ -3950,6 +3959,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 self.edit_peak_button.setChecked(False)
                 return
+            if self._peak_edit_return_mouse_mode is None:
+                self._peak_edit_return_mouse_mode = (
+                    self._mouse_mode
+                    if self._mouse_mode != "edit_peak" else "normal"
+                )
             self._mouse_tool_toggled("edit_peak", True)
             self._edit_range_peak_id = peak.id
             self._deactivate_toolbar_navigation()
@@ -3963,6 +3977,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("edit")
             self._ensure_interaction_cursor()
         else:
+            restore_mode = self._peak_edit_return_mouse_mode
+            restore_previous = self._mouse_mode == "edit_peak"
+            self._peak_edit_return_mouse_mode = None
             self._mouse_tool_toggled("edit_peak", False)
             self._edit_range_peak_id = None
             if self._span_selector is not None and self._span_selector_mode == "edit":
@@ -3974,6 +3991,10 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 self.statusBar().clearMessage()
                 self._hide_interaction_cursor()
+            if restore_previous and restore_mode not in (None, "normal", "edit_peak"):
+                index = self.mouse_mode_combo.findData(restore_mode)
+                if index >= 0:
+                    self.mouse_mode_combo.setCurrentIndex(index)
 
     def _toggle_split_mode(self, enabled: bool):
         if enabled:
@@ -4437,6 +4458,13 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.Qt.Key.Key_Delete if QT_API == 6 else QtCore.Qt.Key_Delete
         )
         if event.key() == delete_key and self.delete_selected_vertical_marker():
+            event.accept()
+            return
+        escape_key = (
+            QtCore.Qt.Key.Key_Escape if QT_API == 6 else QtCore.Qt.Key_Escape
+        )
+        if event.key() == escape_key and self.edit_peak_button.isChecked():
+            self.edit_peak_button.setChecked(False)
             event.accept()
             return
         super().keyPressEvent(event)
@@ -5146,6 +5174,10 @@ class MainWindow(QtWidgets.QMainWindow):
         before = self._capture_analysis_state()
         dialog = PeakRangeDialog(peak, float(dataset.time_min[0]), float(dataset.time_min[-1]), self._application_language, self)
         if dialog_exec(dialog):
+            if dialog.mouse_selection_requested:
+                self._select_peak_ids([peak_id])
+                self.edit_peak_button.setChecked(True)
+                return
             peak.start_min = dialog.start.value()
             peak.end_min = dialog.end.value()
             peak.baseline_mode = dialog.baseline_mode.currentData()

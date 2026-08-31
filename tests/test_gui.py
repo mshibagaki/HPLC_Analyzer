@@ -26,6 +26,7 @@ from hplc_app.dialogs import (
     LabDatabaseDialog,
     LegendComposerDialog,
     MetadataDialog,
+    PeakRangeDialog,
     PresetPreviewDialog,
     PresetManagerDialog,
     PreferencesDialog,
@@ -4811,6 +4812,164 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.project.dirty, dirty)
         window.project.dirty = False
         window.close()
+
+    def test_peak_range_dialog_enters_mouse_edit_and_restores_previous_mode(self):
+        window = self.make_window()
+        try:
+            dataset = window.project.datasets[0]
+            peak = dataset.peaks[0]
+            dialog = PeakRangeDialog(
+                peak,
+                float(dataset.time_min[0]),
+                float(dataset.time_min[-1]),
+                language="ja",
+                parent=window,
+            )
+            dialog.mouse_selection_button.click()
+            self.assertTrue(dialog.mouse_selection_requested)
+
+            select_index = window.mouse_mode_combo.findData("peak_select")
+            window.mouse_mode_combo.setCurrentIndex(select_index)
+            self.assertEqual(window._mouse_mode, "peak_select")
+            window.peak_table.selectRow(0)
+
+            mouse_dialog = PeakRangeDialog(
+                peak,
+                float(dataset.time_min[0]),
+                float(dataset.time_min[-1]),
+                language="en",
+                parent=window,
+            )
+            mouse_dialog.mouse_selection_requested = True
+            with patch("hplc_app.gui.PeakRangeDialog", return_value=mouse_dialog), \
+                    patch("hplc_app.gui.dialog_exec", return_value=True):
+                window.edit_peak_properties()
+
+            self.assertTrue(window.edit_peak_button.isChecked())
+            self.assertEqual(window._mouse_mode, "edit_peak")
+            self.assertEqual(window.mouse_mode_combo.currentData(), "edit_peak")
+            self.assertEqual(window._edit_range_peak_id, peak.id)
+            self.assertTrue(window.statusBar().currentMessage())
+
+            window._on_edit_span_selected(4.0, 9.0)
+            self.assertFalse(window.edit_peak_button.isChecked())
+            self.assertEqual(window._mouse_mode, "peak_select")
+            self.assertEqual(window.mouse_mode_combo.currentData(), "peak_select")
+            self.assertEqual((peak.start_min, peak.end_min), (4.0, 9.0))
+
+            before_cancel = (peak.start_min, peak.end_min)
+            with patch("hplc_app.gui.PeakRangeDialog", return_value=mouse_dialog), \
+                    patch("hplc_app.gui.dialog_exec", return_value=True):
+                window.edit_peak_properties()
+            key_press = (
+                QtCore.QEvent.Type.KeyPress
+                if QT_API == 6 else QtCore.QEvent.KeyPress
+            )
+            escape_key = (
+                QtCore.Qt.Key.Key_Escape
+                if QT_API == 6 else QtCore.Qt.Key_Escape
+            )
+            no_modifier = (
+                QtCore.Qt.KeyboardModifier.NoModifier
+                if QT_API == 6 else QtCore.Qt.NoModifier
+            )
+            window.keyPressEvent(
+                QtGui.QKeyEvent(key_press, escape_key, no_modifier)
+            )
+            self.assertFalse(window.edit_peak_button.isChecked())
+            self.assertEqual(window._mouse_mode, "peak_select")
+            self.assertEqual((peak.start_min, peak.end_min), before_cancel)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_peak_selection_restyles_without_scene_rebuild(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            dataset = window.project.datasets[0]
+            first = dataset.peaks[0]
+            raw_before = (
+                dataset.time_min.copy(), dataset.intensity_uv.copy()
+            )
+            second = PeakRegion(start_min=10.0, end_min=13.0)
+            dataset.peaks.append(second)
+            recalculate_dataset_peaks(dataset)
+            window._refresh_peak_table([first.id])
+            window._plot()
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            overlay_items = {
+                peak_id: {
+                    name: tuple(value) if isinstance(value, list) else value
+                    for name, value in items.items()
+                    if name != "base_color"
+                }
+                for peak_id, items in consumer.peak_overlay_items.items()
+            }
+            before_view = consumer.capture_view_state()
+
+            with patch.object(consumer, "render", wraps=consumer.render) as render, \
+                    patch.object(window, "_plot", wraps=window._plot) as plot:
+                window.peak_table.selectRow(1)
+                self.app.processEvents()
+                self.assertEqual(render.call_count, 0)
+                self.assertEqual(plot.call_count, 0)
+                self.assertEqual(consumer.capture_view_state(), before_view)
+                for peak_id, previous in overlay_items.items():
+                    current = consumer.peak_overlay_items[peak_id]
+                    for name, item in previous.items():
+                        if isinstance(item, tuple):
+                            self.assertEqual(tuple(current[name]), item)
+                        else:
+                            self.assertIs(current[name], item)
+
+                first_brush = consumer.peak_overlay_items[first.id]["region"].brush
+                second_brush = consumer.peak_overlay_items[second.id]["region"].brush
+                self.assertNotEqual(first_brush.color().name(), "#f59e0b")
+                self.assertEqual(second_brush.color().name(), "#f59e0b")
+                self.assertAlmostEqual(second_brush.color().alphaF(), 0.24, places=2)
+
+                window.open_integration_list()
+                detached = window._integration_list_dialog
+                detached.table.selectRow(0)
+                self.app.processEvents()
+                self.assertEqual(window._selected_peak_ids(), [first.id])
+                self.assertEqual(render.call_count, 0)
+                self.assertEqual(plot.call_count, 0)
+                self.assertEqual(consumer.capture_view_state(), before_view)
+                self.assertEqual(
+                    consumer.peak_overlay_items[first.id]["region"]
+                    .brush.color().name(),
+                    "#f59e0b",
+                )
+                self.assertNotEqual(
+                    consumer.peak_overlay_items[second.id]["region"]
+                    .brush.color().name(),
+                    "#f59e0b",
+                )
+            self.assertTrue(np.array_equal(dataset.time_min, raw_before[0]))
+            self.assertTrue(np.array_equal(dataset.intensity_uv, raw_before[1]))
+
+            window.peak_table.selectRow(0)
+            window.edit_peak_button.setChecked(True)
+            core = consumer.qt_core
+            gui = consumer.qt_gui
+            self.app.sendEvent(
+                consumer.widget.viewport(),
+                gui.QKeyEvent(
+                    core.QEvent.Type.KeyPress,
+                    core.Qt.Key.Key_Escape,
+                    core.Qt.KeyboardModifier.NoModifier,
+                ),
+            )
+            self.assertFalse(window.edit_peak_button.isChecked())
+            self.assertEqual(window._mouse_mode, "normal")
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_vertical_pointer_additive_selection_bulk_delete_and_undo(self):
         window = self.make_window()

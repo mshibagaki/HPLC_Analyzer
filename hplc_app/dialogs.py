@@ -3178,6 +3178,16 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         self.azimuth_spin = spin(options.azimuth_deg, -180.0, 180.0, 5.0)
         view_row.addWidget(self.elevation_spin)
         view_row.addWidget(self.azimuth_spin)
+        self.reset_view_button = QtWidgets.QPushButton(
+            "初期表示に戻す" if language == "ja" else "Reset view"
+        )
+        self.reset_view_button.setToolTip(
+            "仰角と方位角を初期値へ戻します。戻したあとも回転できます。"
+            if language == "ja"
+            else "Return the elevation and azimuth to their initial values. "
+            "The view can still be rotated afterwards."
+        )
+        view_row.addWidget(self.reset_view_button)
         form.addRow("仰角 / 方位角" if language == "ja" else "Elevation / azimuth", view_widget)
 
         aspect_widget = QtWidgets.QWidget()
@@ -3227,6 +3237,11 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         form.addRow("濃い側" if language == "ja" else "Dense end", density_widget)
         self.axis_width_spin = spin(options.axis_line_width, 0.1, 10.0, 0.1)
         form.addRow("軸線幅" if language == "ja" else "Axis line width", self.axis_width_spin)
+        self.grid_checkbox = QtWidgets.QCheckBox(
+            "グリッド線を表示する" if language == "ja" else "Show grid lines"
+        )
+        self.grid_checkbox.setChecked(bool(options.show_grid))
+        form.addRow("グリッド" if language == "ja" else "Grid", self.grid_checkbox)
 
         form.addItem(QtWidgets.QSpacerItem(1, 1, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding))
         self.error_label = QtWidgets.QLabel()
@@ -3260,6 +3275,7 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             self.colormap_combo,
             self.density_slider,
             self.axis_width_spin,
+            self.grid_checkbox,
         )
         for widget in widgets:
             signal = (
@@ -3267,9 +3283,12 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
                 if isinstance(widget, QtWidgets.QLineEdit)
                 else widget.currentIndexChanged
                 if isinstance(widget, QtWidgets.QComboBox)
+                else widget.toggled
+                if isinstance(widget, QtWidgets.QCheckBox)
                 else widget.valueChanged
             )
             signal.connect(self.refresh_preview)
+        self.reset_view_button.clicked.connect(self.reset_view)
         self.color_mode_combo.currentIndexChanged.connect(self._update_color_controls)
         self.close_button.clicked.connect(self.accept)
         self._update_color_controls()
@@ -3291,7 +3310,14 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             colormap=self.colormap_combo.currentText(),
             density_percent=self.density_slider.value(),
             axis_line_width=self.axis_width_spin.value(),
+            show_grid=self.grid_checkbox.isChecked(),
         )
+
+    def reset_view(self):
+        """Return only the two view angles to the documented initial values."""
+        defaults = ThreeDPlotOptions()
+        self.elevation_spin.setValue(defaults.elevation_deg)
+        self.azimuth_spin.setValue(defaults.azimuth_deg)
 
     def _update_color_controls(self, *_args):
         enabled = self.color_mode_combo.currentData() == "gradient"

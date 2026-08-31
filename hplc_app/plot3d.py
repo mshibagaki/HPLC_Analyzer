@@ -57,6 +57,7 @@ class ThreeDPlotOptions:
     colormap: str = "Blues"
     density_percent: int = 100
     axis_line_width: float = 4.0
+    show_grid: bool = False
 
 
 def gradient_colors(name: str, density_percent: int, count: int):
@@ -196,7 +197,8 @@ def build_3d_chromatogram_figure(
     axis.zaxis.set_major_locator(MultipleLocator(options.z_tick_interval))
     axis.view_init(elev=options.elevation_deg, azim=options.azimuth_deg)
     axis.set_box_aspect(aspect)
-    axis.grid(False)
+    # Grid lines only; the panes stay hidden either way.
+    axis.grid(bool(options.show_grid))
     for item in (axis.xaxis, axis.yaxis, axis.zaxis):
         item.pane.set_visible(False)
         item.line.set_color("#000000")

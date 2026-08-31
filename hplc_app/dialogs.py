@@ -22,6 +22,7 @@ from .database import (
     export_database_csvs,
 )
 from .import_batch import discover_chromatogram_files_with_report
+from .i18n import Translator
 from .models import (
     AnalysisMethod,
     Dataset,
@@ -521,6 +522,11 @@ class DirectoryImportDialog(QtWidgets.QDialog):
             else "Include subfolders"
         )
         root.addWidget(self.recursive_checkbox)
+        self.register_work_directory_checkbox = QtWidgets.QCheckBox(
+            Translator(language)("register_import_directory")
+        )
+        self.register_work_directory_checkbox.setChecked(True)
+        root.addWidget(self.register_work_directory_checkbox)
         self.preference_label = QtWidgets.QLabel(
             "同じディレクトリに、拡張子を除く名前が同じ .gcd と .txt がある場合は、"
             "大文字・小文字を区別せず .gcd を優先します。"
@@ -625,6 +631,10 @@ class DirectoryImportDialog(QtWidgets.QDialog):
     @property
     def recursive(self):
         return self.recursive_checkbox.isChecked()
+
+    @property
+    def register_work_directory(self):
+        return self.register_work_directory_checkbox.isChecked()
 
 
 class WorkDirectoriesDialog(QtWidgets.QDialog):

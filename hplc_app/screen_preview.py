@@ -119,13 +119,16 @@ class ExperimentalScreenPreview:
                 primary.showAxis("right", owner.axes_right is not None)
             for _view, axis, _host in self.consumer.gradient_layers:
                 axis.setVisible(owner.axes_gradient is not None)
+            # Only the X axis contributes grid lines; the requested grid is the
+            # vertical set alone. The existing show_major_grid setting keeps its
+            # name and its on/off meaning.
             primary.showGrid(
-                x=owner.project.method.show_major_grid,
-                y=owner.project.method.show_major_grid, alpha=0.2,
+                x=owner.project.method.show_major_grid, y=False, alpha=0.2,
             )
             if lower is not None:
-                lower.showGrid(x=owner.project.method.show_major_grid,
-                               y=owner.project.method.show_major_grid, alpha=0.2)
+                lower.showGrid(
+                    x=owner.project.method.show_major_grid, y=False, alpha=0.2,
+                )
             x_axes = [primary.getAxis("bottom")]
             if lower is not None:
                 x_axes.append(lower.getAxis("bottom"))

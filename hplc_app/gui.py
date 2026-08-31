@@ -1534,6 +1534,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reset_view_button.clicked.connect(self._reset_view)
         self.reset_x_view_button.clicked.connect(self._reset_x_view)
         self.reset_y_view_button.clicked.connect(self._reset_y_view)
+        self._install_view_shortcuts()
         self.peak_table.itemDoubleClicked.connect(self._peak_item_double_clicked)
         self.screen_render_surface.connect_event("scroll_event", self._on_scroll)
         self.screen_render_surface.connect_event(
@@ -1827,6 +1828,42 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
         return True
 
+    # Single letters, so they must never be swallowed while text is being typed.
+    VIEW_SHORTCUT_KEYS = (("x", "_reset_x_view"), ("y", "_reset_y_view"),
+                          ("w", "_reset_view"))
+
+    def _install_view_shortcuts(self):
+        """Bind x / y / w to the existing full-view buttons, both renderers.
+
+        The shortcuts live on the window rather than on one renderer widget, so
+        they behave the same for the Matplotlib canvas and the native preview.
+        A shortcut consumes its key before the focused widget sees it, so they
+        are disabled outright while an editor has focus instead of being
+        filtered when they fire.
+        """
+        shortcut_class = getattr(QtGui, "QShortcut", None) or QtWidgets.QShortcut
+        self._view_shortcuts = []
+        for key, slot_name in self.VIEW_SHORTCUT_KEYS:
+            shortcut = shortcut_class(QtGui.QKeySequence(key), self)
+            shortcut.activated.connect(getattr(self, slot_name))
+            self._view_shortcuts.append(shortcut)
+        application = QtWidgets.QApplication.instance()
+        if application is not None:
+            application.focusChanged.connect(self._update_view_shortcuts)
+        self._update_view_shortcuts()
+
+    def _update_view_shortcuts(self, _old=None, new=None):
+        widget = new if new is not None else QtWidgets.QApplication.focusWidget()
+        editing = isinstance(widget, (
+            QtWidgets.QLineEdit,
+            QtWidgets.QAbstractSpinBox,
+            QtWidgets.QTextEdit,
+            QtWidgets.QPlainTextEdit,
+            QtWidgets.QComboBox,
+        ))
+        for shortcut in getattr(self, "_view_shortcuts", ()):
+            shortcut.setEnabled(not editing)
+
     def _update_dataset_order_buttons(self):
         row = self.dataset_table.currentRow()
         count = len(self.project.datasets)
@@ -2095,6 +2132,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.reset_view_button.setText(t("reset_view"))
         self.reset_x_view_button.setText(t("reset_x_view"))
         self.reset_y_view_button.setText(t("reset_y_view"))
+        # The keys are the same in both languages, so the hint needs no wording.
+        for button, key in (
+            (self.reset_view_button, "W"),
+            (self.reset_x_view_button, "X"),
+            (self.reset_y_view_button, "Y"),
+        ):
+            button.setToolTip("%s (%s)" % (button.text(), key))
         self.zoom_axis_label.setText(t("zoom_axis"))
         self.zoom_axis_combo.setItemText(0, t("zoom_auto"))
         self.zoom_axis_combo.setItemText(1, t("zoom_both"))
@@ -3243,6 +3287,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.axes.grid(
                 True,
                 which="major",
+                # Vertical lines only, matching the native screen renderer.
+                axis="x",
                 color="#d1d5db",
                 linewidth=0.6,
                 alpha=0.75,
@@ -3254,6 +3300,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.axes_overview.grid(
                     True,
                     which="major",
+                    axis="x",
                     color="#d1d5db",
                     linewidth=0.5,
                     alpha=0.6,
@@ -3604,6 +3651,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.axes.grid(
                 True,
                 which="major",
+                # Vertical lines only, matching the native screen renderer.
+                axis="x",
                 color="#d1d5db",
                 linewidth=0.6,
                 alpha=0.75,
@@ -3615,6 +3664,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.axes_overview.grid(
                     True,
                     which="major",
+                    axis="x",
                     color="#d1d5db",
                     linewidth=0.5,
                     alpha=0.6,

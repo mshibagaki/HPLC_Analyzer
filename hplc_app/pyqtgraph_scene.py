@@ -88,6 +88,7 @@ class PyQtGraphSceneConsumer:
         self.secondary.setXLink(self.primary)
         self.gradient_axis = self.pg.AxisItem("right")
         self.primary.layout.addItem(self.gradient_axis, 2, 3)
+        self._separate_gradient_axis_column(self.primary)
         self.primary.scene().addItem(self.gradient)
         self.gradient_axis.linkToView(self.gradient)
         self.gradient.setXLink(self.primary)
@@ -97,6 +98,7 @@ class PyQtGraphSceneConsumer:
             gradient_secondary = self.pg.ViewBox()
             gradient_axis_secondary = self.pg.AxisItem("right")
             self.secondary_plot.layout.addItem(gradient_axis_secondary, 2, 3)
+            self._separate_gradient_axis_column(self.secondary_plot)
             self.secondary_plot.scene().addItem(gradient_secondary)
             gradient_axis_secondary.linkToView(gradient_secondary)
             gradient_secondary.setXLink(self.primary)
@@ -148,6 +150,14 @@ class PyQtGraphSceneConsumer:
         self._pointer_handler = None
         self.overview_state = ScreenOverviewState(False, (0.0, 1.0), (0.0, 1.0))
         self._install_pointer_filter()
+
+    # A right-oriented AxisItem draws its rotated title 5 px past its own right
+    # edge, so with no spacing the Y2 title lands on top of the B% axis line.
+    GRADIENT_AXIS_COLUMN_SPACING = 12.0
+
+    def _separate_gradient_axis_column(self, plot):
+        """Keep the second Y-axis title clear of the B% axis beside it."""
+        plot.layout.setColumnSpacing(2, self.GRADIENT_AXIS_COLUMN_SPACING)
 
     def _install_pointer_filter(self):
         owner_ref = weakref.ref(self)

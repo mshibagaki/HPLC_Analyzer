@@ -5070,6 +5070,177 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_view_shortcuts_reuse_the_full_view_buttons_in_both_renderers(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        window._plot(preserve_view=False)
+        shortcuts = {
+            shortcut.key().toString().lower(): shortcut
+            for shortcut in window._view_shortcuts
+        }
+        self.assertEqual(sorted(shortcuts), ["w", "x", "y"])
+
+        def zoom_in():
+            window.axes.set_xlim(5.0, 12.0)
+            window.axes.set_ylim(-10.0, 10.0)
+            window.axes_right.set_ylim(-20.0, 20.0)
+
+        # Each key must land on exactly the state its button produces.
+        for key, button in (
+            ("x", window.reset_x_view_button),
+            ("y", window.reset_y_view_button),
+            ("w", window.reset_view_button),
+        ):
+            with self.subTest(key=key):
+                zoom_in()
+                button.click()
+                by_button = (
+                    window.axes.get_xlim(),
+                    window.axes.get_ylim(),
+                    window.axes_right.get_ylim(),
+                )
+                zoom_in()
+                shortcuts[key].activated.emit()
+                self.app.processEvents()
+                self.assertEqual(
+                    (
+                        window.axes.get_xlim(),
+                        window.axes.get_ylim(),
+                        window.axes_right.get_ylim(),
+                    ),
+                    by_button,
+                )
+                self.assertIn(key.upper(), button.toolTip())
+
+        # A shortcut consumes its key before the focused widget sees it, so the
+        # single letters have to be disabled outright while text is edited.
+        editor = QtWidgets.QLineEdit(window)
+        window._update_view_shortcuts(None, editor)
+        for shortcut in window._view_shortcuts:
+            self.assertFalse(shortcut.isEnabled())
+        window._update_view_shortcuts(None, window.dataset_table)
+        for shortcut in window._view_shortcuts:
+            self.assertTrue(shortcut.isEnabled())
+        window._update_view_shortcuts(None, window.view_mode_combo)
+        for shortcut in window._view_shortcuts:
+            self.assertFalse(shortcut.isEnabled())
+        editor.deleteLater()
+
+        if QT_API == 6 and pyqtgraph_scene_available():
+            # The same keys must work while the native renderer is on screen.
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            preview = window._screen_preview
+            self.assertIsNotNone(preview)
+            window._update_view_shortcuts(None, preview.consumer.widget)
+            for shortcut in window._view_shortcuts:
+                self.assertTrue(shortcut.isEnabled())
+            state = preview.consumer.capture_view_state()
+            narrowed = ScreenViewState(
+                x=(state.x[0] + 1.0, state.x[1] - 1.0),
+                y1=state.y1, y2=state.y2, gradient=state.gradient,
+            )
+            preview.consumer.apply_view_state(
+                narrowed, compose_overview_state(False, state.x, narrowed.x)
+            )
+            self.assertNotEqual(
+                preview.consumer.capture_view_state().x, window._full_x_bounds()
+            )
+            shortcuts["x"].activated.emit()
+            self.app.processEvents()
+            self.assertEqual(
+                preview.consumer.capture_view_state().x, window._full_x_bounds()
+            )
+        window.project.dirty = False
+        window.close()
+
+    def test_screen_grid_draws_vertical_lines_only_in_both_renderers(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        for enabled in (True, False):
+            with self.subTest(show_major_grid=enabled):
+                window.project.method.show_major_grid = enabled
+                window._plot(preserve_view=False)
+                self.app.processEvents()
+                # The existing setting keeps its on/off meaning for the X lines.
+                self.assertEqual(
+                    [line.get_visible() for line in window.axes.get_xgridlines()],
+                    [enabled] * len(window.axes.get_xgridlines()),
+                )
+                # No horizontal grid line is ever drawn now.
+                self.assertFalse(
+                    any(line.get_visible() for line in window.axes.get_ygridlines())
+                )
+
+        if not (QT_API == 6 and pyqtgraph_scene_available()):
+            window.project.dirty = False
+            window.close()
+            return
+        window.screen_preview_checkbox.setChecked(True)
+        self.app.processEvents()
+        preview = window._screen_preview
+        self.assertIsNotNone(preview)
+        for view_mode in ("single", "split_y_axes"):
+            for enabled in (True, False):
+                with self.subTest(view_mode=view_mode, show_major_grid=enabled):
+                    window.project.method.view_mode = view_mode
+                    window.project.method.show_major_grid = enabled
+                    window._plot()
+                    self.app.processEvents()
+                    consumer = window._screen_preview.consumer
+                    plots = [consumer.primary]
+                    if consumer.secondary_plot is not None:
+                        plots.append(consumer.secondary_plot)
+                    for plot in plots:
+                        self.assertEqual(plot.ctrl.xGridCheck.isChecked(), enabled)
+                        self.assertFalse(plot.ctrl.yGridCheck.isChecked())
+        window.project.dirty = False
+        window.close()
+
+    def test_native_second_axis_title_stays_clear_of_the_gradient_axis(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        window.project.method.show_gradient_b = True
+        window.project.method.y_axis_2_label = "吸光度 214 nm (mAU)"
+        window.show()
+        self.app.processEvents()
+        window.screen_preview_checkbox.setChecked(True)
+        self.app.processEvents()
+        preview = window._screen_preview
+        self.assertIsNotNone(preview)
+
+        def title_gap(host, gradient_axis):
+            """Scene distance from the Y2 title's right edge to the B% axis."""
+            axis = host.getAxis("right")
+            label = axis.label
+            label_right = axis.mapRectFromItem(label, label.boundingRect()).right()
+            title_edge = axis.mapToScene(
+                QtCore.QPointF(label_right, 0.0)
+            ).x()
+            gradient_edge = gradient_axis.mapToScene(QtCore.QPointF(0.0, 0.0)).x()
+            return gradient_edge - title_edge
+
+        for view_mode in ("single", "split_y_axes"):
+            with self.subTest(view_mode=view_mode):
+                window.project.method.view_mode = view_mode
+                window._plot()
+                self.app.processEvents()
+                consumer = window._screen_preview.consumer
+                for _view, gradient_axis, host in consumer.gradient_layers:
+                    self.assertTrue(gradient_axis.isVisible())
+                    # A right AxisItem draws its rotated title past its own edge,
+                    # so without the reserved column spacing this is negative.
+                    self.assertGreater(title_gap(host, gradient_axis), 0.0)
+                    self.assertEqual(
+                        host.layout.columnSpacing(2),
+                        consumer.GRADIENT_AXIS_COLUMN_SPACING,
+                    )
+        window.project.dirty = False
+        window.close()
+
     def test_full_x_and_full_y_buttons_reset_only_requested_axes(self):
         window = self.make_window()
         window._plot(preserve_view=False)

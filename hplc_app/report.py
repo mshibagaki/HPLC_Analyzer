@@ -185,6 +185,7 @@ def _add_peak_table(
     options: ReportOptions,
     number_labels=None,
     parent_numbers=None,
+    fit_axis=False,
 ):
     axis.axis("off")
     headers = ["#", "種別／親" if language == "ja" else "Type / parent"]
@@ -224,13 +225,17 @@ def _add_peak_table(
             fontsize=9,
         )
         return
-    table = axis.table(
-        cellText=rows,
-        colLabels=headers,
-        loc="center",
-        cellLoc="center",
-        colWidths=tuple(width / width_total for width in widths),
-    )
+    table_kwargs = {
+        "cellText": rows,
+        "colLabels": headers,
+        "cellLoc": "center",
+        "colWidths": tuple(width / width_total for width in widths),
+    }
+    if fit_axis:
+        table_kwargs["bbox"] = (0.0, 0.0, 1.0, 1.0)
+    else:
+        table_kwargs["loc"] = "center"
+    table = axis.table(**table_kwargs)
     table.auto_set_font_size(False)
     table.set_fontsize(6.2)
     table.scale(1.0, 1.08)
@@ -430,7 +435,7 @@ def analysis_report_figures(
             )
         })
         figure = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
-        figure.subplots_adjust(left=0.075, right=0.9, top=0.95, bottom=0.055, hspace=0.3)
+        figure.subplots_adjust(left=0.075, right=0.9, top=0.95, bottom=0.055, hspace=0.38)
         grid = figure.add_gridspec(4, 1, height_ratios=(0.42, 0.95, 3.8, 2.65))
         title_axis = figure.add_subplot(grid[0])
         title_axis.axis("off")
@@ -465,6 +470,7 @@ def analysis_report_figures(
             options,
             number_labels=number_labels,
             parent_numbers=parent_numbers,
+            fit_axis=True,
         )
         table_axis.set_title(
             "ピーク表" if language == "ja" else "Peak table",

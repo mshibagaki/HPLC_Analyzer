@@ -2745,16 +2745,23 @@ class GuiTests(unittest.TestCase):
             item = fake.list_widget.item(row)
             item.setCheckState(CHECKED if item.data(USER_ROLE) == "label" else UNCHECKED)
         fake.separator_edit.setText("-")
+        fake.gradient_name_checkbox.setChecked(True)
         with patch("hplc_app.gui.LegendComposerDialog", return_value=fake), patch(
             "hplc_app.gui.dialog_exec", return_value=True
         ):
             window.edit_legend_composer()
         self.assertEqual(window.project.method.legend_components, ["label"])
+        self.assertTrue(
+            window.project.method.gradient_legend_include_dataset_name
+        )
         self.assertTrue(window.project.dirty)
         window.undo()
         self.assertEqual(
             window.project.method.legend_components,
             ["run_id", "label", "timestamp"],
+        )
+        self.assertFalse(
+            window.project.method.gradient_legend_include_dataset_name
         )
         window.project.dirty = False
         window.close()
@@ -3729,8 +3736,19 @@ class GuiTests(unittest.TestCase):
                             self.assertEqual(actual.integration_source, parent.integration_source)
                         recalculate_dataset_peaks(expected)
                         self.assertEqual(selected.peaks, expected.peaks)
-                        self.assertLess(abs(sum(p.raw_area_uv_sec for p in new)
-                                            - parent.raw_area_uv_sec), 0.01)
+                        area_difference = abs(
+                            sum(p.raw_area_uv_sec for p in new) - parent.raw_area_uv_sec
+                        )
+                        # A real pointer position is rounded to a display pixel and
+                        # then to the nearest acquired sample.  Shimadzu timestamps
+                        # are not perfectly uniform, so splitting the piecewise
+                        # linear baseline at an adjacent sample can leave a
+                        # few-parts-per-million trapezoid difference even though
+                        # both children preserve the parent's baseline endpoints.
+                        self.assertLess(
+                            area_difference,
+                            max(0.01, abs(parent.raw_area_uv_sec) * 5.0e-6),
+                        )
                         self.assertEqual(window.project.datasets[1 - row].peaks, untouched)
                         self.assertEqual(window._screen_view_state(), state)
                         self.assertEqual(window._selected_peak_ids(), [new[1].id])
@@ -4945,6 +4963,54 @@ class GuiTests(unittest.TestCase):
         self.assertTrue((window._dataset_lines[other.id].get_xdata() == other_x).all())
         self.assertTrue((window._dataset_lines[other.id].get_ydata() == other_y).all())
         window._on_canvas_release(SimpleNamespace())
+        window.project.dirty = False
+        window.close()
+
+    def test_reset_trace_position_restores_exact_display_and_is_one_undo_step(self):
+        window = self.make_window()
+        window.show()
+        self.app.processEvents()
+        move_row = window.navigation_group.layout().itemAtPosition(1, 0).layout()
+        self.assertGreaterEqual(move_row.indexOf(window.move_trace_button), 0)
+        self.assertGreaterEqual(move_row.indexOf(window.reset_trace_position_button), 0)
+        for button in (window.move_trace_button, window.reset_trace_position_button):
+            self.assertGreaterEqual(
+                button.contentsRect().width(),
+                button.fontMetrics().horizontalAdvance(button.text()),
+            )
+        selected, other = window.project.datasets
+        original_x = window._dataset_lines[selected.id].get_xdata().copy()
+        original_y = window._dataset_lines[selected.id].get_ydata().copy()
+        raw_time = selected.time_min.copy()
+        raw_values = selected.intensity_uv.copy()
+        other_state = (other.x_shift_min, other.offset)
+        selected.x_shift_min = 0.75
+        selected.offset = 1250.0
+        recalculate_dataset_peaks(selected)
+        window._plot()
+        window._reset_undo_history()
+        window.project.dirty = False
+
+        window.reset_trace_position_button.click()
+        self.assertEqual((selected.x_shift_min, selected.offset), (0.0, 0.0))
+        self.assertEqual((other.x_shift_min, other.offset), other_state)
+        np.testing.assert_array_equal(
+            window._dataset_lines[selected.id].get_xdata(), original_x
+        )
+        np.testing.assert_array_equal(
+            window._dataset_lines[selected.id].get_ydata(), original_y
+        )
+        np.testing.assert_array_equal(selected.time_min, raw_time)
+        np.testing.assert_array_equal(selected.intensity_uv, raw_values)
+        self.assertEqual(len(window._undo_stack), 1)
+
+        window.undo()
+        self.assertEqual((selected.x_shift_min, selected.offset), (0.75, 1250.0))
+        window.redo()
+        self.assertEqual((selected.x_shift_min, selected.offset), (0.0, 0.0))
+        undo_count = len(window._undo_stack)
+        window.reset_trace_position_button.click()
+        self.assertEqual(len(window._undo_stack), undo_count)
         window.project.dirty = False
         window.close()
 
@@ -6815,12 +6881,26 @@ class GuiTests(unittest.TestCase):
 
     def test_gradient_legend_can_hide_or_show_chromatogram_name(self):
         window = self.make_window()
+        window.show()
+        self.app.processEvents()
         self.assertFalse(window.project.method.gradient_legend_include_dataset_name)
+        self.assertFalse(hasattr(window, "gradient_legend_name_checkbox"))
+        self.assertEqual(window.legend_axis_button_row.indexOf(window.legend_settings_button), 0)
+        self.assertEqual(window.legend_axis_button_row.indexOf(window.axis_labels_button), 1)
+        for button in (window.legend_settings_button, window.axis_labels_button):
+            self.assertGreaterEqual(
+                button.contentsRect().width(),
+                button.fontMetrics().horizontalAdvance(button.text()),
+            )
         labels = window.axes_gradient.get_legend_handles_labels()[1]
         self.assertEqual(labels, ["%B"])
 
-        window.gradient_legend_name_checkbox.setChecked(True)
-        self.app.processEvents()
+        dialog = LegendComposerDialog(window.project.method, "ja")
+        dialog.gradient_name_checkbox.setChecked(True)
+        with patch("hplc_app.gui.LegendComposerDialog", return_value=dialog), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ):
+            window.edit_legend_composer()
         labels = window.axes_gradient.get_legend_handles_labels()[1]
         self.assertEqual(
             labels, ["%B ({})".format(window.project.datasets[0].legend_label())]

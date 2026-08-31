@@ -3950,6 +3950,64 @@ class ProjectTests(unittest.TestCase):
             self.assertGreater(image.shape[0], image.shape[1])
             self.assertAlmostEqual(image.shape[0] / image.shape[1], 297.0 / 210.0, delta=0.02)
 
+    def test_a4_report_keeps_full_first_page_peak_table_below_x_label(self):
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        dataset.label = "Crowded report sample"
+        dataset.peaks = [
+            PeakRegion(
+                start_min=1.0 + index * 4.0,
+                end_min=2.0 + index * 4.0,
+                retention_time_min=1.5 + index * 4.0,
+                raw_area_uv_sec=1000.0 + index,
+                area_mau_sec=1.0 + index / 100.0,
+                area_percent=5.0,
+                fwhm_min=0.2,
+            )
+            for index in range(20)
+        ]
+        project = Project(title="Crowded report", datasets=[dataset])
+        figure = analysis_report_figures(project, [dataset], "en")[0]
+        canvas = FigureCanvasAgg(figure)
+        canvas.draw()
+        renderer = canvas.get_renderer()
+        plot_axis = next(
+            axis
+            for axis in figure.axes
+            if axis.get_title(loc="left") == "Chromatogram"
+        )
+        table_axis = next(axis for axis in figure.axes if axis.tables)
+        x_label_box = plot_axis.xaxis.label.get_window_extent(renderer)
+        table_box = table_axis.tables[0].get_window_extent(renderer)
+        figure_box = figure.get_window_extent(renderer)
+        self.assertGreater(x_label_box.y0 - table_box.y1, 4.0)
+        self.assertGreaterEqual(table_box.y0, figure_box.y0)
+        self.assertIn("Crowded report", [text.get_text() for text in figure.axes[0].texts])
+        self.assertTrue(figure.axes[1].texts)
+        figure.clear()
+
+        dataset.peaks.extend(
+            PeakRegion(
+                start_min=1.0 + index * 4.0,
+                end_min=2.0 + index * 4.0,
+                retention_time_min=1.5 + index * 4.0,
+                raw_area_uv_sec=1000.0 + index,
+                area_mau_sec=1.0 + index / 100.0,
+                area_percent=4.0,
+                fwhm_min=0.2,
+            )
+            for index in range(20, 25)
+        )
+        continued = analysis_report_figures(project, [dataset], "en")
+        self.assertEqual(len(continued), 2)
+        self.assertIn(
+            "Peak table (continued)",
+            continued[1].axes[0].get_title(loc="left"),
+        )
+        for page in continued:
+            page.clear()
+
 
 class _FakeSettingsBackend:
     def __init__(

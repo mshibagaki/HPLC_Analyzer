@@ -1305,7 +1305,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_retention_checkbox = QtWidgets.QCheckBox()
         self.show_gradient_checkbox = QtWidgets.QCheckBox()
         self.show_grid_checkbox = QtWidgets.QCheckBox()
-        self.gradient_legend_name_checkbox = QtWidgets.QCheckBox()
         self.legend_label = QtWidgets.QLabel()
         self.legend_combo = QtWidgets.QComboBox()
         for label, value in (
@@ -1327,15 +1326,18 @@ class MainWindow(QtWidgets.QMainWindow):
         display_controls.addWidget(self.unit_combo, 0, 1)
         display_controls.addWidget(self.legend_label, 1, 0)
         display_controls.addWidget(self.legend_combo, 1, 1)
-        display_controls.addWidget(self.legend_settings_button, 2, 0, 1, 2)
+        self.legend_axis_button_row = QtWidgets.QHBoxLayout()
+        self.legend_axis_button_row.setContentsMargins(0, 0, 0, 0)
+        self.legend_axis_button_row.setSpacing(4)
+        self.legend_axis_button_row.addWidget(self.legend_settings_button)
+        self.legend_axis_button_row.addWidget(self.axis_labels_button)
+        display_controls.addLayout(self.legend_axis_button_row, 2, 0, 1, 2)
         display_controls.addWidget(self.show_integration_checkbox, 3, 0, 1, 2)
         display_controls.addWidget(self.show_retention_checkbox, 4, 0, 1, 2)
         display_controls.addWidget(self.show_gradient_checkbox, 5, 0, 1, 2)
-        display_controls.addWidget(self.gradient_legend_name_checkbox, 6, 0, 1, 2)
-        display_controls.addWidget(self.show_grid_checkbox, 7, 0, 1, 2)
-        display_controls.addWidget(self.axis_labels_button, 8, 0, 1, 2)
-        display_controls.addWidget(self.annotation_button, 9, 0, 1, 2)
-        display_controls.setRowStretch(10, 1)
+        display_controls.addWidget(self.show_grid_checkbox, 6, 0, 1, 2)
+        display_controls.addWidget(self.annotation_button, 7, 0, 1, 2)
+        display_controls.setRowStretch(8, 1)
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
@@ -1359,6 +1361,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_mode_combo.addItem("Split Y1 / Y2", "split_y_axes")
         self.move_trace_button = QtWidgets.QPushButton()
         self.move_trace_button.setCheckable(True)
+        self.reset_trace_position_button = QtWidgets.QPushButton()
         self.move_axis_combo = QtWidgets.QComboBox()
         self.move_axis_combo.addItem("X + Y", "both")
         self.move_axis_combo.addItem("X", "x")
@@ -1371,8 +1374,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pointer_control_button.setIconSize(QtCore.QSize(18, 18))
         navigation_controls.addWidget(self.mouse_mode_label, 0, 0)
         navigation_controls.addWidget(self.mouse_mode_combo, 0, 1)
-        navigation_controls.addWidget(self.move_trace_button, 1, 0)
-        navigation_controls.addWidget(self.move_axis_combo, 1, 1)
+        move_controls = QtWidgets.QHBoxLayout()
+        move_controls.setContentsMargins(0, 0, 0, 0)
+        move_controls.setSpacing(4)
+        move_controls.addWidget(self.move_trace_button)
+        move_controls.addWidget(self.move_axis_combo)
+        move_controls.addWidget(self.reset_trace_position_button)
+        navigation_controls.addLayout(move_controls, 1, 0, 1, 2)
         navigation_controls.addWidget(self.zoom_axis_label, 2, 0)
         navigation_controls.addWidget(self.zoom_axis_combo, 2, 1)
         navigation_controls.addWidget(self.view_mode_label, 3, 0)
@@ -1471,7 +1479,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_retention_checkbox.toggled.connect(self._method_controls_changed)
         self.show_gradient_checkbox.toggled.connect(self._method_controls_changed)
         self.show_grid_checkbox.toggled.connect(self._method_controls_changed)
-        self.gradient_legend_name_checkbox.toggled.connect(self._method_controls_changed)
         self.legend_combo.currentIndexChanged.connect(self._method_controls_changed)
         self.zoom_axis_combo.currentIndexChanged.connect(self._zoom_axis_changed)
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
@@ -1488,6 +1495,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select_all_peaks_button.clicked.connect(self.peak_table.selectAll)
         self.integration_list_button.clicked.connect(self.open_integration_list)
         self.move_trace_button.toggled.connect(self._toggle_move_mode)
+        self.reset_trace_position_button.clicked.connect(
+            self.reset_selected_trace_position
+        )
         self.axis_labels_button.clicked.connect(self.edit_axis_labels)
         self.legend_settings_button.clicked.connect(self.edit_legend_composer)
         self.reset_view_button.clicked.connect(self._reset_view)
@@ -2032,7 +2042,6 @@ class MainWindow(QtWidgets.QMainWindow):
             "In split view, show or hide the selected chromatogram's B% curve on both panels.",
         ))
         self.show_grid_checkbox.setText(t("show_major_grid"))
-        self.gradient_legend_name_checkbox.setText(t("gradient_legend_include_name"))
         self.reset_view_button.setText(t("reset_view"))
         self.reset_x_view_button.setText(t("reset_x_view"))
         self.reset_y_view_button.setText(t("reset_y_view"))
@@ -2051,6 +2060,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 index, t("mouse_mode_" + mode_id)
             )
         self.move_trace_button.setText(t("move_trace"))
+        self.reset_trace_position_button.setText(t("reset_trace_position"))
         self.pointer_action.setText(t("pointer_line"))
         self.pointer_action.setToolTip(t("pointer_hint"))
         self.pointer_toolbar_button.setAccessibleName(t("pointer_line"))
@@ -2814,11 +2824,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_grid_checkbox.blockSignals(True)
         self.show_grid_checkbox.setChecked(self.project.method.show_major_grid)
         self.show_grid_checkbox.blockSignals(False)
-        self.gradient_legend_name_checkbox.blockSignals(True)
-        self.gradient_legend_name_checkbox.setChecked(
-            self.project.method.gradient_legend_include_dataset_name
-        )
-        self.gradient_legend_name_checkbox.blockSignals(False)
         self.legend_combo.blockSignals(True)
         self.legend_combo.setCurrentIndex(max(0, self.legend_combo.findData(self.project.method.legend_location)))
         self.legend_combo.blockSignals(False)
@@ -2840,9 +2845,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method.show_retention_labels = self.show_retention_checkbox.isChecked()
         self.project.method.show_gradient_b = self.show_gradient_checkbox.isChecked()
         self.project.method.show_major_grid = self.show_grid_checkbox.isChecked()
-        self.project.method.gradient_legend_include_dataset_name = (
-            self.gradient_legend_name_checkbox.isChecked()
-        )
         self.project.method.legend_location = self.legend_combo.currentData()
         self.project.dirty = True
         self._plot()
@@ -4026,6 +4028,49 @@ class MainWindow(QtWidgets.QMainWindow):
                 or self.fraction_button.isChecked()
             ):
                 self.statusBar().clearMessage()
+
+    def reset_selected_trace_position(self):
+        dataset = self._selected_dataset()
+        if dataset is None:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("no_dataset")
+            )
+            return
+        self.move_trace_button.setChecked(False)
+        if dataset.x_shift_min == 0.0 and dataset.offset == 0.0:
+            return
+        before = self._capture_analysis_state()
+        dataset.x_shift_min = 0.0
+        dataset.offset = 0.0
+        try:
+            recalculate_dataset_peaks(dataset)
+        except ValueError as exc:
+            self._restore_analysis_state(before)
+            QtWidgets.QMessageBox.warning(
+                self, self.translator("warning"), str(exc)
+            )
+            self._plot()
+            return
+        self._push_undo_snapshot(
+            before,
+            self._history_label("移動を元に戻す", "Reset trace position"),
+        )
+        self.project.dirty = True
+        row = next(
+            (
+                index
+                for index, item in enumerate(self.project.datasets)
+                if item.id == dataset.id
+            ),
+            -1,
+        )
+        if row >= 0:
+            self._updating_table = True
+            self.dataset_table.item(row, DATASET_X_SHIFT_COLUMN).setText("0")
+            self.dataset_table.item(row, DATASET_OFFSET_COLUMN).setText("0")
+            self._updating_table = False
+        self._plot()
+        self._update_title()
 
     def _toggle_pointer_mode(self, enabled: bool):
         if enabled:

@@ -3159,6 +3159,15 @@ class LegendComposerDialog(QtWidgets.QDialog):
         self.separator_edit.setMaxLength(16)
         form.addRow("区切り文字" if language == "ja" else "Separator", self.separator_edit)
         root.addLayout(form)
+        self.gradient_name_checkbox = QtWidgets.QCheckBox(
+            "%Bの凡例にクロマトグラム名を表示"
+            if language == "ja"
+            else "Include chromatogram name in the %B legend"
+        )
+        self.gradient_name_checkbox.setChecked(
+            bool(method.gradient_legend_include_dataset_name)
+        )
+        root.addWidget(self.gradient_name_checkbox)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -3199,6 +3208,9 @@ class LegendComposerDialog(QtWidgets.QDialog):
     def apply_to_method(self, method):
         method.legend_components = self.selected_components()
         method.legend_separator = self.separator_edit.text()
+        method.gradient_legend_include_dataset_name = (
+            self.gradient_name_checkbox.isChecked()
+        )
 
 
 class AxisLabelsDialog(QtWidgets.QDialog):

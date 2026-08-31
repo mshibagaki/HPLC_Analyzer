@@ -17,6 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from hplc_app.analysis import recalculate_dataset_peaks
 from hplc_app.database import database_sections
 from hplc_app.dialogs import (
+    AutoPeakDetectionDialog,
     AxisLabelsDialog,
     BatchMetadataDialog,
     DirectoryImportDialog,
@@ -35,6 +36,7 @@ from hplc_app.dialogs import (
     TextAnnotationDialog,
     WorkDirectoriesDialog,
 )
+from hplc_app.auto_peak_settings import default_auto_peak_sensitivity_presets
 from hplc_app.gui import (
     DATASET_COLUMN_IDS,
     DATASET_GROUP_COLUMN,
@@ -104,6 +106,7 @@ def _trace_edit_state(datasets):
     ]
 from hplc_app.settings_store import (
     ApplicationSettings,
+    AUTO_PEAK_SENSITIVITY_PRESETS,
     DATASET_COLUMN_ORDER,
     DEFAULT_DATASET_COLUMN_ORDER,
     SCREEN_RENDERER,
@@ -5846,7 +5849,8 @@ class GuiTests(unittest.TestCase):
         method.auto_peak_max_width_min = 1.0
         method.auto_peak_min_distance_min = 0.2
         window._refresh_all(0)
-        window.auto_detect_peaks()
+        with patch("hplc_app.gui.dialog_exec", return_value=True):
+            window.auto_detect_peaks()
         self.assertEqual(len(dataset.peaks), 2)
         self.assertEqual([peak.integration_source for peak in dataset.peaks], ["auto", "auto"])
         self.assertEqual(window._selected_peak_rows(), [0, 1])
@@ -5858,6 +5862,86 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(len(dataset.peaks), 0)
         self.assertEqual(window.undo_action.shortcut().toString(), "Ctrl+Z")
         self.assertEqual(window.redo_action.shortcut().toString(), "Ctrl+Y")
+        window.project.dirty = False
+        window.close()
+
+    def test_auto_detection_dialog_disables_missing_range_and_returns_choices(self):
+        unavailable = AutoPeakDetectionDialog(None, "en")
+        self.assertFalse(unavailable.selected_range_radio.isEnabled())
+        self.assertTrue(unavailable.full_range_radio.isChecked())
+        unavailable.reject()
+
+        dialog = AutoPeakDetectionDialog((8.0, 3.0), "en")
+        self.assertTrue(dialog.selected_range_radio.isEnabled())
+        dialog.selected_range_radio.setChecked(True)
+        dialog.sensitivity_buttons["high"].setChecked(True)
+        dialog._accept()
+        self.assertEqual(dialog.time_range, (3.0, 8.0))
+        self.assertEqual(dialog.sensitivity_id, "high")
+
+    def test_auto_detection_cancel_does_not_detect_or_change_method(self):
+        window = self.make_window()
+        method_before = deepcopy(window.project.method)
+        peaks_before = deepcopy(window.project.datasets[0].peaks)
+        with patch("hplc_app.gui.dialog_exec", return_value=False), patch(
+            "hplc_app.gui.detect_peaks"
+        ) as detector:
+            window.auto_detect_peaks()
+        detector.assert_not_called()
+        self.assertEqual(window.project.method, method_before)
+        self.assertEqual(window.project.datasets[0].peaks, peaks_before)
+        self.assertFalse(window._undo_stack)
+        window.project.dirty = False
+        window.close()
+
+    def test_ranged_sensitivity_detection_is_one_undo_step_and_preserves_outside_peak(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        dataset.x_shift_min = 10.0
+        window._selected_time_range = (12.0, 14.0)
+        method_before = deepcopy(window.project.method)
+        outside_before = deepcopy(dataset.peaks[0])
+        candidate = PeakRegion(
+            start_min=2.2,
+            end_min=2.8,
+            retention_time_min=2.5,
+            integration_source="auto",
+        )
+        fake_dialog = SimpleNamespace(
+            time_range=(12.0, 14.0),
+            sensitivity_id="high",
+        )
+        with patch(
+            "hplc_app.gui.AutoPeakDetectionDialog", return_value=fake_dialog
+        ) as dialog_class, patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ), patch(
+            "hplc_app.gui.detect_peaks", return_value=[candidate]
+        ) as detector:
+            window.auto_detect_peaks()
+
+        self.assertEqual(dialog_class.call_args.args[0], (12.0, 14.0))
+        self.assertEqual(detector.call_args.kwargs["time_range"], (2.0, 4.0))
+        applied_method = detector.call_args.args[1]
+        high = default_auto_peak_sensitivity_presets()["high"]
+        self.assertEqual(applied_method.auto_peak_snr_threshold, high["auto_peak_snr_threshold"])
+        self.assertEqual(len(dataset.peaks), 2)
+        outside_after = next(peak for peak in dataset.peaks if peak.id == outside_before.id)
+        self.assertEqual(outside_after.start_min, outside_before.start_min)
+        self.assertEqual(outside_after.end_min, outside_before.end_min)
+        self.assertAlmostEqual(outside_after.retention_time_min, outside_before.retention_time_min)
+        self.assertAlmostEqual(outside_after.raw_area_uv_sec, outside_before.raw_area_uv_sec)
+        self.assertEqual(len(window._undo_stack), 1)
+
+        window.undo()
+        self.assertEqual(window.project.method, method_before)
+        self.assertEqual(len(dataset.peaks), 1)
+        window.redo()
+        self.assertEqual(
+            window.project.method.auto_peak_snr_threshold,
+            high["auto_peak_snr_threshold"],
+        )
+        self.assertEqual(len(dataset.peaks), 2)
         window.project.dirty = False
         window.close()
 
@@ -7124,6 +7208,16 @@ class GuiTests(unittest.TestCase):
                 save_directory=save_directory,
                 database_path=database_path,
             )
+            self.assertEqual(dialog.detection_tabs.count(), 3)
+            low_snr = dialog.detection_widgets["low"]["auto_peak_snr_threshold"]
+            low_snr.setValue(99.0)
+            dialog._reset_detection_stage("low")
+            self.assertEqual(
+                low_snr.value(),
+                default_auto_peak_sensitivity_presets()["low"][
+                    "auto_peak_snr_threshold"
+                ],
+            )
             dialog.snr.setValue(8.5)
             dialog.max_count.setValue(75)
             dialog._accept()
@@ -7132,6 +7226,12 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(dialog.database_path_value, database_path)
             self.assertEqual(dialog.detection_values["auto_peak_snr_threshold"], 8.5)
             self.assertEqual(dialog.detection_values["auto_peak_max_count"], 75)
+            self.assertEqual(
+                dialog.auto_peak_sensitivity_presets_value["medium"][
+                    "auto_peak_snr_threshold"
+                ],
+                8.5,
+            )
             window._import_directory = directory
             with patch.object(
                 QtWidgets.QFileDialog,
@@ -7147,6 +7247,46 @@ class GuiTests(unittest.TestCase):
             )
         window.project.dirty = False
         window.close()
+
+    def test_preferences_cancel_is_staged_and_accept_persists_sensitivities_globally(self):
+        window = self.make_window()
+        original = deepcopy(window._auto_peak_sensitivity_presets)
+        with patch("hplc_app.gui.dialog_exec", return_value=False):
+            window.edit_preferences()
+        self.assertEqual(window._auto_peak_sensitivity_presets, original)
+
+        updated = deepcopy(original)
+        updated["medium"]["auto_peak_snr_threshold"] = 9.25
+        fake_dialog = SimpleNamespace(
+            import_directory_value=window._import_directory,
+            save_directory_value=window._save_directory,
+            database_path_value=window._database_path,
+            automatic_update_check_value=window._automatic_update_check,
+            render_quality_value=window._render_quality,
+            auto_peak_sensitivity_presets_value=updated,
+        )
+        with patch(
+            "hplc_app.gui.PreferencesDialog", return_value=fake_dialog
+        ), patch("hplc_app.gui.dialog_exec", return_value=True):
+            window.edit_preferences()
+        self.assertEqual(
+            ApplicationSettings().get(AUTO_PEAK_SENSITIVITY_PRESETS)["medium"][
+                "auto_peak_snr_threshold"
+            ],
+            9.25,
+        )
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+        second = MainWindow()
+        self.assertEqual(
+            second._auto_peak_sensitivity_presets["medium"][
+                "auto_peak_snr_threshold"
+            ],
+            9.25,
+        )
+        second.project.dirty = False
+        second.close()
 
     def test_import_accepts_mixed_gcd_ascii_and_reports_partial_failure(self):
         window = self.make_window()

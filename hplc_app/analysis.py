@@ -399,16 +399,34 @@ def _local_peak_prominence(values: np.ndarray, index: int, radius: int) -> float
     return peak_value - max(left_minimum, right_minimum)
 
 
-def detect_peaks(dataset: Dataset, method: AnalysisMethod) -> List[PeakRegion]:
+def detect_peaks(
+    dataset: Dataset,
+    method: AnalysisMethod,
+    time_range: Optional[Tuple[float, float]] = None,
+) -> List[PeakRegion]:
     """Return positive peak candidates using noise-aware local prominence.
 
     The detector intentionally creates editable candidates rather than a final
-    result.  It uses only NumPy so the Windows 7 build does not need SciPy.
+    result. It uses only NumPy so the Windows 7 build does not need SciPy.
+    When ``time_range`` is provided, candidate detection and integration
+    boundaries are constrained to that inclusive raw-time interval. Omitting
+    the range preserves the established whole-dataset behavior.
     """
     time = np.asarray(dataset.time_min, dtype=float)
     raw = np.asarray(dataset.intensity_uv, dtype=float)
     if time.size < 5 or raw.size != time.size:
         return []
+    if time_range is not None:
+        start, end = (float(time_range[0]), float(time_range[1]))
+        if not (np.isfinite(start) and np.isfinite(end)):
+            raise ValueError("Automatic peak-detection range must be finite")
+        if start > end:
+            start, end = end, start
+        selected = (time >= start) & (time <= end)
+        if int(np.count_nonzero(selected)) < 5:
+            return []
+        time = time[selected]
+        raw = raw[selected]
     steps = np.diff(time)
     finite_steps = steps[np.isfinite(steps) & (steps > 0)]
     if finite_steps.size == 0:

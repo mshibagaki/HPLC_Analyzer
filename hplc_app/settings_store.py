@@ -17,6 +17,10 @@ import os
 from typing import Any, Callable, Dict
 
 from . import APP_NAME
+from .auto_peak_settings import (
+    default_auto_peak_sensitivity_presets,
+    normalize_auto_peak_sensitivity_presets,
+)
 from .rendering import default_render_quality, normalize_render_quality
 
 
@@ -37,6 +41,7 @@ FIGURE_FORMAT = "export/figure_format"
 NAMING_AUTHOR = "naming/author"
 LEGACY_CONDITION_PRESETS = "presets/conditions"
 LEGACY_GRADIENT_PRESETS = "presets/gradients"
+AUTO_PEAK_SENSITIVITY_PRESETS = "analysis/auto_peak_sensitivity_presets"
 
 DEFAULT_DATASET_COLUMN_ORDER = (
     "selected",
@@ -136,6 +141,11 @@ def _encode_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _auto_peak_sensitivity_presets(value: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
+    decoded = _json_object(value, fallback)
+    return normalize_auto_peak_sensitivity_presets(decoded)
+
+
 def _text_spec(default: str = "") -> SettingSpec:
     return SettingSpec(default=_constant(default), decode=_text, encode=str)
 
@@ -171,6 +181,11 @@ SETTING_SPECS: Dict[str, SettingSpec] = {
     ),
     LEGACY_GRADIENT_PRESETS: SettingSpec(
         _constant({}), _json_object, _encode_json
+    ),
+    AUTO_PEAK_SENSITIVITY_PRESETS: SettingSpec(
+        default_auto_peak_sensitivity_presets,
+        _auto_peak_sensitivity_presets,
+        _encode_json,
     ),
 }
 

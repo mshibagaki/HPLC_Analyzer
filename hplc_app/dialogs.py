@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .analysis import validate_gradient
+from .auto_peak_settings import (
+    AUTO_PEAK_FIELDS,
+    AUTO_PEAK_SENSITIVITIES,
+    default_auto_peak_sensitivity_presets,
+    normalize_auto_peak_sensitivity_presets,
+)
 from .database import (
     database_section_titles,
     database_sections,
@@ -2023,6 +2029,87 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.accept()
 
 
+class AutoPeakDetectionDialog(QtWidgets.QDialog):
+    """Choose a detection range and an application sensitivity preset."""
+
+    def __init__(self, selected_time_range=None, language="ja", parent=None):
+        super().__init__(parent)
+        self.language = language
+        self.selected_time_range = (
+            tuple(sorted(float(value) for value in selected_time_range))
+            if selected_time_range is not None
+            else None
+        )
+        self.time_range = None
+        self.sensitivity_id = "medium"
+        self.setWindowTitle(
+            "自動ピーク検出" if language == "ja" else "Automatic peak detection"
+        )
+        self.resize(520, 330)
+        root = QtWidgets.QVBoxLayout(self)
+
+        range_group = QtWidgets.QGroupBox("検出範囲" if language == "ja" else "Detection range")
+        range_layout = QtWidgets.QVBoxLayout(range_group)
+        self.full_range_radio = QtWidgets.QRadioButton(
+            "データ全体" if language == "ja" else "Entire dataset"
+        )
+        selected_label = "マウスで選択した時間範囲" if language == "ja" else "Mouse-selected time range"
+        if self.selected_time_range is not None:
+            selected_label += " (%.4g–%.4g min)" % self.selected_time_range
+        self.selected_range_radio = QtWidgets.QRadioButton(selected_label)
+        self.selected_range_radio.setEnabled(self.selected_time_range is not None)
+        self.full_range_radio.setChecked(True)
+        range_layout.addWidget(self.full_range_radio)
+        range_layout.addWidget(self.selected_range_radio)
+        if self.selected_time_range is None:
+            note = QtWidgets.QLabel(
+                "範囲を使うには、先にマウスモードの「時間範囲を選択」で指定してください。"
+                if language == "ja"
+                else "To use a range, first choose Select time range in the mouse-mode control."
+            )
+            note.setWordWrap(True)
+            range_layout.addWidget(note)
+        root.addWidget(range_group)
+
+        sensitivity_group = QtWidgets.QGroupBox(
+            "感度" if language == "ja" else "Sensitivity"
+        )
+        sensitivity_layout = QtWidgets.QVBoxLayout(sensitivity_group)
+        labels = {
+            "low": "低（候補を絞る）" if language == "ja" else "Low (fewer candidates)",
+            "medium": "中（標準）" if language == "ja" else "Medium (standard)",
+            "high": "高（候補を多く拾う）" if language == "ja" else "High (more candidates)",
+        }
+        self.sensitivity_buttons = {}
+        for sensitivity in AUTO_PEAK_SENSITIVITIES:
+            button = QtWidgets.QRadioButton(labels[sensitivity])
+            button.setProperty("sensitivity_id", sensitivity)
+            sensitivity_layout.addWidget(button)
+            self.sensitivity_buttons[sensitivity] = button
+        self.sensitivity_buttons["medium"].setChecked(True)
+        root.addWidget(sensitivity_group)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _accept(self):
+        self.time_range = (
+            self.selected_time_range
+            if self.selected_range_radio.isChecked()
+            else None
+        )
+        self.sensitivity_id = next(
+            sensitivity
+            for sensitivity, button in self.sensitivity_buttons.items()
+            if button.isChecked()
+        )
+        self.accept()
+
+
 class PreferencesDialog(QtWidgets.QDialog):
     """Application path and automatic peak-detection preferences."""
 
@@ -2036,6 +2123,7 @@ class PreferencesDialog(QtWidgets.QDialog):
         database_path: str = "",
         render_quality: str = HIGH_QUALITY,
         automatic_update_check: bool = True,
+        auto_peak_sensitivity_presets=None,
     ):
         super().__init__(parent)
         self.language = language
@@ -2140,9 +2228,17 @@ class PreferencesDialog(QtWidgets.QDialog):
         root.addWidget(update_group)
 
         detection_group = QtWidgets.QGroupBox(
-            "自動ピーク検出" if language == "ja" else "Automatic peak detection"
+            "自動ピーク検出の感度プリセット"
+            if language == "ja"
+            else "Automatic peak-detection sensitivity presets"
         )
-        form = QtWidgets.QFormLayout(detection_group)
+        detection_layout = QtWidgets.QVBoxLayout(detection_group)
+        self.detection_tabs = QtWidgets.QTabWidget()
+        self.detection_widgets = {}
+        self._detection_defaults = default_auto_peak_sensitivity_presets()
+        initial_presets = normalize_auto_peak_sensitivity_presets(
+            auto_peak_sensitivity_presets
+        )
 
         def double_spin(value, minimum, maximum, decimals=3, step=0.1):
             widget = QtWidgets.QDoubleSpinBox()
@@ -2152,64 +2248,65 @@ class PreferencesDialog(QtWidgets.QDialog):
             widget.setValue(float(value))
             return widget
 
-        self.snr = double_spin(method.auto_peak_snr_threshold, 0.0, 1000.0, 2, 0.5)
-        self.min_prominence = double_spin(
-            method.auto_peak_min_prominence_uv, 0.0, 1.0e12, 3, 10.0
+        field_specs = (
+            ("auto_peak_snr_threshold", "S/Nしきい値" if language == "ja" else "S/N threshold", (0.0, 1000.0, 2, 0.5)),
+            ("auto_peak_min_prominence_uv", "最小プロミネンス (µV)" if language == "ja" else "Minimum prominence (µV)", (0.0, 1.0e12, 3, 10.0)),
+            ("auto_peak_smoothing_min", "平滑化幅 (min)" if language == "ja" else "Smoothing width (min)", (0.0, 100.0, 4, 0.01)),
+            ("auto_peak_min_width_min", "最小ピーク幅 (min)" if language == "ja" else "Minimum peak width (min)", (0.0, 100.0, 4, 0.01)),
+            ("auto_peak_max_width_min", "最大ピーク幅 (min)" if language == "ja" else "Maximum peak width (min)", (0.0001, 1000.0, 4, 0.1)),
+            ("auto_peak_min_distance_min", "最小ピーク間隔 (min)" if language == "ja" else "Minimum peak distance (min)", (0.0, 100.0, 4, 0.01)),
+            ("auto_peak_boundary_percent", "積分境界 (%高さ)" if language == "ja" else "Integration boundary (% height)", (0.0, 50.0, 2, 0.5)),
         )
-        self.smoothing = double_spin(method.auto_peak_smoothing_min, 0.0, 100.0, 4, 0.01)
-        self.min_width = double_spin(method.auto_peak_min_width_min, 0.0, 100.0, 4, 0.01)
-        self.max_width = double_spin(method.auto_peak_max_width_min, 0.0001, 1000.0, 4, 0.1)
-        self.min_distance = double_spin(method.auto_peak_min_distance_min, 0.0, 100.0, 4, 0.01)
-        self.boundary_percent = double_spin(
-            method.auto_peak_boundary_percent, 0.0, 50.0, 2, 0.5
-        )
-        self.max_count = QtWidgets.QSpinBox()
-        self.max_count.setRange(1, 10000)
-        self.max_count.setValue(int(method.auto_peak_max_count))
+        tab_labels = {
+            "low": "低" if language == "ja" else "Low",
+            "medium": "中" if language == "ja" else "Medium",
+            "high": "高" if language == "ja" else "High",
+        }
+        for sensitivity in AUTO_PEAK_SENSITIVITIES:
+            page = QtWidgets.QWidget()
+            form = QtWidgets.QFormLayout(page)
+            widgets = {}
+            values = initial_presets[sensitivity]
+            for field, label, spin_args in field_specs:
+                widget = double_spin(values[field], *spin_args)
+                widgets[field] = widget
+                form.addRow(label, widget)
+            max_count = QtWidgets.QSpinBox()
+            max_count.setRange(1, 10000)
+            max_count.setValue(int(values["auto_peak_max_count"]))
+            widgets["auto_peak_max_count"] = max_count
+            form.addRow("最大検出数" if language == "ja" else "Maximum candidates", max_count)
+            reset_button = QtWidgets.QPushButton(
+                "この感度を既定値に戻す"
+                if language == "ja"
+                else "Reset this sensitivity to defaults"
+            )
+            reset_button.clicked.connect(
+                lambda _checked=False, stage=sensitivity: self._reset_detection_stage(stage)
+            )
+            form.addRow(reset_button)
+            self.detection_widgets[sensitivity] = widgets
+            self.detection_tabs.addTab(page, tab_labels[sensitivity])
+        detection_layout.addWidget(self.detection_tabs)
 
-        labels = (
-            ("S/Nしきい値" if language == "ja" else "S/N threshold", self.snr),
-            ("最小プロミネンス (µV)" if language == "ja" else "Minimum prominence (µV)", self.min_prominence),
-            ("平滑化幅 (min)" if language == "ja" else "Smoothing width (min)", self.smoothing),
-            ("最小ピーク幅 (min)" if language == "ja" else "Minimum peak width (min)", self.min_width),
-            ("最大ピーク幅 (min)" if language == "ja" else "Maximum peak width (min)", self.max_width),
-            ("最小ピーク間隔 (min)" if language == "ja" else "Minimum peak distance (min)", self.min_distance),
-            ("積分境界 (%高さ)" if language == "ja" else "Integration boundary (% height)", self.boundary_percent),
-            ("最大検出数" if language == "ja" else "Maximum candidates", self.max_count),
-        )
-        for label, widget in labels:
-            form.addRow(label, widget)
-        if language == "ja":
-            tooltips = (
-                (self.snr, "局所プロミネンスを、隣接点差から推定したノイズ標準偏差で割った下限です。"),
-                (self.min_prominence, "周囲の谷からピーク頂点までに必要な最小高さです。S/N条件との厳しい方を採用します。"),
-                (self.smoothing, "検出判定だけに使う平滑化幅です。元データと積分値は変更しません。"),
-                (self.min_width, "半値幅がこれより狭い候補を除外します。"),
-                (self.max_width, "探索範囲と許容する半値幅の上限です。"),
-                (self.min_distance, "これより近い候補がある場合、プロミネンスの大きい方を優先します。"),
-                (self.boundary_percent, "局所ベースラインからピーク高さの何%まで下がった点を積分境界とするかを指定します。"),
-                (self.max_count, "誤検出時に候補数が際限なく増えるのを防ぐ上限です。"),
-            )
-        else:
-            tooltips = (
-                (self.snr, "Minimum local prominence divided by robust noise sigma estimated from adjacent differences."),
-                (self.min_prominence, "Minimum apex height above the surrounding valleys; the stricter of this and S/N is used."),
-                (self.smoothing, "Smoothing used only for detection. Raw data and integrated values are unchanged."),
-                (self.min_width, "Reject candidates with a narrower full width at half height."),
-                (self.max_width, "Upper limit for the search radius and full width at half height."),
-                (self.min_distance, "When candidates are closer than this, the more prominent one is preferred."),
-                (self.boundary_percent, "Integration boundaries are placed where the signal falls to this percentage above the local baseline."),
-                (self.max_count, "Safety cap that prevents an unbounded candidate list after a poor detection setting."),
-            )
-        for widget, tooltip in tooltips:
-            widget.setToolTip(tooltip)
+        # Keep the established widget attributes for callers that customize the
+        # standard (medium) values directly.
+        medium_widgets = self.detection_widgets["medium"]
+        self.snr = medium_widgets["auto_peak_snr_threshold"]
+        self.min_prominence = medium_widgets["auto_peak_min_prominence_uv"]
+        self.smoothing = medium_widgets["auto_peak_smoothing_min"]
+        self.min_width = medium_widgets["auto_peak_min_width_min"]
+        self.max_width = medium_widgets["auto_peak_max_width_min"]
+        self.min_distance = medium_widgets["auto_peak_min_distance_min"]
+        self.boundary_percent = medium_widgets["auto_peak_boundary_percent"]
+        self.max_count = medium_widgets["auto_peak_max_count"]
         detection_note = QtWidgets.QLabel(
-            "検出結果は確定値ではなく、編集可能な積分候補として追加されます。"
+            "ここで設定した3段階は全プロジェクト共通です。検出時に選んだ段階を現在のMethodへコピーし、編集可能な積分候補を追加します。"
             if language == "ja"
-            else "Detected peaks are added as editable integration candidates, not final results."
+            else "These three levels are shared by all projects. Detection copies the chosen level into the current Method and adds editable integration candidates."
         )
         detection_note.setWordWrap(True)
-        form.addRow(detection_note)
+        detection_layout.addWidget(detection_note)
         root.addWidget(detection_group, 1)
 
         buttons = QtWidgets.QDialogButtonBox(
@@ -2227,6 +2324,23 @@ class PreferencesDialog(QtWidgets.QDialog):
         self.render_quality_value = selected_quality
         self.automatic_update_check_value = bool(automatic_update_check)
         self.detection_values = {}
+        self.auto_peak_sensitivity_presets_value = deepcopy(initial_presets)
+
+    def _detection_stage_values(self, sensitivity):
+        widgets = self.detection_widgets[sensitivity]
+        return {
+            field: (
+                widgets[field].value()
+                if field != "auto_peak_max_count"
+                else int(widgets[field].value())
+            )
+            for field in AUTO_PEAK_FIELDS
+        }
+
+    def _reset_detection_stage(self, sensitivity):
+        defaults = self._detection_defaults[sensitivity]
+        for field, widget in self.detection_widgets[sensitivity].items():
+            widget.setValue(defaults[field])
 
     def _browse_import(self):
         current = self.import_directory.text().strip()
@@ -2299,15 +2413,22 @@ class PreferencesDialog(QtWidgets.QDialog):
                 return
             if not Path(database_path).suffix:
                 database_path += ".sqlite3"
-        if self.max_width.value() < self.min_width.value():
-            QtWidgets.QMessageBox.warning(
-                self,
-                "Invalid value",
-                "最大ピーク幅は最小ピーク幅以上にしてください。"
-                if self.language == "ja"
-                else "Maximum peak width must not be smaller than minimum peak width.",
-            )
-            return
+        detection_presets = {}
+        for sensitivity in AUTO_PEAK_SENSITIVITIES:
+            values = self._detection_stage_values(sensitivity)
+            if values["auto_peak_max_width_min"] < values["auto_peak_min_width_min"]:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Invalid value",
+                    "最大ピーク幅は最小ピーク幅以上にしてください。"
+                    if self.language == "ja"
+                    else "Maximum peak width must not be smaller than minimum peak width.",
+                )
+                self.detection_tabs.setCurrentIndex(
+                    AUTO_PEAK_SENSITIVITIES.index(sensitivity)
+                )
+                return
+            detection_presets[sensitivity] = values
         self.import_directory_value = directory
         self.save_directory_value = save_directory
         self.database_path_value = database_path
@@ -2315,16 +2436,8 @@ class PreferencesDialog(QtWidgets.QDialog):
             LIGHTWEIGHT if self.lightweight_radio.isChecked() else HIGH_QUALITY
         )
         self.automatic_update_check_value = self.automatic_update_checkbox.isChecked()
-        self.detection_values = {
-            "auto_peak_snr_threshold": self.snr.value(),
-            "auto_peak_min_prominence_uv": self.min_prominence.value(),
-            "auto_peak_smoothing_min": self.smoothing.value(),
-            "auto_peak_min_width_min": self.min_width.value(),
-            "auto_peak_max_width_min": self.max_width.value(),
-            "auto_peak_min_distance_min": self.min_distance.value(),
-            "auto_peak_boundary_percent": self.boundary_percent.value(),
-            "auto_peak_max_count": self.max_count.value(),
-        }
+        self.auto_peak_sensitivity_presets_value = detection_presets
+        self.detection_values = deepcopy(detection_presets["medium"])
         self.accept()
 
 

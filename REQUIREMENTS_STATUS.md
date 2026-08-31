@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-08-31 (Issue #181 delivery)
+Updated: 2026-08-31 (Issue #183 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -19,6 +19,7 @@ This tracked file is the source of truth for the original product requests. Upda
 | Output and reports | Current view print and clipboard copy; all/visible/selected report scopes; compact peak table; per-export baseline/range/retention-time/B% options |
 | Scientific metadata | Run-owned analyte name, stable ID, aliases, source, molecular weight, extinction coefficients and units; persistence, export, and quantitation integration |
 | Peak fitting | Non-destructive Gaussian and right-tailing EMG fitting, automatic model selection, RMSE/R²/AIC, and visual overlay. Issue #181: every fit is an explicit parent-linked fitted row outside the integration collection, shown by default and distinguished in the table, Matplotlib/PyQtGraph legends, peak CSV, and PDF report; parent area, retention time, FWHM, and %Area remain unchanged; fitted rows can be recalculated or deleted independently; and a non-modal integration-list window keeps selection and note/range/fit/delete actions synchronized with the main table without owning or discarding data |
+| Automatic peak detection | Issue #183: detection now opens a cancellable dialog with whole-data or prior mouse-selected range and Low/Medium/High sensitivity choices. All eight thresholds for each level are editable and independently resettable in Preferences, persist as application-wide settings, and the chosen level is copied into the existing project Method fields. Range coordinates account for trace time shift, detection boundaries remain inside the raw-time interval, raw arrays are unchanged, omitted-range behavior is preserved, and threshold application plus candidate addition is one Undo/Redo action |
 | Preferences and colors | Persisted Japanese/English choice and default 280 nm blue-family / 214 nm red-family trace colors |
 | Update foundations | Nonblocking Stable Release check; canonical asset selection; bounded download; SHA-256 and Authenticode probes; signer allow-list policy; progress/cancel cleanup; installer execution remains disabled |
 

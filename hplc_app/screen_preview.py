@@ -76,11 +76,14 @@ class ExperimentalScreenPreview:
                             and (preview._span_drag is not None
                                  or preview._move_target is not None
                                  or preview._annotation_target is not None
-                                 or preview._zoom_drag is not None)):
+                                 or preview._zoom_drag is not None
+                                 or preview.owner.edit_peak_button.isChecked())):
                         preview.cancel_span_drag()
                         preview.cancel_move_drag()
                         preview.cancel_annotation_drag()
                         preview.cancel_zoom_drag()
+                        if preview.owner.edit_peak_button.isChecked():
+                            preview.owner.edit_peak_button.setChecked(False)
                         event.accept()
                         return True
                     if (event.type() == core.QEvent.Type.KeyPress
@@ -178,6 +181,9 @@ class ExperimentalScreenPreview:
             ))
         finally:
             self._busy = False
+
+    def set_peak_selection(self, selected_peak_ids):
+        self.consumer.set_peak_selection(selected_peak_ids)
 
     def _apply_axis_labels(self, primary, lower, scene):
         owner = self.owner

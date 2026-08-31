@@ -113,6 +113,7 @@ class PyQtGraphSceneConsumer:
         self.trace_items = {}
         self.overview_trace_items = {}
         self.fit_items = {}
+        self.peak_overlay_items = {}
         self.marker_items = {}
         self._marker_specs = ()
         self.annotation_items = {}
@@ -268,6 +269,11 @@ class PyQtGraphSceneConsumer:
         value = self.pg.mkColor(color)
         value.setAlphaF(float(alpha))
         return self.pg.mkBrush(value)
+
+    def _pen(self, color, width, alpha=1.0):
+        value = self.pg.mkColor(color)
+        value.setAlphaF(float(alpha))
+        return self.pg.mkPen(value, width=float(width))
 
     def _sync_auxiliary_views(self):
         if not self.split_y_axes:
@@ -446,6 +452,56 @@ class PyQtGraphSceneConsumer:
         item = self.annotation_items.get(annotation_id)
         if item is not None:
             item.setPos(float(x_value), float(y_value))
+
+    def set_peak_selection(self, selected_peak_ids):
+        """Restyle existing peak items without rebuilding the scene."""
+
+        selected_ids = set(selected_peak_ids or ())
+        for peak_id, overlay in self.peak_overlay_items.items():
+            selected = peak_id in selected_ids
+            color = "#f59e0b" if selected else overlay["base_color"]
+            region = overlay.get("region")
+            if region is not None:
+                region.setBrush(self._brush(color, 0.24 if selected else 0.08))
+                for line in region.lines:
+                    line.setPen(
+                        self._pen(
+                            "#9ca3af", 1.15 if selected else 0.8,
+                            0.9 if selected else 0.55,
+                        )
+                    )
+            for boundary_line in overlay.get("boundary_lines", ()):
+                boundary_line.setPen(
+                    self._pen(
+                        "#9ca3af", 1.15 if selected else 0.8,
+                        0.9 if selected else 0.55,
+                    )
+                )
+            retention_line = overlay.get("retention_line")
+            if retention_line is not None:
+                retention_line.setPen(
+                    self._pen(
+                        color, 1.1 if selected else 0.8,
+                        0.75 if selected else 0.35,
+                    )
+                )
+            baseline_line = overlay.get("baseline_line")
+            if baseline_line is not None:
+                baseline_line.setPen(
+                    self._pen(
+                        color, 1.4 if selected else 0.9,
+                        0.95 if selected else 0.55,
+                    )
+                )
+            fit_line = overlay.get("fit_line")
+            if fit_line is not None:
+                fit_line.setPen(
+                    self.pg.mkPen(
+                        "#f59e0b" if selected else "#c026d3",
+                        width=1.8 if selected else 1.2,
+                    )
+                )
+        self.widget.update()
 
     def set_zoom_rectangle(self, start=None, end=None, axis_id="y1", mode="both"):
         if start is None or end is None:
@@ -644,6 +700,7 @@ class PyQtGraphSceneConsumer:
             self.overview_trace_items.clear()
 
         self.fit_items.clear()
+        self.peak_overlay_items.clear()
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
         self.annotation_items.clear()
@@ -710,43 +767,71 @@ class PyQtGraphSceneConsumer:
             self.items.append(item)
             counts["gradients"] += 1
 
+        trace_colors = {trace.dataset_id: trace.color for trace in scene.traces}
         for overlay in scene.peak_overlays:
             view = self._view(overlay.axis_id)
+            overlay_items = {
+                "base_color": trace_colors.get(overlay.dataset_id, overlay.color),
+                "region": None,
+                "boundary_lines": [],
+                "retention_line": None,
+                "baseline_line": None,
+                "fit_line": None,
+            }
             if overlay.show_integration_area:
                 region = self.pg.LinearRegionItem(
                     values=(overlay.start_x, overlay.end_x),
                     movable=False,
-                    brush=self._brush(overlay.color, 0.12),
-                    pen=self.pg.mkPen(overlay.color, width=0.8),
+                    brush=self._brush(
+                        overlay.color, 0.24 if overlay.is_selected else 0.08
+                    ),
+                    pen=self._pen(
+                        "#9ca3af", 1.15 if overlay.is_selected else 0.8,
+                        0.9 if overlay.is_selected else 0.55,
+                    ),
                 )
                 view.addItem(region)
                 self.items.append(region)
+                overlay_items["region"] = region
                 for value in (overlay.start_x, overlay.end_x):
-                    self._add(
+                    boundary_line = self._add(
                         self.pg.InfiniteLine(
                             pos=value,
                             angle=90,
                             movable=False,
-                            pen=self.pg.mkPen("#9ca3af", width=0.8),
+                            pen=self._pen(
+                                "#9ca3af",
+                                1.15 if overlay.is_selected else 0.8,
+                                0.9 if overlay.is_selected else 0.55,
+                            ),
                         ),
                         overlay.axis_id,
                     )
+                    overlay_items["boundary_lines"].append(boundary_line)
                 if overlay.retention_x is not None:
-                    self._add(
+                    overlay_items["retention_line"] = self._add(
                         self.pg.InfiniteLine(
                             pos=overlay.retention_x,
                             angle=90,
                             movable=False,
-                            pen=self.pg.mkPen(overlay.color, width=0.8),
+                            pen=self._pen(
+                                overlay.color,
+                                1.1 if overlay.is_selected else 0.8,
+                                0.75 if overlay.is_selected else 0.35,
+                            ),
                         ),
                         overlay.axis_id,
                     )
                 if overlay.baseline_x is not None:
-                    self._add(
+                    overlay_items["baseline_line"] = self._add(
                         self.pg.PlotCurveItem(
                             overlay.baseline_x,
                             overlay.baseline_y,
-                            pen=self.pg.mkPen(overlay.color, width=0.9),
+                            pen=self._pen(
+                                overlay.color,
+                                1.4 if overlay.is_selected else 0.9,
+                                0.95 if overlay.is_selected else 0.55,
+                            ),
                         ),
                         overlay.axis_id,
                     )
@@ -763,6 +848,7 @@ class PyQtGraphSceneConsumer:
                     overlay.axis_id,
                 )
                 self.fit_items[overlay.peak_id] = fit_item
+                overlay_items["fit_line"] = fit_item
             if overlay.label_x is not None:
                 text = self.pg.TextItem(
                     text=overlay.label_text,
@@ -774,6 +860,7 @@ class PyQtGraphSceneConsumer:
                 text.setFont(font)
                 text.setPos(overlay.label_x, overlay.label_y)
                 self._add(text, overlay.axis_id)
+            self.peak_overlay_items[overlay.peak_id] = overlay_items
             counts["peak_overlays"] += 1
 
         for marker in scene.vertical_markers:

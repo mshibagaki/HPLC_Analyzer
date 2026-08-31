@@ -3760,6 +3760,7 @@ class FractionRangeDialog(QtWidgets.QDialog):
 class PeakRangeDialog(QtWidgets.QDialog):
     def __init__(self, peak: PeakRegion, minimum: float, maximum: float, language: str = "ja", parent=None):
         super().__init__(parent)
+        self.mouse_selection_requested = False
         self.setWindowTitle("積分範囲" if language == "ja" else "Integration range")
         form = QtWidgets.QFormLayout(self)
         self.start = QtWidgets.QDoubleSpinBox()
@@ -3802,12 +3803,23 @@ class PeakRangeDialog(QtWidgets.QDialog):
         form.addRow("終了側ベースライン (µV)" if language == "ja" else "Baseline at end (µV)", self.baseline_end)
         self.baseline_mode.currentIndexChanged.connect(self._sync_baseline_fields)
         self._sync_baseline_fields()
+        self.mouse_selection_button = QtWidgets.QPushButton(
+            "マウスで選択" if language == "ja" else "Select with mouse"
+        )
+        self.mouse_selection_button.clicked.connect(
+            self._request_mouse_selection
+        )
+        form.addRow(self.mouse_selection_button)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+
+    def _request_mouse_selection(self):
+        self.mouse_selection_requested = True
+        self.accept()
 
     def _accept(self):
         if self.end.value() <= self.start.value():

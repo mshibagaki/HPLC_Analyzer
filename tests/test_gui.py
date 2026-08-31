@@ -65,6 +65,7 @@ from hplc_app.models import (
     WorkDirectory,
 )
 from hplc_app.parser import load_ascii_file
+from hplc_app.plot3d import ThreeDPlotOptions
 from hplc_app.peak_fitting import (
     PeakFitResult,
     fitted_peak_from_result,
@@ -8415,6 +8416,80 @@ class GuiTests(unittest.TestCase):
         options_dialog.close()
         window.project.dirty = False
         window.close()
+
+    def test_3d_dialog_toggles_the_grid_and_resets_only_the_view_angles(self):
+        window = self.make_window()
+        rotated = ThreeDPlotOptions(
+            y_axis_title="Sample order",
+            z_min=-500.0,
+            z_max=5000.0,
+            elevation_deg=68.0,
+            azimuth_deg=112.0,
+            aspect_x=2.0,
+            aspect_z=3.0,
+            x_tick_interval=2.5,
+            z_tick_interval=250.0,
+            color_mode="gradient",
+            colormap="Viridis",
+            density_percent=40,
+            axis_line_width=3.0,
+        )
+        dialog = ThreeDChromatogramDialog(
+            window.project.datasets,
+            window.project.method,
+            (0.0, 30.0),
+            rotated,
+            "en",
+        )
+        try:
+            self.assertFalse(dialog.grid_checkbox.isChecked())
+            self.assertFalse(dialog.plot_options().show_grid)
+            self.assertIs(dialog.figure.axes[0]._draw_grid, False)
+
+            dialog.grid_checkbox.setChecked(True)
+            self.app.processEvents()
+            self.assertTrue(dialog.plot_options().show_grid)
+            self.assertIs(dialog.figure.axes[0]._draw_grid, True)
+
+            dialog.reset_view_button.click()
+            self.app.processEvents()
+            defaults = ThreeDPlotOptions()
+            options = dialog.plot_options()
+            self.assertEqual(options.elevation_deg, defaults.elevation_deg)
+            self.assertEqual(options.azimuth_deg, defaults.azimuth_deg)
+            self.assertEqual(
+                (dialog.figure.axes[0].elev, dialog.figure.axes[0].azim),
+                (defaults.elevation_deg, defaults.azimuth_deg),
+            )
+            # Reset touches the two angles and nothing else.
+            self.assertEqual(options.y_axis_title, "Sample order")
+            self.assertEqual((options.z_min, options.z_max), (-500.0, 5000.0))
+            self.assertEqual(
+                (options.aspect_x, options.aspect_y, options.aspect_z), (2.0, 1.0, 3.0)
+            )
+            self.assertEqual(
+                (options.x_tick_interval, options.z_tick_interval), (2.5, 250.0)
+            )
+            self.assertEqual(options.color_mode, "gradient")
+            self.assertEqual(options.colormap, "Viridis")
+            self.assertEqual(options.density_percent, 40)
+            self.assertEqual(options.axis_line_width, 3.0)
+            self.assertTrue(options.show_grid)
+
+            # Rotating again after the reset still works.
+            self.assertTrue(dialog.elevation_spin.isEnabled())
+            self.assertTrue(dialog.azimuth_spin.isEnabled())
+            dialog.elevation_spin.setValue(45.0)
+            dialog.azimuth_spin.setValue(-20.0)
+            self.app.processEvents()
+            self.assertEqual(
+                (dialog.figure.axes[0].elev, dialog.figure.axes[0].azim), (45.0, -20.0)
+            )
+            self.assertTrue(dialog.export_button.isEnabled())
+        finally:
+            dialog.close()
+            window.project.dirty = False
+            window.close()
 
     def test_3d_dialog_uses_selected_table_order_session_settings_and_shared_export(self):
         window = self.make_window()

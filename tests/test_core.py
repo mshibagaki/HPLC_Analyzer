@@ -4092,6 +4092,69 @@ class ProjectTests(unittest.TestCase):
                 self.assertGreater(path.stat().st_size, 500)
         figure.clear()
 
+    def test_3d_grid_toggle_reaches_the_figure_and_its_image_output(self):
+        from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
+
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        method = Project().method
+        raw = [
+            (dataset.time_min.copy(), dataset.intensity_uv.copy())
+            for dataset in (first, second)
+        ]
+
+        # Grid lines stay off unless they are asked for.
+        self.assertFalse(ThreeDPlotOptions().show_grid)
+        self.assertEqual(ThreeDPlotOptions().elevation_deg, 20.0)
+        self.assertEqual(ThreeDPlotOptions().azimuth_deg, -65.0)
+
+        rendered = {}
+        for show_grid in (False, True):
+            options = ThreeDPlotOptions(
+                z_min=-500.0,
+                z_max=5000.0,
+                aspect_x=2.0,
+                aspect_z=3.0,
+                x_tick_interval=2.5,
+                z_tick_interval=250.0,
+                show_grid=show_grid,
+            )
+            figure = build_3d_chromatogram_figure(
+                [first, second], method, (4.0, 12.0), options
+            )
+            axis = figure.axes[0]
+            self.assertIs(axis._draw_grid, show_grid)
+            # The panes stay hidden either way; only the grid lines change.
+            for item in (axis.xaxis, axis.yaxis, axis.zaxis):
+                self.assertFalse(item.pane.get_visible())
+            # Existing settings must survive the new option untouched.
+            self.assertEqual(
+                tuple(round(value, 6) for value in axis.get_zlim()), (-500.0, 5000.0)
+            )
+            aspect = axis.get_box_aspect()
+            self.assertAlmostEqual(aspect[0] / aspect[1], 2.0)
+            self.assertAlmostEqual(aspect[2] / aspect[1], 3.0)
+            self.assertAlmostEqual(
+                np.diff(axis.xaxis.get_major_locator().tick_values(0.0, 10.0))[0], 2.5
+            )
+            self.assertAlmostEqual(
+                np.diff(axis.zaxis.get_major_locator().tick_values(0.0, 1000.0))[0],
+                250.0,
+            )
+            self.assertEqual((axis.elev, axis.azim), (20.0, -65.0))
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / ("grid-%s.png" % show_grid)
+                figure.savefig(path, dpi=100)
+                rendered[show_grid] = path.read_bytes()
+                self.assertGreater(len(rendered[show_grid]), 500)
+            figure.clear()
+
+        # The exported image, not only the live preview, follows the choice.
+        self.assertNotEqual(rendered[False], rendered[True])
+        for dataset, (time, intensity) in zip((first, second), raw):
+            np.testing.assert_array_equal(dataset.time_min, time)
+            np.testing.assert_array_equal(dataset.intensity_uv, intensity)
+
     def test_3d_gradient_density_uses_dense_scale_segment_and_declared_aliases(self):
         from matplotlib import colormaps
         from hplc_app.plot3d import (

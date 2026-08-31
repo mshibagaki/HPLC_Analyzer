@@ -4008,6 +4008,119 @@ class ProjectTests(unittest.TestCase):
         for page in continued:
             page.clear()
 
+    def test_3d_chromatogram_uses_selected_order_existing_styles_and_full_raw_data(self):
+        from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
+
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        first.label, second.label = "Second in table", "First in table"
+        first.color, second.color = "#123456", "#abcdef"
+        first.x_shift_min, second.x_shift_min = 0.5, -0.25
+        first.offset, second.offset = 1000000.0, -1000000.0
+        raw = [
+            (dataset.time_min.copy(), dataset.intensity_uv.copy())
+            for dataset in (second, first)
+        ]
+        method = Project().method
+        method.x_axis_label = "Existing time title"
+        method.y_axis_1_label = "Existing intensity title"
+        method.axis_label_font_family = "DejaVu Sans"
+        method.axis_label_font_size = 13.0
+        method.tick_label_font_family = "DejaVu Sans"
+        method.tick_label_font_size = 11.0
+        method.line_width = 2.5
+        options = ThreeDPlotOptions(
+            y_axis_title="Sample order",
+            z_min=-500.0,
+            z_max=5000.0,
+            elevation_deg=32.0,
+            azimuth_deg=-48.0,
+            aspect_x=2.0,
+            aspect_y=1.0,
+            aspect_z=3.0,
+            x_tick_interval=2.5,
+            z_tick_interval=250.0,
+            axis_line_width=3.0,
+        )
+        figure = build_3d_chromatogram_figure(
+            [second, first], method, (4.0, 12.0), options
+        )
+        axis = figure.axes[0]
+        self.assertEqual(axis.get_xlabel(), "Existing time title")
+        self.assertEqual(axis.get_ylabel(), "Sample order")
+        self.assertEqual(axis.get_zlabel(), "Existing intensity title")
+        self.assertEqual([item.get_text() for item in axis.get_yticklabels()],
+                         ["First in table", "Second in table"])
+        self.assertEqual(tuple(round(value, 6) for value in axis.get_xlim()), (4.0, 12.0))
+        self.assertEqual(tuple(round(value, 6) for value in axis.get_zlim()), (-500.0, 5000.0))
+        self.assertEqual((axis.elev, axis.azim), (32.0, -48.0))
+        aspect = axis.get_box_aspect()
+        self.assertAlmostEqual(aspect[0] / aspect[1], 2.0)
+        self.assertAlmostEqual(aspect[2] / aspect[1], 3.0)
+        self.assertAlmostEqual(
+            np.diff(axis.xaxis.get_major_locator().tick_values(0.0, 10.0))[0], 2.5
+        )
+        self.assertAlmostEqual(
+            np.diff(axis.zaxis.get_major_locator().tick_values(0.0, 1000.0))[0], 250.0
+        )
+        self.assertEqual(len(axis.lines), 2)
+        for item in (axis.xaxis, axis.yaxis, axis.zaxis):
+            self.assertFalse(item.pane.get_visible())
+            self.assertEqual(item.line.get_color(), "#000000")
+            self.assertEqual(item.line.get_linewidth(), 3.0)
+        for index, (line, dataset) in enumerate(zip(axis.lines, (second, first))):
+            x_values, y_values, z_values = line.get_data_3d()
+            mask = (
+                (dataset.time_min + dataset.x_shift_min >= 4.0)
+                & (dataset.time_min + dataset.x_shift_min <= 12.0)
+            )
+            np.testing.assert_array_equal(
+                x_values, dataset.time_min[mask] + dataset.x_shift_min
+            )
+            np.testing.assert_array_equal(z_values, dataset.intensity_uv[mask])
+            np.testing.assert_array_equal(y_values, np.full(np.count_nonzero(mask), index))
+            self.assertEqual(line.get_color().lower(), dataset.color)
+            self.assertEqual(line.get_linewidth(), 2.5)
+            self.assertEqual(len(x_values), int(np.count_nonzero(mask)))
+        for dataset, (time, intensity) in zip((second, first), raw):
+            np.testing.assert_array_equal(dataset.time_min, time)
+            np.testing.assert_array_equal(dataset.intensity_uv, intensity)
+        with tempfile.TemporaryDirectory() as directory:
+            for suffix in ("png", "svg", "pdf"):
+                path = Path(directory) / ("three-d." + suffix)
+                figure.savefig(path, dpi=120)
+                self.assertGreater(path.stat().st_size, 500)
+        figure.clear()
+
+    def test_3d_gradient_density_uses_dense_scale_segment_and_declared_aliases(self):
+        from matplotlib import colormaps
+        from hplc_app.plot3d import (
+            COLORMAP_ALIASES,
+            ThreeDPlotOptions,
+            gradient_colors,
+            suggest_z_tick_interval,
+        )
+
+        self.assertEqual(COLORMAP_ALIASES["Portland"], "coolwarm")
+        self.assertEqual(COLORMAP_ALIASES["Picnic"], "Spectral")
+        self.assertEqual(COLORMAP_ALIASES["Electric"], "inferno")
+        self.assertEqual(ThreeDPlotOptions().axis_line_width, 4.0)
+        for name in COLORMAP_ALIASES:
+            self.assertEqual(len(gradient_colors(name, 100, 2)), 2)
+        colors = gradient_colors("Blues", 40, 4)
+        expected = [colormaps["Blues"](value) for value in (0.6, 0.7, 0.8, 0.9)]
+        np.testing.assert_allclose(colors, expected)
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        interval = suggest_z_tick_interval(
+            [dataset], Project().method, (5.0, 10.0)
+        )
+        mask = (dataset.time_min >= 5.0) & (dataset.time_min <= 10.0)
+        self.assertLessEqual(
+            (np.max(dataset.intensity_uv[mask]) - np.min(dataset.intensity_uv[mask]))
+            / interval,
+            20.0,
+        )
+
 
 class _FakeSettingsBackend:
     def __init__(

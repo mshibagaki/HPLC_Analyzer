@@ -75,10 +75,35 @@ class PyQtGraphSceneConsumer:
         self.primary = self.widget.addPlot(row=1, col=0)
         self.split_y_axes = bool(split_y_axes)
         self.secondary_plot = None
+        self.split_handle = None
+        self.split_ratio = 0.5
+        self._split_drag_active = False
         if self.split_y_axes:
-            self.secondary_plot = self.widget.addPlot(row=2, col=0)
+            qt_core = self.qt_core
+            qt_gui = self.qt_gui
+
+            class SplitHandle(self.pg.GraphicsWidget):
+                def __init__(self):
+                    super().__init__()
+                    self.setMinimumHeight(8.0)
+                    self.setMaximumHeight(8.0)
+                    cursor = getattr(
+                        getattr(qt_core.Qt, "CursorShape", qt_core.Qt),
+                        "SplitVCursor",
+                    )
+                    self.setCursor(cursor)
+
+                def paint(self, painter, *_args):
+                    painter.fillRect(
+                        self.boundingRect(), qt_gui.QColor("#d1d5db")
+                    )
+
+            self.split_handle = SplitHandle()
+            self.widget.ci.addItem(self.split_handle, row=2, col=0)
+            self.secondary_plot = self.widget.addPlot(row=3, col=0)
             self.secondary = self.secondary_plot.vb
             self.primary.getAxis("bottom").setStyle(showValues=False)
+            self.set_split_ratio(self.split_ratio)
         else:
             self.secondary = self.pg.ViewBox()
             self.primary.showAxis("right")
@@ -113,6 +138,7 @@ class PyQtGraphSceneConsumer:
         self.trace_items = {}
         self.overview_trace_items = {}
         self.fit_items = {}
+        self.gradient_items = []
         self.peak_overlay_items = {}
         self.marker_items = {}
         self._marker_specs = ()
@@ -159,6 +185,57 @@ class PyQtGraphSceneConsumer:
     def _separate_gradient_axis_column(self, plot):
         """Keep the second Y-axis title clear of the B% axis beside it."""
         plot.layout.setColumnSpacing(2, self.GRADIENT_AXIS_COLUMN_SPACING)
+
+    def set_split_ratio(self, ratio):
+        """Resize the two split panels without rebuilding their scene items."""
+
+        if not self.split_y_axes:
+            return
+        self.split_ratio = min(0.85, max(0.15, float(ratio)))
+        layout = self.widget.ci.layout
+        scale = 1000
+        layout.setRowStretchFactor(1, int(round(self.split_ratio * scale)))
+        layout.setRowStretchFactor(
+            3, int(round((1.0 - self.split_ratio) * scale))
+        )
+        layout.invalidate()
+        layout.activate()
+        if hasattr(self, "gradient_layers"):
+            self._sync_auxiliary_views()
+        self.widget.update()
+
+    def _split_drag_event(self, event_name, event, scene_position):
+        if self.split_handle is None or event_name == "scroll_event":
+            return False
+        buttons = getattr(self.qt_core.Qt, "MouseButton", self.qt_core.Qt)
+        if event_name == "button_press_event":
+            if (
+                event.button() == buttons.LeftButton
+                and self._point_in_rect(
+                    scene_position,
+                    self.split_handle.sceneBoundingRect(),
+                    3.0,
+                )
+            ):
+                self._split_drag_active = True
+                return True
+            return False
+        if not self._split_drag_active:
+            return False
+        if event_name == "motion_notify_event":
+            top = float(self.primary.vb.sceneBoundingRect().top())
+            bottom = float(
+                self.secondary_plot.vb.sceneBoundingRect().bottom()
+            )
+            if bottom > top:
+                self.set_split_ratio(
+                    (float(scene_position.y()) - top) / (bottom - top)
+                )
+            return True
+        if event_name == "button_release_event":
+            self._split_drag_active = False
+            return True
+        return False
 
     def _install_pointer_filter(self):
         owner_ref = weakref.ref(self)
@@ -213,6 +290,12 @@ class PyQtGraphSceneConsumer:
         event_name = names.get(event.type())
         if event_name is None:
             return False
+        position = event.position() if hasattr(event, "position") else event.pos()
+        if hasattr(position, "toPoint"):
+            position = position.toPoint()
+        scene_position = self.widget.mapToScene(position)
+        if self._split_drag_event(event_name, event, scene_position):
+            return True
         listeners = tuple(
             (connection_id, callback)
             for connection_id, (name, callback) in self._connections.items()
@@ -249,11 +332,8 @@ class PyQtGraphSceneConsumer:
                 (modifiers.MetaModifier, "super"),
             ) if event.modifiers() & flag
         )
-        position = event.position() if hasattr(event, "position") else event.pos()
-        if hasattr(position, "toPoint"):
-            position = position.toPoint()
         normalized = self.pointer_event(
-            self.widget.mapToScene(position), button=button,
+            scene_position, button=button,
             double_click=event.type() == types.MouseButtonDblClick, key=key,
         )
         consumed = (
@@ -503,6 +583,51 @@ class PyQtGraphSceneConsumer:
                 )
         self.widget.update()
 
+    def set_display_options(
+        self, *, show_integration, show_retention, show_gradient
+    ):
+        """Show prepared display layers without rerendering the scene."""
+
+        show_integration = bool(show_integration)
+        show_retention = bool(show_retention)
+        show_gradient = bool(show_gradient and self.gradient_items)
+        for item in self.gradient_items:
+            item.setVisible(show_gradient)
+        for view, axis, _host in self.gradient_layers:
+            view.setVisible(show_gradient)
+            axis.setVisible(show_gradient)
+
+        visible_overlays = 0
+        for overlay in self.peak_overlay_items.values():
+            integration_items = [
+                overlay.get("region"),
+                overlay.get("retention_line"),
+                overlay.get("baseline_line"),
+            ]
+            integration_items.extend(overlay.get("boundary_lines", ()))
+            for item in integration_items:
+                if item is not None:
+                    item.setVisible(show_integration)
+            retention_label = overlay.get("retention_label")
+            if retention_label is not None:
+                retention_label.setVisible(show_retention)
+            if (
+                (show_integration and any(
+                    item is not None for item in integration_items
+                ))
+                or (show_retention and retention_label is not None)
+                or overlay.get("fit_line") is not None
+            ):
+                visible_overlays += 1
+
+        if self.last_evidence:
+            counts = self.last_evidence.get("counts", {})
+            counts["gradients"] = (
+                len(self.gradient_items) if show_gradient else 0
+            )
+            counts["peak_overlays"] = visible_overlays
+        self.widget.update()
+
     def set_zoom_rectangle(self, start=None, end=None, axis_id="y1", mode="both"):
         if start is None or end is None:
             self.zoom_rectangle.hide()
@@ -613,6 +738,19 @@ class PyQtGraphSceneConsumer:
                 len(item.getData()[0]) for item in self.trace_items.values()
             ),
         }
+        self.set_display_options(
+            show_integration=any(
+                overlay.show_integration_area
+                for overlay in scene.peak_overlays
+            ),
+            show_retention=any(
+                overlay.show_retention_label
+                for overlay in scene.peak_overlays
+            ),
+            show_gradient=(
+                scene.gradient is not None and scene.gradient.visible
+            ),
+        )
         return dict(self.last_evidence)
 
     def _update_trace_items(self, scene):
@@ -660,7 +798,9 @@ class PyQtGraphSceneConsumer:
             counts = {
                 "traces": len(scene.traces),
                 "gradients": (
-                    len(self.gradient_layers) if scene.gradient is not None else 0
+                    len(self.gradient_layers)
+                    if scene.gradient is not None and scene.gradient.visible
+                    else 0
                 ),
                 "peak_overlays": len(scene.peak_overlays),
                 "vertical_markers": len(scene.vertical_markers),
@@ -700,6 +840,7 @@ class PyQtGraphSceneConsumer:
             self.overview_trace_items.clear()
 
         self.fit_items.clear()
+        self.gradient_items.clear()
         self.peak_overlay_items.clear()
         self.marker_items.clear()
         self._marker_specs = scene.vertical_markers
@@ -709,8 +850,11 @@ class PyQtGraphSceneConsumer:
         self.set_span_selection()
         self.set_zoom_rectangle()
         for view, axis, _host in self.gradient_layers:
-            view.setVisible(scene.gradient is not None)
-            axis.setVisible(scene.gradient is not None)
+            gradient_visible = (
+                scene.gradient is not None and scene.gradient.visible
+            )
+            view.setVisible(gradient_visible)
+            axis.setVisible(gradient_visible)
         counts = {
             "traces": len(scene.traces),
             "gradients": 0,
@@ -765,6 +909,7 @@ class PyQtGraphSceneConsumer:
             view.addItem(item)
             axis.setLabel(scene.gradient.axis_label)
             self.items.append(item)
+            self.gradient_items.append(item)
             counts["gradients"] += 1
 
         trace_colors = {trace.dataset_id: trace.color for trace in scene.traces}
@@ -777,8 +922,12 @@ class PyQtGraphSceneConsumer:
                 "retention_line": None,
                 "baseline_line": None,
                 "fit_line": None,
+                "retention_label": None,
             }
-            if overlay.show_integration_area:
+            if (
+                overlay.show_integration_area
+                or overlay.prepare_integration_area
+            ):
                 region = self.pg.LinearRegionItem(
                     values=(overlay.start_x, overlay.end_x),
                     movable=False,
@@ -860,6 +1009,7 @@ class PyQtGraphSceneConsumer:
                 text.setFont(font)
                 text.setPos(overlay.label_x, overlay.label_y)
                 self._add(text, overlay.axis_id)
+                overlay_items["retention_label"] = text
             self.peak_overlay_items[overlay.peak_id] = overlay_items
             counts["peak_overlays"] += 1
 

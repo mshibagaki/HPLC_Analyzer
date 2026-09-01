@@ -115,13 +115,17 @@ class ExperimentalScreenPreview:
                 self._scene = scene
                 if self.navigation is not None:
                     self.navigation.set_pan_enabled(False)
-                self._update_legend(scene)
+            method = owner.project.method
+            self.consumer.set_display_options(
+                show_integration=method.show_integration_areas,
+                show_retention=method.show_retention_labels,
+                show_gradient=method.show_gradient_b,
+            )
+            self._update_legend(scene)
             primary = self.consumer.primary
             lower = self.consumer.secondary_plot
             if lower is None:
                 primary.showAxis("right", owner.axes_right is not None)
-            for _view, axis, _host in self.consumer.gradient_layers:
-                axis.setVisible(owner.axes_gradient is not None)
             # Only the X axis contributes grid lines; the requested grid is the
             # vertical set alone. The existing show_major_grid setting keeps its
             # name and its on/off meaning.
@@ -225,10 +229,18 @@ class ExperimentalScreenPreview:
             self.consumer.primary.legend = self._legend
         legend = self._legend
         legend.clear()
-        for item, trace in zip(self.consumer.items, scene.traces):
-            legend.addItem(item, escape(trace.label))
-        if scene.gradient is not None:
-            legend.addItem(self.consumer.items[len(scene.traces)], escape(scene.gradient.label))
+        for trace in scene.traces:
+            item = self.consumer.trace_items.get(trace.dataset_id)
+            if item is not None:
+                legend.addItem(item, escape(trace.label))
+        if (
+            method.show_gradient_b
+            and scene.gradient is not None
+            and self.consumer.gradient_items
+        ):
+            legend.addItem(
+                self.consumer.gradient_items[0], escape(scene.gradient.label)
+            )
         for overlay in scene.peak_overlays:
             fit_item = self.consumer.fit_items.get(overlay.peak_id)
             if fit_item is not None and overlay.fit_label:
@@ -246,7 +258,7 @@ class ExperimentalScreenPreview:
             legend.setParentItem(None)
             self.consumer.widget.ci.addItem(
                 legend, row=1, col=1,
-                rowspan=2 if self.consumer.split_y_axes else 1,
+                rowspan=3 if self.consumer.split_y_axes else 1,
             )
         elif not outside and self._legend_outside:
             self.consumer.widget.ci.removeItem(legend)

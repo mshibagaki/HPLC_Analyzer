@@ -340,7 +340,7 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
     def home(self, *args):
         owner = self._axis_pan_owner
         if owner is not None:
-            owner._navigate_view_history("home")
+            owner._reset_view()
 
     def configure_subplots(self):
         owner = self._axis_pan_owner
@@ -624,6 +624,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.axes_right = None
         self.axes_gradient = None
         self.axes_gradient_secondary = None
+        self._preview_gradient_limits = (0.0, 100.0)
         self._overview_dataset_lines = {}
         self._plot_source_cache = {}
         self._peak_overlay_artists = {}
@@ -2950,7 +2951,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method.show_major_grid = self.show_grid_checkbox.isChecked()
         self.project.method.legend_location = self.legend_combo.currentData()
         self.project.dirty = True
-        self._plot()
+        if self._screen_preview is not None and new_unit == old_unit:
+            self._sync_preview_gradient_axes()
+            self._refresh_screen_preview()
+        else:
+            self._plot()
         self._update_title()
         if new_unit != old_unit and new_unit in ("mAU", "AU"):
             if any(
@@ -3251,22 +3256,71 @@ class MainWindow(QtWidgets.QMainWindow):
             )
 
     @staticmethod
-    def _scene_y_limits(scene, axis_id: str):
+    def _scene_y_limits(scene, axis_id: str, x_range=None):
         values = []
+        x_bounds = None
+        if x_range is not None:
+            x_bounds = tuple(sorted((float(x_range[0]), float(x_range[1]))))
         for trace in scene.traces:
             if trace.axis_id != axis_id:
                 continue
-            finite = np.asarray(trace.y_values, dtype=float)
-            finite = finite[np.isfinite(finite)]
-            if finite.size:
-                values.append(finite)
+            y_values = np.asarray(trace.y_values, dtype=float)
+            mask = np.isfinite(y_values)
+            if x_bounds is not None:
+                x_values = np.asarray(trace.x_values, dtype=float)
+                mask &= np.isfinite(x_values)
+                mask &= x_values >= x_bounds[0]
+                mask &= x_values <= x_bounds[1]
+            finite_y = y_values[mask]
+            if finite_y.size:
+                values.append(finite_y)
         if not values:
-            return (0.0, 1.0)
+            return None if x_bounds is not None else (0.0, 1.0)
         minimum = min(float(np.min(item)) for item in values)
         maximum = max(float(np.max(item)) for item in values)
         span = maximum - minimum
         padding = span * 0.05 if span > 0.0 else max(abs(minimum) * 0.05, 1.0)
         return (minimum - padding, maximum + padding)
+
+    def _sync_preview_gradient_axes(self):
+        """Mirror native gradient visibility without rebuilding the figure."""
+
+        scene = getattr(self, "_screen_scene", None)
+        visible = bool(
+            self.project.method.show_gradient_b
+            and scene is not None
+            and scene.gradient is not None
+        )
+        if not visible:
+            if self.axes_gradient is not None:
+                self._preview_gradient_limits = tuple(
+                    self.axes_gradient.get_ylim()
+                )
+            for attribute in (
+                "axes_gradient_secondary",
+                "axes_gradient",
+            ):
+                axis = getattr(self, attribute, None)
+                if axis is not None:
+                    axis.remove()
+                    setattr(self, attribute, None)
+            return
+        if self.axes_gradient is None:
+            self.axes_gradient = self.axes.twinx()
+            if self.axes_right is not None and not self._split_y_axes:
+                self.axes_gradient.spines["right"].set_position(
+                    ("outward", 62)
+                )
+        if self._split_y_axes and self.axes_gradient_secondary is None:
+            self.axes_gradient_secondary = self.axes_right.twinx()
+            self.axes_gradient_secondary.sharey(self.axes_gradient)
+        for gradient_axis in (
+            self.axes_gradient,
+            self.axes_gradient_secondary,
+        ):
+            if gradient_axis is not None:
+                gradient_axis.set_ylabel(scene.gradient.axis_label)
+                gradient_axis.set_ylim(*self._preview_gradient_limits)
 
     def _prepare_matplotlib_screen_skeleton(self, scene, view_state):
         """Keep only axes/view state while the native screen owns rendering."""
@@ -3458,6 +3512,10 @@ class MainWindow(QtWidgets.QMainWindow):
             selected_vertical_marker_id=self._selected_vertical_marker_id,
             selected_vertical_marker_ids=self._selected_vertical_marker_ids,
             color_resolver=dataset_display_color,
+            include_hidden_display_items=(
+                self._screen_preview is not None
+                and not self._force_matplotlib_screen_plot
+            ),
         )
         self._screen_scene = base_scene
         trace_by_id = {trace.dataset_id: trace for trace in base_scene.traces}
@@ -3473,7 +3531,11 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.axes_overview is not None:
                 self.axes_overview_right = self.axes_overview.twinx()
                 self.axes_overview_right.set_navigate(False)
-        if base_scene.gradient is not None and selected is not None:
+        if (
+            base_scene.gradient is not None
+            and base_scene.gradient.visible
+            and selected is not None
+        ):
             self.axes_gradient = self.axes.twinx()
             if self._split_y_axes:
                 self.axes_gradient_secondary = self.axes_right.twinx()
@@ -4328,7 +4390,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 overlay.end_x,
             )
             for overlay in (() if scene is None else scene.peak_overlays)
-            if overlay.show_integration_area
+            if (
+                self.project.method.show_integration_areas
+                and (
+                    overlay.show_integration_area
+                    or overlay.prepare_integration_area
+                )
+            )
         )
         return integration_peak_hit_target(targets, target_axis, x_value)
 
@@ -5424,12 +5492,18 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         view_state = self._capture_view_state()
         self._push_view_history()
+        y1 = self._scene_y_limits(
+            self._screen_scene, "y1", view_state.x
+        )
+        y2 = (
+            self._scene_y_limits(self._screen_scene, "y2", view_state.x)
+            if view_state.y2 is not None else None
+        )
         self._apply_view_state(replace(
             view_state,
-            y1=self._scene_y_limits(self._screen_scene, "y1"),
+            y1=y1 if y1 is not None else view_state.y1,
             y2=(
-                self._scene_y_limits(self._screen_scene, "y2")
-                if view_state.y2 is not None else None
+                y2 if y2 is not None else view_state.y2
             ),
         ))
 

@@ -31,6 +31,7 @@ class ScreenGradientSpec:
     y_values: np.ndarray
     label: str
     axis_label: str
+    visible: bool = True
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,8 @@ class ScreenPeakOverlaySpec:
     label_font_size: float
     label_color: str
     fit_label: str = ""
+    prepare_integration_area: bool = False
+    show_retention_label: bool = True
 
 
 @dataclass(frozen=True)
@@ -155,6 +158,7 @@ def compose_base_screen_scene(
     selected_vertical_marker_id: str = "",
     color_resolver: Optional[Callable[[Dataset, int], str]] = None,
     selected_vertical_marker_ids: Sequence[str] = (),
+    include_hidden_display_items: bool = False,
 ) -> BaseScreenScene:
     """Compose visible base traces and B% data without creating GUI artists."""
 
@@ -201,7 +205,8 @@ def compose_base_screen_scene(
         if trace is None or dataset.id not in selected_ids:
             continue
         if not (
-            project.method.show_integration_areas
+            include_hidden_display_items
+            or project.method.show_integration_areas
             or project.method.show_retention_labels
             or any(peak.fit_model for peak in dataset.peaks)
             or bool(dataset.fitted_peaks)
@@ -218,7 +223,10 @@ def compose_base_screen_scene(
             is_selected = peak.id in selected_peaks
             color = "#f59e0b" if is_selected else trace.color
             baseline_x = baseline_y = None
-            if project.method.show_integration_areas:
+            if (
+                project.method.show_integration_areas
+                or include_hidden_display_items
+            ):
                 baseline_time, baseline_uv = baseline_trace(dataset, peak)
                 if baseline_time.size:
                     baseline_x = _readonly(baseline_time + dataset.x_shift_min)
@@ -245,7 +253,13 @@ def compose_base_screen_scene(
             )
             label_x = label_y = None
             label_text = ""
-            if project.method.show_retention_labels and retention_x is not None:
+            if (
+                (
+                    project.method.show_retention_labels
+                    or include_hidden_display_items
+                )
+                and retention_x is not None
+            ):
                 label_x = retention_x
                 label_y = float(
                     np.interp(retention_x, trace.x_values, trace.y_values)
@@ -281,6 +295,10 @@ def compose_base_screen_scene(
                         project.method.retention_label_color or "#000000"
                     ),
                     fit_label=fit_label,
+                    prepare_integration_area=include_hidden_display_items,
+                    show_retention_label=bool(
+                        project.method.show_retention_labels
+                    ),
                 )
             )
 
@@ -337,7 +355,7 @@ def compose_base_screen_scene(
 
     gradient = None
     if (
-        project.method.show_gradient_b
+        (project.method.show_gradient_b or include_hidden_display_items)
         and selected is not None
         and selected.visible
         and selected.measurement.gradient
@@ -355,6 +373,7 @@ def compose_base_screen_scene(
                 project.method.gradient_axis_label.strip()
                 or "Mobile phase B (%)"
             ),
+            visible=bool(project.method.show_gradient_b),
         )
 
     selected_marker_ids = set(selected_vertical_marker_ids)

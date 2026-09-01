@@ -54,6 +54,7 @@ from hplc_app.gui import (
     PEAK_COLUMN_COUNT,
     PEAK_NOTES_COLUMN,
     PEAK_TYPE_COLUMN,
+    MOUSE_MODE_IDS,
     MainWindow,
 )
 from hplc_app.models import (
@@ -869,7 +870,10 @@ class GuiTests(unittest.TestCase):
                             for view, axis, host in consumer.gradient_layers:
                                 self.assertEqual(axis.isVisible(), expected is not None)
                                 self.assertEqual(view.isVisible(), expected is not None)
-                                self.assertEqual(len(view.addedItems), 0 if expected is None else 1)
+                                self.assertEqual(
+                                    sum(item.isVisible() for item in view.addedItems),
+                                    0 if expected is None else 1,
+                                )
                                 if expected is not None:
                                     np.testing.assert_array_equal(view.addedItems[0].getData()[1], expected)
                                     np.testing.assert_allclose(view.viewRange()[0], consumer.primary.viewRange()[0])
@@ -1278,7 +1282,10 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(cleared["counts"]["vertical_markers"], 0)
             self.assertEqual(cleared["counts"]["fraction_regions"], 0)
             self.assertEqual(cleared["counts"]["text_annotations"], 0)
-            self.assertEqual(len(consumer.items), len(detail_traces))
+            self.assertEqual(
+                sum(item.isVisible() for item in consumer.items),
+                len(detail_traces),
+            )
             self.assertEqual(consumer.marker_items, {})
             self.assertEqual(consumer.annotation_items, {})
             for item in detail_traces.values():
@@ -5358,6 +5365,138 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_native_display_toggles_do_not_rebuild_scene_or_mouse_owner(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            preview = window._screen_preview
+            self.assertIsNotNone(preview)
+            consumer = preview.consumer
+            scene = window._screen_scene
+            pointer_handler = consumer._pointer_handler
+            render = Mock(wraps=consumer.render)
+            consumer.render = render
+            original = window._screen_view_state()
+            narrowed = ScreenViewState(
+                x=(6.0, 14.0),
+                y1=original.y1,
+                y2=original.y2,
+                gradient=original.gradient,
+            )
+            window._apply_view_state(narrowed)
+            window.dataset_table.selectRow(0)
+            window.peak_table.selectRow(0)
+
+            for checkbox in (
+                window.show_integration_checkbox,
+                window.show_retention_checkbox,
+                window.show_gradient_checkbox,
+            ):
+                checkbox.setChecked(not checkbox.isChecked())
+                self.app.processEvents()
+                self.assertIs(window._screen_preview, preview)
+                self.assertIs(window._screen_scene, scene)
+                self.assertEqual(render.call_count, 0)
+                self.assertEqual(window._screen_view_state().x, narrowed.x)
+                checkbox.setChecked(not checkbox.isChecked())
+                self.app.processEvents()
+                self.assertEqual(render.call_count, 0)
+
+            for mode in MOUSE_MODE_IDS:
+                with self.subTest(mouse_mode=mode):
+                    # Individual interaction tests cover each tool's signal
+                    # path. Here the shared mode owner is held constant while
+                    # the grid setting refreshes the native display.
+                    window._set_mouse_mode_display(mode)
+                    self.assertEqual(window._mouse_mode, mode)
+                    for enabled in (True, False):
+                        window.show_grid_checkbox.setChecked(enabled)
+                        self.app.processEvents()
+                        self.assertEqual(window._mouse_mode, mode)
+                        self.assertIs(consumer._pointer_handler, pointer_handler)
+                        self.assertIs(window._screen_scene, scene)
+                        self.assertEqual(render.call_count, 0)
+                        self.assertEqual(
+                            consumer.primary.ctrl.xGridCheck.isChecked(),
+                            enabled,
+                        )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_native_split_divider_drags_and_retains_ratio_during_view(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("split_y_axes")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            window.show()
+            self.app.processEvents()
+            preview = window._screen_preview
+            consumer = preview.consumer
+            viewport = consumer.widget.viewport()
+            handle_center = consumer.widget.mapFromScene(
+                consumer.split_handle.sceneBoundingRect().center()
+            )
+            target = handle_center + QtCore.QPoint(0, 90)
+            types = QtCore.QEvent.Type
+            buttons = QtCore.Qt.MouseButton
+
+            def mouse(kind, point, button, held):
+                self.app.sendEvent(
+                    viewport,
+                    QtGui.QMouseEvent(
+                        kind,
+                        QtCore.QPointF(point),
+                        QtCore.QPointF(viewport.mapToGlobal(point)),
+                        button,
+                        held,
+                        QtCore.Qt.KeyboardModifier.NoModifier,
+                    ),
+                )
+
+            before_state = window._screen_view_state()
+            render = Mock(wraps=consumer.render)
+            consumer.render = render
+            mouse(
+                types.MouseButtonPress,
+                handle_center,
+                buttons.LeftButton,
+                buttons.LeftButton,
+            )
+            mouse(
+                types.MouseMove,
+                target,
+                buttons.NoButton,
+                buttons.LeftButton,
+            )
+            mouse(
+                types.MouseButtonRelease,
+                target,
+                buttons.LeftButton,
+                buttons.NoButton,
+            )
+            self.app.processEvents()
+            dragged_ratio = consumer.split_ratio
+            self.assertGreater(dragged_ratio, 0.5)
+            self.assertEqual(render.call_count, 0)
+            self.assertEqual(window._screen_view_state(), before_state)
+
+            window._plot()
+            self.app.processEvents()
+            self.assertIs(window._screen_preview, preview)
+            self.assertAlmostEqual(consumer.split_ratio, dragged_ratio)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_native_second_axis_title_stays_clear_of_the_gradient_axis(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -5404,8 +5543,28 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         window._plot(preserve_view=False)
         full_x = window.axes.get_xlim()
-        full_y1 = window.axes.get_ylim()
-        full_y2 = window.axes_right.get_ylim()
+
+        def expected_visible_bounds(axis_id, x_range):
+            visible_values = []
+            for trace in window._screen_scene.traces:
+                if trace.axis_id != axis_id:
+                    continue
+                mask = (
+                    np.isfinite(trace.x_values)
+                    & np.isfinite(trace.y_values)
+                    & (trace.x_values >= x_range[0])
+                    & (trace.x_values <= x_range[1])
+                )
+                visible_values.extend(trace.y_values[mask])
+            minimum = float(np.min(visible_values))
+            maximum = float(np.max(visible_values))
+            span = maximum - minimum
+            padding = (
+                span * 0.05
+                if span > 0.0
+                else max(abs(minimum) * 0.05, 1.0)
+            )
+            return (minimum - padding, maximum + padding)
 
         window.axes.set_xlim(5.0, 12.0)
         window.axes.set_ylim(-10.0, 10.0)
@@ -5418,10 +5577,31 @@ class GuiTests(unittest.TestCase):
         window.axes.set_xlim(7.0, 11.0)
         window.axes.set_ylim(-10.0, 10.0)
         window.axes_right.set_ylim(-20.0, 20.0)
+        expected_y1 = expected_visible_bounds("y1", window.axes.get_xlim())
+        expected_y2 = expected_visible_bounds("y2", window.axes.get_xlim())
         window._reset_y_view()
         self.assertEqual(window.axes.get_xlim(), (7.0, 11.0))
-        self.assertTrue(np.allclose(window.axes.get_ylim(), full_y1))
-        self.assertTrue(np.allclose(window.axes_right.get_ylim(), full_y2))
+        self.assertTrue(np.allclose(window.axes.get_ylim(), expected_y1))
+        self.assertTrue(np.allclose(window.axes_right.get_ylim(), expected_y2))
+
+        window.axes.set_xlim(200.0, 210.0)
+        window.axes.set_ylim(-3.0, 4.0)
+        window.axes_right.set_ylim(-5.0, 6.0)
+        window._reset_y_view()
+        self.assertEqual(window.axes.get_xlim(), (200.0, 210.0))
+        self.assertEqual(window.axes.get_ylim(), (-3.0, 4.0))
+        self.assertEqual(window.axes_right.get_ylim(), (-5.0, 6.0))
+
+        window.axes.set_xlim(5.0, 12.0)
+        window.axes.set_ylim(-10.0, 10.0)
+        window.axes_right.set_ylim(-20.0, 20.0)
+        window.reset_view_button.click()
+        button_reset = window._screen_view_state()
+        window.axes.set_xlim(8.0, 10.0)
+        window.axes.set_ylim(-1.0, 1.0)
+        window.axes_right.set_ylim(-2.0, 2.0)
+        window.toolbar.home()
+        self.assertEqual(window._screen_view_state(), button_reset)
         self.assertEqual(window.reset_view_button.text(), "全体表示")
         self.assertEqual(window.reset_x_view_button.text(), "X軸全体")
         self.assertEqual(window.reset_y_view_button.text(), "Y軸全体")
@@ -5443,12 +5623,16 @@ class GuiTests(unittest.TestCase):
                 digest.update(np.ascontiguousarray(dataset.time_min).tobytes())
                 digest.update(np.ascontiguousarray(dataset.intensity_uv).tobytes())
             before_digest = digest.hexdigest()
-            expected_y1 = window._scene_y_limits(window._screen_scene, "y1")
-            expected_y2 = window._scene_y_limits(window._screen_scene, "y2")
             original = window._screen_view_state()
             narrowed = ScreenViewState(
                 x=(7.0, 11.0), y1=(-10.0, 10.0), y2=(-20.0, 20.0),
                 gradient=original.gradient,
+            )
+            expected_y1 = window._scene_y_limits(
+                window._screen_scene, "y1", narrowed.x
+            )
+            expected_y2 = window._scene_y_limits(
+                window._screen_scene, "y2", narrowed.x
             )
             window._apply_view_state(narrowed)
             window._reset_y_view()

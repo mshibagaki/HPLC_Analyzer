@@ -240,7 +240,7 @@ DATASET_COLUMNS_BY_ID = {
     column_id: logical_column
     for logical_column, column_id in DATASET_COLUMN_IDS.items()
 }
-DATASET_HIDDEN_COLUMN_IDS = ("group",)
+DATASET_HIDDEN_COLUMN_IDS = ("group", "source")
 
 MOUSE_MODE_IDS = (
     "normal",
@@ -407,6 +407,32 @@ class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
         self.initStyleOption(styled, index)
         mode = QtCore.Qt.TextElideMode.ElideLeft if QT_API == 6 else QtCore.Qt.ElideLeft
         styled.text = styled.fontMetrics.elidedText(styled.text, mode, styled.rect.width())
+        if QT_API == 6:
+            control = QtWidgets.QStyle.ControlElement.CE_ItemViewItem
+        else:
+            control = QtWidgets.QStyle.CE_ItemViewItem
+        style = styled.widget.style() if styled.widget is not None else QtWidgets.QApplication.style()
+        style.drawControl(control, styled, painter, styled.widget)
+
+
+class ColorCellDelegate(QtWidgets.QStyledItemDelegate):
+    """Keep the trace color legible even while its dataset row is selected."""
+
+    def display_option(self, option, index):
+        styled = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(styled, index)
+        if QT_API == 6:
+            selected = QtWidgets.QStyle.StateFlag.State_Selected
+            focus = QtWidgets.QStyle.StateFlag.State_HasFocus
+        else:
+            selected = QtWidgets.QStyle.State_Selected
+            focus = QtWidgets.QStyle.State_HasFocus
+        styled.state &= ~selected
+        styled.state &= ~focus
+        return styled
+
+    def paint(self, painter, option, index):
+        styled = self.display_option(option, index)
         if QT_API == 6:
             control = QtWidgets.QStyle.ControlElement.CE_ItemViewItem
         else:
@@ -1226,6 +1252,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dataset_table.setItemDelegateForColumn(
             DATASET_SOURCE_COLUMN, LeftElideDelegate(self.dataset_table)
         )
+        self.dataset_table.setItemDelegateForColumn(
+            DATASET_COLOR_COLUMN, ColorCellDelegate(self.dataset_table)
+        )
         self.dataset_table.viewport().installEventFilter(self)
         for column_id in DATASET_HIDDEN_COLUMN_IDS:
             self.dataset_table.setColumnHidden(DATASET_COLUMNS_BY_ID[column_id], True)
@@ -1245,9 +1274,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ungroup_run_button = QtWidgets.QPushButton()
 
         self.dataset_data_group = QtWidgets.QGroupBox()
-        data_buttons = QtWidgets.QHBoxLayout(self.dataset_data_group)
-        data_buttons.addWidget(self.import_button)
-        data_buttons.addWidget(self.remove_button)
+        self.dataset_data_layout = QtWidgets.QGridLayout(self.dataset_data_group)
+        data_buttons = (
+            self.import_button,
+            self.remove_button,
+            self.metadata_button,
+            self.gradient_button,
+            self.group_run_button,
+            self.ungroup_run_button,
+        )
+        for index, button in enumerate(data_buttons):
+            self.dataset_data_layout.addWidget(button, index // 2, index % 2)
         left_layout.addWidget(self.dataset_data_group)
 
         self.dataset_analysis_group = QtWidgets.QGroupBox()
@@ -1255,12 +1292,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dataset_analysis_group
         )
         analysis_buttons = (
-            self.metadata_button,
-            self.gradient_button,
             self.batch_metadata_button,
             self.color_button,
-            self.group_run_button,
-            self.ungroup_run_button,
         )
         for index, button in enumerate(analysis_buttons):
             self.dataset_analysis_layout.addWidget(button, index // 2, index % 2)

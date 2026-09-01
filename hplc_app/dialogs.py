@@ -662,9 +662,9 @@ class WorkDirectoriesDialog(QtWidgets.QDialog):
         root.addWidget(explanation)
         self.table = QtWidgets.QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(
-            ("有効", "ラベル", "ディレクトリ", "再帰")
+            ("有効", "ラベル", "ディレクトリ", "サブフォルダーも検索")
             if language == "ja"
-            else ("Enabled", "Label", "Directory", "Recursive")
+            else ("Enabled", "Label", "Directory", "Include subfolders")
         )
         self.table.horizontalHeader().setStretchLastSection(False)
         self.table.setColumnWidth(2, 440)
@@ -1246,6 +1246,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
     # Appended after the editable range so the existing column numbers, their
     # validation and the clipboard rectangle contract all stay unchanged.
     RUN_ID_COLUMN = 16
+    SOURCE_COLUMN = 17
     EDITABLE_COLUMNS = frozenset(range(1, GRADIENT_COLUMN))
     RUN_SHARED_COLUMNS = frozenset((1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14))
     POSITIVE_FIELDS = frozenset(
@@ -1384,6 +1385,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             "分子量" if language == "ja" else "Molecular weight",
             "グラジエント" if language == "ja" else "Gradient",
             "Run ID",
+            "元ファイル" if language == "ja" else "Source file",
         )
         self.table = BatchConditionTable(len(project.datasets), len(headers))
         self.table.setHorizontalHeaderLabels(headers)
@@ -1427,9 +1429,15 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             run_id.setFlags(run_id.flags() & ~ITEM_IS_EDITABLE)
             run_id.setToolTip(dataset.run_id)
             self.table.setItem(row, self.RUN_ID_COLUMN, run_id)
+            source_text = dataset.original_path or dataset.original_filename
+            source = QtWidgets.QTableWidgetItem(source_text)
+            source.setFlags(source.flags() & ~ITEM_IS_EDITABLE)
+            source.setToolTip(source_text)
+            self.table.setItem(row, self.SOURCE_COLUMN, source)
         header = self.table.horizontalHeader()
         header.moveSection(header.visualIndex(self.RUN_ID_COLUMN), 1)
         self.table.resizeColumnsToContents()
+        self.table.setColumnWidth(self.SOURCE_COLUMN, 320)
 
         self.save_preset_button.clicked.connect(self._save_preset)
         self.delete_preset_button.clicked.connect(self._delete_preset)
@@ -1523,7 +1531,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
     def _cell_double_clicked(self, row: int, column: int):
         if column == self.GRADIENT_COLUMN:
             self._edit_selected_gradient(row)
-        elif column not in self.EDITABLE_COLUMNS:
+        elif column == self.RUN_ID_COLUMN:
             self._edit_selected_details(row)
 
     def _table_item_changed(self, item):

@@ -46,17 +46,16 @@ AUTO_PEAK_SENSITIVITY_PRESETS = "analysis/auto_peak_sensitivity_presets"
 DEFAULT_DATASET_COLUMN_ORDER = (
     "selected",
     "visible",
+    "label",
+    "color",
     "run_id",
     "timestamp",
-    "label",
     "wavelength",
     "y_axis",
     "auv",
-    "color",
     "column",
     "x_shift",
     "offset",
-    "source",
 )
 
 
@@ -133,6 +132,15 @@ def _dataset_column_order(value: Any, fallback: tuple) -> list:
     if not isinstance(decoded, (list, tuple)):
         return list(fallback)
     normalized = [str(item) for item in decoded]
+    # The source-path column used to be user-orderable on the home table. It is
+    # now available only in the conditions dialog, so retain every surviving
+    # column's relative position when loading that legacy order.
+    legacy_columns = set(fallback) | {"source"}
+    if (
+        len(normalized) == len(fallback) + 1
+        and set(normalized) == legacy_columns
+    ):
+        normalized = [item for item in normalized if item != "source"]
     if len(normalized) != len(fallback) or set(normalized) != set(fallback):
         return list(fallback)
     return normalized

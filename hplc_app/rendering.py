@@ -14,6 +14,8 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
+from .models import normalize_line_style
+
 
 HIGH_QUALITY = "high_quality"
 LIGHTWEIGHT = "lightweight"
@@ -22,6 +24,16 @@ WAVELENGTH_COLOR_PALETTES = {
     214: ("#d62728", "#ef4444", "#b91c1c", "#f87171"),
     280: ("#1f77b4", "#2563eb", "#1d4ed8", "#60a5fa"),
 }
+MATPLOTLIB_LINE_STYLES = {
+    "solid": "-",
+    "dashed": "--",
+    "dotted": ":",
+    "dash_dot": "-.",
+}
+
+
+def matplotlib_line_style(value: object) -> str:
+    return MATPLOTLIB_LINE_STYLES[normalize_line_style(value)]
 
 
 @dataclass(frozen=True)

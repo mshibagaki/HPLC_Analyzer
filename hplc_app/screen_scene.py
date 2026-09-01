@@ -22,6 +22,7 @@ class ScreenTraceSpec:
     color: str
     label: str
     line_width: float
+    line_style: str = "solid"
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ def compose_base_screen_scene(
                 color=str(color_resolver(dataset, index)),
                 label=project.legend_label_for(dataset),
                 line_width=float(project.method.line_width),
+                line_style=dataset.line_style,
             )
         )
 

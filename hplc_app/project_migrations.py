@@ -396,6 +396,20 @@ def migrate_106_to_107(manifest: Manifest) -> Manifest:
     return migrated
 
 
+def migrate_107_to_108(manifest: Manifest) -> Manifest:
+    """Give existing chromatograms the established solid trace style."""
+
+    migrated = _with_schema(manifest, 108)
+    datasets = migrated.get("datasets", [])
+    if not isinstance(datasets, list):
+        raise ProjectMigrationError("Project datasets must be an array")
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            raise ProjectMigrationError("Each project dataset must be an object")
+        dataset.setdefault("line_style", "solid")
+    return migrated
+
+
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -415,6 +429,7 @@ V1_MIGRATIONS: Dict[int, Migration] = {
     104: migrate_104_to_105,
     105: migrate_105_to_106,
     106: migrate_106_to_107,
+    107: migrate_107_to_108,
 }
 
 

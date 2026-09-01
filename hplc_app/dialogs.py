@@ -28,6 +28,7 @@ from .models import (
     Dataset,
     GradientPoint,
     LEGEND_COMPONENTS,
+    LINE_STYLE_IDS,
     PeakRegion,
     Project,
     Solvent,
@@ -48,7 +49,12 @@ from .preset_store import (
     record_preset_used,
     stable_preset_names,
 )
-from .plot3d import COLORMAP_ALIASES, ThreeDPlotOptions, build_3d_chromatogram_figure
+from .plot3d import (
+    COLORMAP_ALIASES,
+    ThreeDPlotOptions,
+    build_3d_chromatogram_figure,
+    gradient_colors,
+)
 from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
 from .screen_scene import (
     MAX_FRACTION_BOUNDARY_LINES,
@@ -775,6 +781,219 @@ class WorkDirectoriesDialog(QtWidgets.QDialog):
             )
         self.directories = updated
         self.accept()
+
+
+class DisplaySettingsDialog(QtWidgets.QDialog):
+    """Edit one trace style or assign ordered colors to selected traces."""
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        selected_datasets,
+        resolved_colors,
+        language="ja",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.dataset = dataset
+        self.selected_datasets = list(selected_datasets)
+        self.resolved_colors = dict(resolved_colors)
+        self.language = language
+        self.single_color = dataset.color
+        self.setWindowTitle("表示設定" if language == "ja" else "Display settings")
+        self.resize(620, 470)
+        root = QtWidgets.QVBoxLayout(self)
+
+        form = QtWidgets.QFormLayout()
+        target = dataset.label or dataset.original_filename
+        form.addRow(
+            "対象トレース" if language == "ja" else "Target trace",
+            QtWidgets.QLabel(target),
+        )
+        self.line_style_combo = QtWidgets.QComboBox()
+        line_style_labels = {
+            "solid": ("実線", "Solid"),
+            "dashed": ("破線", "Dashed"),
+            "dotted": ("点線", "Dotted"),
+            "dash_dot": ("一点鎖線", "Dash-dot"),
+        }
+        for style_id in LINE_STYLE_IDS:
+            labels = line_style_labels[style_id]
+            self.line_style_combo.addItem(
+                labels[0] if language == "ja" else labels[1], style_id
+            )
+        self.line_style_combo.setCurrentIndex(
+            max(0, self.line_style_combo.findData(dataset.line_style))
+        )
+        form.addRow("線種" if language == "ja" else "Line style", self.line_style_combo)
+
+        self.color_mode_combo = QtWidgets.QComboBox()
+        self.color_mode_combo.addItem(
+            "1本ずつ色を選ぶ" if language == "ja" else "Choose one trace color",
+            "single",
+        )
+        self.color_mode_combo.addItem(
+            "選択トレースへグラデーション"
+            if language == "ja"
+            else "Gradient across selected traces",
+            "gradient",
+        )
+        form.addRow("配色" if language == "ja" else "Colors", self.color_mode_combo)
+
+        self.single_color_button = QtWidgets.QPushButton()
+        self._update_single_color_button()
+        form.addRow(
+            "トレース色" if language == "ja" else "Trace color",
+            self.single_color_button,
+        )
+
+        self.colormap_combo = QtWidgets.QComboBox()
+        self.colormap_combo.addItems(tuple(COLORMAP_ALIASES))
+        form.addRow(
+            "色の系統" if language == "ja" else "Color family",
+            self.colormap_combo,
+        )
+
+        density_widget = QtWidgets.QWidget()
+        density_layout = QtWidgets.QHBoxLayout(density_widget)
+        density_layout.setContentsMargins(0, 0, 0, 0)
+        self.density_slider = QtWidgets.QSlider(HORIZONTAL)
+        self.density_slider.setRange(10, 100)
+        self.density_slider.setTickInterval(10)
+        self.density_slider.setValue(100)
+        self.density_value_label = QtWidgets.QLabel()
+        density_layout.addWidget(self.density_slider, 1)
+        density_layout.addWidget(self.density_value_label)
+        form.addRow(
+            "濃淡の範囲（濃い側）" if language == "ja" else "Shade range (dense end)",
+            density_widget,
+        )
+        root.addLayout(form)
+
+        note = QtWidgets.QLabel(
+            "グラデーションは、ホーム画面で選択したトレースへ表の並び順で割り当てます。"
+            if language == "ja"
+            else "Gradient colors are assigned to the selected traces in home-table order."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        self.preview_table = QtWidgets.QTableWidget(len(self.selected_datasets), 2)
+        self.preview_table.setHorizontalHeaderLabels(
+            ("トレース", "適用色")
+            if language == "ja"
+            else ("Trace", "Applied color")
+        )
+        self.preview_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.preview_table.verticalHeader().setVisible(False)
+        self.preview_table.horizontalHeader().setStretchLastSection(True)
+        for row, selected in enumerate(self.selected_datasets):
+            self.preview_table.setItem(
+                row,
+                0,
+                QtWidgets.QTableWidgetItem(
+                    selected.label or selected.original_filename
+                ),
+            )
+            self.preview_table.setItem(row, 1, QtWidgets.QTableWidgetItem())
+        root.addWidget(self.preview_table, 1)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        self.single_color_button.clicked.connect(self._pick_single_color)
+        self.color_mode_combo.currentIndexChanged.connect(self._update_controls)
+        self.colormap_combo.currentIndexChanged.connect(self._refresh_preview)
+        self.density_slider.valueChanged.connect(self._refresh_preview)
+        self._update_controls()
+
+    def _display_single_color(self):
+        return self.single_color or self.resolved_colors.get(
+            self.dataset.id, "#1f77b4"
+        )
+
+    def _update_single_color_button(self):
+        color = QtGui.QColor(self._display_single_color())
+        if not color.isValid():
+            color = QtGui.QColor("#1f77b4")
+        foreground = "#ffffff" if color.lightness() < 128 else "#000000"
+        self.single_color_button.setText(color.name())
+        self.single_color_button.setStyleSheet(
+            "QPushButton { background-color: %s; color: %s; }"
+            % (color.name(), foreground)
+        )
+
+    def _pick_single_color(self):
+        color = QtWidgets.QColorDialog.getColor(
+            QtGui.QColor(self._display_single_color()),
+            self,
+            "スペクトル色" if self.language == "ja" else "Trace color",
+        )
+        if color.isValid():
+            self.single_color = color.name()
+            self._update_single_color_button()
+            self._refresh_preview()
+
+    def _gradient_color_names(self):
+        colors = gradient_colors(
+            self.colormap_combo.currentText(),
+            self.density_slider.value(),
+            len(self.selected_datasets),
+        )
+        return [
+            QtGui.QColor.fromRgbF(
+                float(color[0]), float(color[1]), float(color[2])
+            ).name()
+            for color in colors
+        ]
+
+    def _preview_color_names(self):
+        if self.color_mode_combo.currentData() == "gradient":
+            return self._gradient_color_names()
+        return [
+            self._display_single_color()
+            if selected.id == self.dataset.id
+            else self.resolved_colors.get(selected.id, "#1f77b4")
+            for selected in self.selected_datasets
+        ]
+
+    def _refresh_preview(self, *_args):
+        self.density_value_label.setText("%d%%" % self.density_slider.value())
+        for row, color_name in enumerate(self._preview_color_names()):
+            color = QtGui.QColor(color_name)
+            item = self.preview_table.item(row, 1)
+            item.setText(color.name())
+            item.setBackground(color)
+            item.setForeground(
+                QtGui.QColor("#ffffff" if color.lightness() < 128 else "#000000")
+            )
+
+    def _update_controls(self, *_args):
+        gradient = self.color_mode_combo.currentData() == "gradient"
+        self.single_color_button.setEnabled(not gradient)
+        self.colormap_combo.setEnabled(gradient)
+        self.density_slider.setEnabled(gradient)
+        self.density_value_label.setEnabled(gradient)
+        self._refresh_preview()
+
+    def changes(self):
+        changes = {
+            self.dataset.id: {
+                "line_style": self.line_style_combo.currentData(),
+            }
+        }
+        if self.color_mode_combo.currentData() == "gradient":
+            for selected, color_name in zip(
+                self.selected_datasets, self._gradient_color_names()
+            ):
+                changes.setdefault(selected.id, {})["color"] = color_name
+        else:
+            changes[self.dataset.id]["color"] = self.single_color
+        return changes
 
 
 class TextAnnotationDialog(QtWidgets.QDialog):

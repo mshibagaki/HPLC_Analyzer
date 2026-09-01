@@ -24,6 +24,7 @@ from .models import (
     TextAnnotation,
     WorkDirectory,
     VerticalMarker,
+    normalize_line_style,
     sanitize_condition_presets,
 )
 from .parser import dataset_from_bytes
@@ -357,10 +358,14 @@ def load_project(path: str) -> Project:
                     "offset",
                     "visible",
                     "color",
+                    "line_style",
                 )
                 for field_name in scalar_fields:
                     if field_name in item:
-                        setattr(dataset, field_name, item[field_name])
+                        value = item[field_name]
+                        if field_name == "line_style":
+                            value = normalize_line_style(value)
+                        setattr(dataset, field_name, value)
                 dataset.measurement = _metadata_from_dict(item.get("measurement", {}))
                 dataset.peaks = [
                     _peak_from_dict(peak)

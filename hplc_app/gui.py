@@ -30,6 +30,7 @@ from .dialogs import (
     AxisLabelsDialog,
     BatchMetadataDialog,
     DirectoryImportDialog,
+    DisplaySettingsDialog,
     FractionRangeDialog,
     GradientDialog,
     IntegrationListDialog,
@@ -107,6 +108,7 @@ from .rendering import (
     LIGHTWEIGHT,
     default_render_quality,
     default_trace_color,
+    matplotlib_line_style,
     normalize_render_quality,
     screen_series,
 )
@@ -1671,6 +1673,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "offset",
             "visible",
             "color",
+            "line_style",
             "peaks",
             "fitted_peaks",
         )
@@ -3612,6 +3615,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 label=label,
                 color=color,
                 linewidth=trace.line_width,
+                linestyle=matplotlib_line_style(trace.line_style),
                 antialiased=not self._is_lightweight_rendering(),
             )[0]
             self._dataset_lines[dataset.id] = line
@@ -3632,6 +3636,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     overview_y,
                     color=color,
                     linewidth=max(0.6, self.project.method.line_width * 0.75),
+                    linestyle=matplotlib_line_style(trace.line_style),
                     alpha=0.9,
                     antialiased=not self._is_lightweight_rendering(),
                 )[0]
@@ -6174,16 +6179,43 @@ class MainWindow(QtWidgets.QMainWindow):
         if dataset is None:
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
-        initial = QtGui.QColor(
-            dataset_display_color(dataset, self.dataset_table.currentRow())
+        selected_ids = {
+            self.project.datasets[row].id
+            for row in self._selected_dataset_rows()
+        }
+        selected_ids.add(dataset.id)
+        selected_datasets = [
+            item for item in self.project.datasets if item.id in selected_ids
+        ]
+        resolved_colors = {
+            item.id: dataset_display_color(item, index)
+            for index, item in enumerate(self.project.datasets)
+        }
+        dialog = DisplaySettingsDialog(
+            dataset,
+            selected_datasets,
+            resolved_colors,
+            self._application_language,
+            self,
         )
-        color = QtWidgets.QColorDialog.getColor(initial, self, self.translator("change_color"))
-        if not color.isValid():
+        if not dialog_exec(dialog):
             return
+        changes = dialog.changes()
         before = self._capture_analysis_state()
-        dataset.color = color.name()
+        changed = False
+        for item in self.project.datasets:
+            values = changes.get(item.id, {})
+            for field_name in ("color", "line_style"):
+                if field_name not in values:
+                    continue
+                value = values[field_name]
+                if getattr(item, field_name) != value:
+                    setattr(item, field_name, value)
+                    changed = True
+        if not changed:
+            return
         self._push_undo_snapshot(
-            before, self._history_label("スペクトル色", "Trace color")
+            before, self._history_label("表示設定", "Display settings")
         )
         self.project.dirty = True
         self._refresh_dataset_table(self.dataset_table.currentRow())

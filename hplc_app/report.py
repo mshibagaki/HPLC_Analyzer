@@ -15,6 +15,7 @@ from matplotlib.text import Text
 from .analysis import baseline_trace, display_values, reference_values_for_display
 from .models import Dataset, PeakRegion, Project
 from .peak_fitting import PeakFitResult, evaluate_fit_profile
+from .rendering import matplotlib_line_style
 
 
 A4_SIZE_INCHES = (8.2677165, 11.6929134)
@@ -265,6 +266,7 @@ def _plot_dataset(
         values + dataset.offset,
         color=color,
         linewidth=project.method.line_width,
+        linestyle=matplotlib_line_style(dataset.line_style),
         label=project.legend_label_for(dataset),
     )
     for peak in dataset.peaks:

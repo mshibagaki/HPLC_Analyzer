@@ -21,6 +21,7 @@ from hplc_app.dialogs import (
     AxisLabelsDialog,
     BatchMetadataDialog,
     DirectoryImportDialog,
+    DisplaySettingsDialog,
     FractionRangeDialog,
     GradientDialog,
     LabDatabaseDialog,
@@ -68,7 +69,7 @@ from hplc_app.models import (
     WorkDirectory,
 )
 from hplc_app.parser import load_ascii_file
-from hplc_app.plot3d import ThreeDPlotOptions
+from hplc_app.plot3d import ThreeDPlotOptions, gradient_colors
 from hplc_app.peak_fitting import (
     PeakFitResult,
     fitted_peak_from_result,
@@ -1201,6 +1202,7 @@ class GuiTests(unittest.TestCase):
         if not pyqtgraph_scene_available():
             self.skipTest("optional PyQtGraph dependency is not installed")
         window = self.make_window()
+        window.project.datasets[0].line_style = "dashed"
         window.project.method.show_integration_areas = True
         window.project.method.show_retention_labels = True
         window.project.vertical_markers.append(
@@ -1248,6 +1250,16 @@ class GuiTests(unittest.TestCase):
                 key="ctrl",
             )
             self.assertEqual(evidence["counts"]["traces"], 2)
+            dash_style = getattr(
+                getattr(consumer.qt_core.Qt, "PenStyle", consumer.qt_core.Qt),
+                "DashLine",
+            )
+            self.assertEqual(
+                consumer.trace_items[window.project.datasets[0].id]
+                .opts["pen"]
+                .style(),
+                dash_style,
+            )
             self.assertEqual(evidence["counts"]["gradients"], 1)
             self.assertEqual(evidence["counts"]["peak_overlays"], 1)
             self.assertEqual(evidence["counts"]["vertical_markers"], 1)
@@ -2181,6 +2193,8 @@ class GuiTests(unittest.TestCase):
     def test_lightweight_png_svg_pdf_export_temporarily_uses_full_data(self):
         window = self.make_lightweight_window()
         dataset = window.project.datasets[0]
+        dataset.line_style = "dotted"
+        window._plot()
         screen_count = len(window._dataset_lines[dataset.id].get_xdata())
         self.assertLess(screen_count, dataset.time_min.size)
         peak = dataset.peaks[0]
@@ -2192,10 +2206,14 @@ class GuiTests(unittest.TestCase):
             peak.area_percent,
         )
         observed_counts = []
+        observed_styles = []
 
         def observe_save(path, **_kwargs):
             observed_counts.append(
                 len(window._dataset_lines[dataset.id].get_xdata())
+            )
+            observed_styles.append(
+                window._dataset_lines[dataset.id].get_linestyle()
             )
             Path(path).write_bytes(b"verified full-data export")
 
@@ -2204,6 +2222,7 @@ class GuiTests(unittest.TestCase):
                 for suffix in ("png", "svg", "pdf"):
                     window._save_figure_file(str(Path(directory) / ("figure." + suffix)))
         self.assertEqual(observed_counts, [dataset.time_min.size] * 3)
+        self.assertEqual(observed_styles, [":", ":", ":"])
         self.assertEqual(window._render_quality, LIGHTWEIGHT)
         self.assertLess(
             len(window._dataset_lines[dataset.id].get_xdata()),
@@ -7584,6 +7603,112 @@ class GuiTests(unittest.TestCase):
             [button.text() for button in analysis_order],
             ["Measurement / sample conditions input", "Display settings"],
         )
+        window.project.dirty = False
+        window.close()
+
+    def test_display_settings_single_color_and_all_line_styles_are_available(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        resolved = {
+            first.id: "#1f77b4",
+            second.id: "#d62728",
+        }
+        dialog = DisplaySettingsDialog(
+            first, [first, second], resolved, "en"
+        )
+        self.assertEqual(
+            [
+                dialog.line_style_combo.itemData(index)
+                for index in range(dialog.line_style_combo.count())
+            ],
+            ["solid", "dashed", "dotted", "dash_dot"],
+        )
+        with patch.object(
+            QtWidgets.QColorDialog,
+            "getColor",
+            return_value=QtGui.QColor("#123456"),
+        ):
+            dialog._pick_single_color()
+        changes = dialog.changes()
+        self.assertEqual(changes[first.id]["color"], "#123456")
+        self.assertNotIn(second.id, changes)
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_display_settings_gradient_uses_table_order_and_one_undo_step(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        raw = [
+            (dataset.time_min.copy(), dataset.intensity_uv.copy())
+            for dataset in (first, second)
+        ]
+        model = window.dataset_table.model()
+        selection = window.dataset_table.selectionModel()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        rows = (
+            QtCore.QItemSelectionModel.SelectionFlag.Rows
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Rows
+        )
+        selection.clearSelection()
+        window.dataset_table.setCurrentCell(0, DATASET_SELECTED_COLUMN)
+        selection.select(
+            QtCore.QItemSelection(
+                model.index(0, DATASET_SELECTED_COLUMN),
+                model.index(1, DATASET_SELECTED_COLUMN),
+            ),
+            select | rows,
+        )
+        expected_colors = []
+
+        def configure(dialog):
+            self.assertEqual(
+                [item.id for item in dialog.selected_datasets],
+                [first.id, second.id],
+            )
+            dialog.line_style_combo.setCurrentIndex(
+                dialog.line_style_combo.findData("dash_dot")
+            )
+            dialog.color_mode_combo.setCurrentIndex(
+                dialog.color_mode_combo.findData("gradient")
+            )
+            dialog.colormap_combo.setCurrentText("Blues")
+            dialog.density_slider.setValue(40)
+            expected_colors.extend(dialog._gradient_color_names())
+            return True
+
+        undo_count = len(window._undo_stack)
+        with patch("hplc_app.gui.dialog_exec", side_effect=configure):
+            window.change_color()
+
+        self.assertEqual([first.color, second.color], expected_colors)
+        self.assertEqual(first.line_style, "dash_dot")
+        self.assertEqual(second.line_style, "solid")
+        self.assertEqual(len(window._undo_stack), undo_count + 1)
+        self.assertEqual(window._undo_stack[-1][0], "表示設定")
+        self.assertEqual(window._dataset_lines[first.id].get_linestyle(), "-.")
+        window.undo()
+        self.assertEqual([first.color, second.color], ["", ""])
+        self.assertEqual(first.line_style, "solid")
+        window.redo()
+        self.assertEqual([first.color, second.color], expected_colors)
+        self.assertEqual(first.line_style, "dash_dot")
+        expected_rgba = gradient_colors("Blues", 40, 2)
+        self.assertEqual(
+            expected_colors,
+            [
+                QtGui.QColor.fromRgbF(*color[:3]).name()
+                for color in expected_rgba
+            ],
+        )
+        for dataset, (time_values, intensity_values) in zip((first, second), raw):
+            np.testing.assert_array_equal(dataset.time_min, time_values)
+            np.testing.assert_array_equal(dataset.intensity_uv, intensity_values)
         window.project.dirty = False
         window.close()
 

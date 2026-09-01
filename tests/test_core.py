@@ -4367,6 +4367,31 @@ class ApplicationSettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(KeyError, "Unknown application setting"):
             store.get("unknown/key")
 
+    def test_legacy_dataset_column_order_drops_source_without_reordering(self):
+        legacy_order = [
+            "source",
+            "visible",
+            "selected",
+            "label",
+            "color",
+            "run_id",
+            "timestamp",
+            "wavelength",
+            "y_axis",
+            "auv",
+            "column",
+            "x_shift",
+            "offset",
+        ]
+        backend = _FakeSettingsBackend(
+            {DATASET_COLUMN_ORDER: json.dumps(legacy_order)}
+        )
+
+        self.assertEqual(
+            ApplicationSettings(backend).get(DATASET_COLUMN_ORDER),
+            [column for column in legacy_order if column != "source"],
+        )
+
     def test_write_and_sync_failures_are_non_fatal_and_reported(self):
         self.assertFalse(
             ApplicationSettings(_FakeSettingsBackend(fail_set=True)).set(

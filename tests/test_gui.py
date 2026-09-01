@@ -41,6 +41,7 @@ from hplc_app.dialogs import (
 from hplc_app.auto_peak_settings import default_auto_peak_sensitivity_presets
 from hplc_app.gui import (
     DATASET_COLUMN_IDS,
+    DATASET_COLOR_COLUMN,
     DATASET_GROUP_COLUMN,
     DATASET_LABEL_COLUMN,
     DATASET_OFFSET_COLUMN,
@@ -7370,13 +7371,13 @@ class GuiTests(unittest.TestCase):
 
         self.assertTrue(header.sectionsMovable())
         self.assertEqual(visible_order, list(DEFAULT_DATASET_COLUMN_ORDER))
-        # The acquisition time has its own visible column, directly left of the
-        # label, so a Run ID derived from it is no longer read as the label.
-        self.assertFalse(window.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
         self.assertEqual(
-            visible_order[visible_order.index("timestamp") + 1], "label"
+            visible_order[:6],
+            ["selected", "visible", "label", "color", "run_id", "timestamp"],
         )
+        self.assertFalse(window.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
         self.assertTrue(window.dataset_table.isColumnHidden(DATASET_GROUP_COLUMN))
+        self.assertTrue(window.dataset_table.isColumnHidden(DATASET_SOURCE_COLUMN))
         self.assertEqual(
             window.dataset_table.item(0, DATASET_TIMESTAMP_COLUMN).text(), timestamp
         )
@@ -7392,18 +7393,37 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_hidden_source_path_is_available_in_conditions_input(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        expected = dataset.original_path or dataset.original_filename
+        dialog = BatchMetadataDialog(window.project, dataset.id, "en")
+
+        self.assertEqual(
+            dialog.table.horizontalHeaderItem(dialog.SOURCE_COLUMN).text(),
+            "Source file",
+        )
+        source = dialog.table.item(0, dialog.SOURCE_COLUMN)
+        self.assertEqual(source.text(), expected)
+        self.assertEqual(source.toolTip(), expected)
+        self.assertFalse(source.flags() & ITEM_IS_EDITABLE)
+
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
     def test_dataset_column_drag_order_persists_as_application_setting(self):
         window = self.make_window()
         header = window.dataset_table.horizontalHeader()
         header.moveSection(
-            header.visualIndex(DATASET_SOURCE_COLUMN),
+            header.visualIndex(DATASET_COLOR_COLUMN),
             header.visualIndex(DATASET_SELECTED_COLUMN),
         )
         self.app.processEvents()
-        expected = ["source"] + [
+        expected = ["color"] + [
             column_id
             for column_id in DEFAULT_DATASET_COLUMN_ORDER
-            if column_id != "source"
+            if column_id != "color"
         ]
         self.assertEqual(window._current_dataset_column_order(), expected)
         self.assertEqual(window._settings.get(DATASET_COLUMN_ORDER), expected)
@@ -7415,8 +7435,37 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(
             restored.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN)
         )
+        self.assertTrue(
+            restored.dataset_table.isColumnHidden(DATASET_SOURCE_COLUMN)
+        )
         restored.project.dirty = False
         restored.close()
+
+    def test_selected_dataset_keeps_trace_color_cell_background(self):
+        window = self.make_window()
+        window.dataset_table.selectRow(0)
+        self.app.processEvents()
+        item = window.dataset_table.item(0, DATASET_COLOR_COLUMN)
+        delegate = window.dataset_table.itemDelegateForColumn(DATASET_COLOR_COLUMN)
+        option = QtWidgets.QStyleOptionViewItem()
+        if QT_API == 6:
+            selected = QtWidgets.QStyle.StateFlag.State_Selected
+            focus = QtWidgets.QStyle.StateFlag.State_HasFocus
+        else:
+            selected = QtWidgets.QStyle.State_Selected
+            focus = QtWidgets.QStyle.State_HasFocus
+        option.state |= selected | focus
+        index = window.dataset_table.model().index(0, DATASET_COLOR_COLUMN)
+        styled = delegate.display_option(option, index)
+
+        self.assertFalse(styled.state & selected)
+        self.assertFalse(styled.state & focus)
+        self.assertEqual(
+            styled.backgroundBrush.color().name(), item.background().color().name()
+        )
+
+        window.project.dirty = False
+        window.close()
 
     def test_dataset_selection_checkboxes_and_row_selection_stay_synchronized(self):
         window = self.make_window()
@@ -7494,15 +7543,26 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.dataset_data_group.title(), "データ")
         self.assertEqual(window.dataset_analysis_group.title(), "解析")
         self.assertEqual(window.spectrum_display_group.title(), "スペクトル表示")
-        requested_order = (
+        data_order = (
+            window.import_button,
+            window.remove_button,
             window.metadata_button,
             window.gradient_button,
-            window.batch_metadata_button,
-            window.color_button,
             window.group_run_button,
             window.ungroup_run_button,
         )
-        for index, button in enumerate(requested_order):
+        for index, button in enumerate(data_order):
+            self.assertIs(
+                window.dataset_data_layout.itemAtPosition(
+                    index // 2, index % 2
+                ).widget(),
+                button,
+            )
+        analysis_order = (
+            window.batch_metadata_button,
+            window.color_button,
+        )
+        for index, button in enumerate(analysis_order):
             self.assertIs(
                 window.dataset_analysis_layout.itemAtPosition(
                     index // 2, index % 2
@@ -7510,20 +7570,20 @@ class GuiTests(unittest.TestCase):
                 button,
             )
         self.assertEqual(
-            [button.text() for button in requested_order],
+            [button.text() for button in analysis_order],
             [
-                "詳細・定量条件",
-                "グラジエント",
-                "一括入力",
-                "スペクトル",
-                "選択を同一Runへ",
-                "選択をRunから分離",
+                "測定・試料条件の入力",
+                "表示設定",
             ],
         )
         window.set_language("en")
         self.assertEqual(window.dataset_data_group.title(), "Data")
         self.assertEqual(window.dataset_analysis_group.title(), "Analysis")
         self.assertEqual(window.spectrum_display_group.title(), "Spectrum display")
+        self.assertEqual(
+            [button.text() for button in analysis_order],
+            ["Measurement / sample conditions input", "Display settings"],
+        )
         window.project.dirty = False
         window.close()
 
@@ -8715,6 +8775,9 @@ class GuiTests(unittest.TestCase):
                 WorkDirectory(path="C:/HPLC/pac2", label="pac2"),
             ],
             "en",
+        )
+        self.assertEqual(
+            dialog.table.horizontalHeaderItem(3).text(), "Include subfolders"
         )
         dialog.table.item(0, 1).setText("first revised")
         dialog.table.item(0, 3).setCheckState(CHECKED)

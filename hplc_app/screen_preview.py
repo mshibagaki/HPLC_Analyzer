@@ -88,7 +88,7 @@ class ExperimentalScreenPreview:
                         return True
                     if (event.type() == core.QEvent.Type.KeyPress
                             and event.key() == core.Qt.Key.Key_Delete
-                            and preview.owner.delete_selected_vertical_marker()):
+                            and preview.owner.delete_selected_plot_items()):
                         event.accept()
                         return True
                 except Exception:
@@ -477,8 +477,7 @@ class ExperimentalScreenPreview:
         owner = self.owner
         mode = ("integrate" if owner.integrate_button.isChecked() else
                 "edit" if owner.edit_peak_button.isChecked() else
-                "fraction" if owner.fraction_button.isChecked() else
-                "time_range" if owner._mouse_mode == "time_range" else "")
+                "select" if owner._mouse_mode == "select" else "")
         if not mode or str(owner.toolbar.mode):
             if self._span_drag is not None:
                 self.cancel_span_drag()
@@ -524,8 +523,7 @@ class ExperimentalScreenPreview:
                 if abs(event.canvas_x - drag["pixel"]) >= 3 and x_value != drag["start"]:
                     callback = (owner._on_span_selected if mode == "integrate"
                                 else owner._on_edit_span_selected if mode == "edit"
-                                else owner._on_fraction_span_selected if mode == "fraction"
-                                else owner._on_time_range_selected)
+                                else owner._on_selection_span_selected)
                     callback(drag["start"], x_value)
             return True
         if (name == "button_press_event" and event.button == 1 and valid
@@ -579,21 +577,29 @@ class ExperimentalScreenPreview:
                 owner._update_pointer_coordinates(event)
             if not owner._view_initialized:
                 return True
+            if owner._vertical_marker_drag is not None:
+                if name == "motion_notify_event":
+                    owner._on_canvas_motion(event)
+                    return True
+                if name == "button_release_event":
+                    owner._on_canvas_release(event)
+                    return True
             if (
-                owner._mouse_mode == "peak_select"
+                owner._mouse_mode == "select"
                 and name == "button_press_event"
                 and event.button == 1
                 and event.hit_region in ("plot", "plot_y1", "plot_y2")
                 and not str(owner.toolbar.mode)
             ):
-                event = event.with_hit_target(
-                    *owner._integration_peak_hit_target(event)
-                )
-                self.consumer.widget.setFocus(
-                    self.consumer.qt_core.Qt.FocusReason.MouseFocusReason
-                )
-                owner._on_canvas_press(event)
-                return True
+                integration_hit = owner._integration_peak_hit_target(event)
+                if event.hit_kind == "vertical_marker" or integration_hit[0]:
+                    if event.hit_kind != "vertical_marker":
+                        event = event.with_hit_target(*integration_hit)
+                    self.consumer.widget.setFocus(
+                        self.consumer.qt_core.Qt.FocusReason.MouseFocusReason
+                    )
+                    owner._on_canvas_press(event)
+                    return True
             if self._handle_span_event(name, event):
                 return True
             if self._handle_zoom_event(name, event):
@@ -606,9 +612,9 @@ class ExperimentalScreenPreview:
                 return True
             if name == "motion_notify_event":
                 x_value = (event.data_for("y1")[0]
-                           if (owner.pointer_action.isChecked() or owner.fraction_button.isChecked()
+                           if (owner.pointer_action.isChecked()
                                or owner.integrate_button.isChecked() or owner.edit_peak_button.isChecked()
-                               or owner._mouse_mode == "time_range")
+                               or owner._mouse_mode == "select")
                            and event.hit_region in ("plot", "plot_y1", "plot_y2")
                            else None)
                 self.consumer.set_pointer_cursor(x_value, event.axis_role)

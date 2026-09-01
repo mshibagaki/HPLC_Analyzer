@@ -100,6 +100,10 @@ from hplc_app.screen_navigation import (
     ScreenViewState,
     compose_overview_state,
 )
+from hplc_app.screen_scene import (
+    MAX_FRACTION_BOUNDARY_LINES,
+    compose_base_screen_scene,
+)
 
 
 def _trace_edit_state(datasets):
@@ -1059,6 +1063,72 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_preview_vertical_marker_label_follows_drag_and_undo(self):
+        if QT_API != 6 or not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            marker = VerticalMarker(x_min=6.0)
+            window.project.vertical_markers = [marker]
+            window._plot()
+            window.screen_preview_checkbox.setChecked(True)
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("select")
+            )
+            preview = window._screen_preview
+            item = preview.consumer.marker_items[marker.id]
+            self.assertEqual(item.label.toPlainText(), "6 min")
+            undo_count = len(window._undo_stack)
+            window.project.dirty = False
+
+            preview.handle_event(
+                "button_press_event",
+                ScreenPointerEvent(
+                    button=1,
+                    axis_role="y1",
+                    hit_region="plot",
+                    canvas_x=20.0,
+                    data_coordinates=(("y1", 6.0, 0.0),),
+                    hit_kind="vertical_marker",
+                    hit_id=marker.id,
+                ),
+            )
+            preview.handle_event(
+                "motion_notify_event",
+                ScreenPointerEvent(
+                    button=1,
+                    axis_role="y1",
+                    hit_region="plot",
+                    canvas_x=40.0,
+                    data_coordinates=(("y1", 8.5, 0.0),),
+                ),
+            )
+            self.assertEqual(marker.x_min, 8.5)
+            item = preview.consumer.marker_items[marker.id]
+            self.assertEqual(item.label.toPlainText(), "8.5 min")
+            preview.handle_event(
+                "button_release_event",
+                ScreenPointerEvent(
+                    button=1,
+                    axis_role="y1",
+                    hit_region="plot",
+                    canvas_x=40.0,
+                    data_coordinates=(("y1", 8.5, 0.0),),
+                ),
+            )
+            self.assertEqual(len(window._undo_stack), undo_count + 1)
+            self.assertTrue(window.project.dirty)
+            window.undo()
+            restored = window.project.vertical_markers[0]
+            self.assertEqual(restored.x_min, 6.0)
+            self.assertEqual(
+                preview.consumer.marker_items[restored.id].label.toPlainText(),
+                "6 min",
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_pointer_boundaries_focus_and_failure_cleanup(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -1084,7 +1154,7 @@ class GuiTests(unittest.TestCase):
             window._select_vertical_marker(window.project.vertical_markers[0])
             key = QtGui.QKeyEvent(QtCore.QEvent.Type.KeyPress, QtCore.Qt.Key.Key_Delete,
                                  QtCore.Qt.KeyboardModifier.NoModifier)
-            with patch.object(window, "delete_selected_vertical_marker", side_effect=RuntimeError("key failure")):
+            with patch.object(window, "delete_selected_plot_items", side_effect=RuntimeError("key failure")):
                 self.app.sendEvent(consumer.widget, key)
             self.assertIsNone(window._screen_preview)
             self.assertTrue(consumer._closed)
@@ -3067,6 +3137,58 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_matplotlib_vertical_marker_label_follows_drag_and_undo(self):
+        window = self.make_window()
+        try:
+            marker = VerticalMarker(x_min=6.0)
+            window.project.vertical_markers = [marker]
+            window._plot()
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("select")
+            )
+            self.assertEqual(
+                window._vertical_marker_label_artists[marker.id].get_text(),
+                "6 min",
+            )
+            undo_count = len(window._undo_stack)
+            window.project.dirty = False
+            window._on_canvas_press(
+                ScreenPointerEvent(
+                    button=1,
+                    axis_role="y1",
+                    hit_region="plot",
+                    data_coordinates=(("y1", 6.0, 0.0),),
+                    hit_kind="vertical_marker",
+                    hit_id=marker.id,
+                )
+            )
+            self.assertFalse(window._span_selector.active)
+            window._on_canvas_motion(
+                ScreenPointerEvent(
+                    axis_role="y1",
+                    hit_region="plot",
+                    data_coordinates=(("y1", 8.5, 0.0),),
+                )
+            )
+            self.assertEqual(marker.x_min, 8.5)
+            self.assertEqual(
+                window._vertical_marker_label_artists[marker.id].get_text(),
+                "8.5 min",
+            )
+            window._on_canvas_release(ScreenPointerEvent(button=1))
+            self.assertTrue(window._span_selector.active)
+            self.assertEqual(len(window._undo_stack), undo_count + 1)
+            window.undo()
+            restored = window.project.vertical_markers[0]
+            self.assertEqual(restored.x_min, 6.0)
+            self.assertEqual(
+                window._vertical_marker_label_artists[restored.id].get_text(),
+                "6 min",
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_canvas_press_accepts_backend_neutral_hit_targets(self):
         window = self.make_window()
         dataset = window.project.datasets[0]
@@ -3091,6 +3213,7 @@ class GuiTests(unittest.TestCase):
             )
         )
         self.assertEqual(window._selected_vertical_marker_id, marker.id)
+        window._on_canvas_release(ScreenPointerEvent(button=1))
 
         window._on_canvas_press(
             ScreenPointerEvent(
@@ -4509,7 +4632,9 @@ class GuiTests(unittest.TestCase):
             dataset.visible = True
             window._plot()
             begin()
-            window.fraction_button.setChecked(True)
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("select")
+            )
             preview.handle_event("button_release_event", event(14.0))
             self.assertEqual(window.project.fraction_regions, [])
             self.assertEqual([d.peaks for d in window.project.datasets], original)
@@ -4558,225 +4683,18 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
-    def test_preview_fraction_drag_commits_shared_model_and_history(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
-            self.skipTest("optional modern renderer unavailable")
-        from hplc_app.project_io import load_project, save_project
+    def test_fraction_mouse_mode_and_inline_interval_are_not_exposed(self):
         window = self.make_window()
         try:
-            window.show()
-            self.app.processEvents()
-            raw = [dataset.intensity_uv.copy() for dataset in window.project.datasets]
-            peaks = [deepcopy(dataset.peaks) for dataset in window.project.datasets]
-            window.fraction_interval_spin.setValue(1.5)
-            # Opt in while the previously Matplotlib-only tool is already active.
-            window.fraction_button.setChecked(True)
-            window.screen_preview_checkbox.setChecked(True)
-            self.assertIsNone(window._span_selector)
-            for mode, role, start, end in (("single", "y1", 8.0, 14.0),
-                                           ("overview_detail", "y1", 25.0, 18.0),
-                                           ("split_y_axes", "y2", 30.0, 36.0)):
-                with self.subTest(mode=mode):
-                    window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
-                    preview = window._screen_preview
-                    self.assertIsNotNone(preview)
-                    consumer = preview.consumer
-                    core, gui = consumer.qt_core, consumer.qt_gui
-                    viewport = consumer.widget.viewport()
-                    view = consumer.secondary if role == "y2" else consumer.primary.vb
-                    def point(time):
-                        return consumer.widget.mapFromScene(view.mapViewToScene(
-                            core.QPointF(time, sum(view.viewRange()[1]) / 2.0)))
-                    def mouse(kind, position, button=core.Qt.MouseButton.NoButton,
-                              held=core.Qt.MouseButton.NoButton):
-                        self.app.sendEvent(viewport, gui.QMouseEvent(
-                            kind, core.QPointF(position), core.QPointF(viewport.mapToGlobal(position)),
-                            button, held, core.Qt.KeyboardModifier.NoModifier))
-                    start_point, end_point = point(start), point(end)
-                    expected = sorted(consumer.pointer_event(consumer.widget.mapToScene(p)).data_for(role)[0]
-                                      for p in (start_point, end_point))
-                    state = window._screen_view_state()
-                    count = len(window.project.fraction_regions)
-                    undo_count = len(window._undo_stack)
-                    window.project.dirty = False
-                    with patch.object(window.canvas, "draw_idle") as mpl_draw:
-                        mouse(core.QEvent.Type.MouseButtonPress, start_point,
-                              core.Qt.MouseButton.LeftButton, core.Qt.MouseButton.LeftButton)
-                        mouse(core.QEvent.Type.MouseMove, end_point, held=core.Qt.MouseButton.LeftButton)
-                        self.assertIsNotNone(preview._span_drag)
-                        self.assertTrue(consumer.span_selection.isVisible())
-                        self.assertIs(consumer._span_view, view)
-                        np.testing.assert_allclose(consumer.span_selection.getRegion(), expected)
-                        self.assertEqual(len(window.project.fraction_regions), count)
-                        self.assertEqual(len(window._undo_stack), undo_count)
-                        self.assertFalse(window.project.dirty)
-                        mpl_draw.assert_not_called()
-                    self.app.sendEvent(viewport, gui.QWheelEvent(
-                        core.QPointF(end_point), core.QPointF(viewport.mapToGlobal(end_point)),
-                        core.QPoint(), core.QPoint(0, 120), core.Qt.MouseButton.NoButton,
-                        core.Qt.KeyboardModifier.NoModifier, core.Qt.ScrollPhase.NoScrollPhase, False))
-                    self.assertEqual(window._screen_view_state(), state)
-                    mouse(core.QEvent.Type.MouseButtonRelease, end_point, core.Qt.MouseButton.LeftButton)
-                    self.assertIs(window._screen_preview, preview)
-                    self.assertIsNone(preview._span_drag)
-                    self.assertFalse(consumer.span_selection.isVisible())
-                    self.assertEqual(len(window.project.fraction_regions), count + 1)
-                    self.assertEqual(len(window._undo_stack), undo_count + 1)
-                    region = window.project.fraction_regions[-1]
-                    np.testing.assert_allclose((region.start_min, region.end_min), expected)
-                    self.assertEqual(region.interval_min, 1.5)
-                    self.assertEqual(consumer.last_evidence["counts"]["fraction_regions"], count + 1)
-                    self.assertEqual(window._screen_view_state(), state)
-                    window.undo()
-                    self.assertEqual(len(window.project.fraction_regions), count)
-                    window.redo()
-                    self.assertEqual(window.project.fraction_regions[-1].id, region.id)
-            with tempfile.TemporaryDirectory() as directory:
-                path = str(Path(directory) / "native-fractions.hplcproj")
-                save_project(path, window.project)
-                restored = load_project(path)
-                self.assertEqual(restored.fraction_regions, window.project.fraction_regions)
-                image_path = Path(directory) / "fractions.svg"
-                with patch.object(window.canvas.callbacks, "exception_handler",
-                                  side_effect=AssertionError("Unexpected rendering callback error")):
-                    window._save_figure_file(str(image_path))
-                self.assertGreater(image_path.stat().st_size, 0)
-            self.assertFalse(window._current_view_pixmap().isNull())
-            window.clear_fraction_regions()
-            self.assertEqual(window.project.fraction_regions, [])
-            window.undo()
-            self.assertEqual(len(window.project.fraction_regions), 3)
-            for dataset, values, original_peaks in zip(window.project.datasets, raw, peaks):
-                np.testing.assert_array_equal(dataset.intensity_uv, values)
-                self.assertEqual(dataset.peaks, original_peaks)
+            self.assertEqual(window.mouse_mode_combo.findData("fraction"), -1)
+            self.assertFalse(hasattr(window, "fraction_button"))
+            self.assertFalse(hasattr(window, "fraction_interval_spin"))
+            self.assertTrue(window.fraction_numeric_button.isVisibleTo(window))
         finally:
             window.project.dirty = False
             window.close()
 
-    def test_preview_fraction_drag_cancellation_and_failure_cleanup(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
-            self.skipTest("optional modern renderer unavailable")
-        window = self.make_window()
-        try:
-            window.show()
-            window.screen_preview_checkbox.setChecked(True)
-            window.fraction_button.setChecked(True)
-            preview = window._screen_preview
-            self.assertIsNotNone(preview)
-            consumer = preview.consumer
-            core, gui = consumer.qt_core, consumer.qt_gui
-            viewport = consumer.widget.viewport()
-
-            def event(time, button=1, **changes):
-                view = consumer.primary.vb
-                position = view.mapViewToScene(core.QPointF(time, sum(view.viewRange()[1]) / 2))
-                value = consumer.pointer_event(position, button=button)
-                return ScreenPointerEvent(**dict(vars(value), **changes))
-
-            def begin():
-                window.fraction_button.setChecked(True)
-                window.project.dirty = False
-                preview.handle_event("button_press_event", event(10.0))
-                preview.handle_event("motion_notify_event", event(20.0))
-                self.assertIsNotNone(preview._span_drag)
-
-            for kind in (core.QEvent.Type.Leave, core.QEvent.Type.FocusOut, core.QEvent.Type.KeyPress):
-                begin()
-                cancel = (gui.QKeyEvent(kind, core.Qt.Key.Key_Escape, core.Qt.KeyboardModifier.NoModifier)
-                          if kind == core.QEvent.Type.KeyPress else core.QEvent(kind))
-                self.app.sendEvent(viewport, cancel)
-                preview.handle_event("button_release_event", event(20.0))
-                self.assertIsNone(preview._span_drag)
-                self.assertFalse(consumer.span_selection.isVisible())
-                self.assertEqual(window.project.fraction_regions, [])
-                self.assertFalse(window.project.dirty)
-            # Clicks, tiny drags, wrong buttons and axes never commit a range.
-            for end in (event(10.0), event(20.0, canvas_x=event(10.0).canvas_x + 1),
-                        event(20.0, button=3), event(20.0, axis_role="outside", hit_region=""),
-                        event(20.0, axis_role="y2", hit_region="plot_y2"),
-                        event(20.0, data_coordinates=(("y1", float("nan"), 0.0),))):
-                preview.handle_event("button_press_event", event(10.0))
-                preview.handle_event("button_release_event", end)
-                self.assertIsNone(preview._span_drag)
-                self.assertEqual(window.project.fraction_regions, [])
-            for start in (event(10.0, button=3), event(10.0, hit_region="x"),
-                          event(10.0, axis_role="outside", hit_region="")):
-                preview.handle_event("button_press_event", start)
-                self.assertIsNone(preview._span_drag)
-            begin()
-            preview.handle_event("motion_notify_event", event(20.0, button=None))
-            self.assertIsNone(preview._span_drag)
-            for change in (lambda: window._plot(),
-                           lambda: window._zoom_view(0.8, 15.0, zoom_mode="x"),
-                           lambda: window.fraction_button.setChecked(False),
-                           lambda: window.toolbar._actions["pan"].trigger(),
-                           lambda: window.dataset_table.selectRow(1)):
-                begin()
-                change()
-                self.assertIsNone(preview._span_drag)
-                self.assertFalse(consumer.span_selection.isVisible())
-                self.assertEqual(window.project.fraction_regions, [])
-            begin()
-            window.resize(1300, 950)
-            self.app.processEvents()
-            self.assertIsNone(preview._span_drag)
-            begin()
-            window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData("split_y_axes"))
-            self.assertIsNone(preview._span_drag)
-            self.assertTrue(consumer._closed)
-            preview = window._screen_preview
-            consumer = preview.consumer
-            begin()
-            window.screen_preview_checkbox.setChecked(False)
-            self.assertIsNone(preview._span_drag)
-            self.assertTrue(consumer._closed)
-            self.assertEqual(window._span_selector_mode, "fraction")
-            # A preview failure keeps the existing Matplotlib tool available.
-            window.screen_preview_checkbox.setChecked(True)
-            preview = window._screen_preview
-            consumer = preview.consumer
-            with patch.object(consumer, "set_span_selection", side_effect=RuntimeError("selection failure")):
-                preview.handle_event("button_press_event", event(10.0))
-            self.assertIsNone(window._screen_preview)
-            self.assertTrue(consumer._closed)
-            self.assertEqual(window.plot_stack.count(), 1)
-            self.assertEqual(window.project.fraction_regions, [])
-            self.assertTrue(window.fraction_button.isChecked())
-            self.assertIsNotNone(window._span_selector)
-            self.assertTrue(window._span_selector.active)
-        finally:
-            window.project.dirty = False
-            window.close()
-
-    def test_fraction_collector_range_draws_interval_lines_and_undoes(self):
-        window = self.make_window()
-        original_peaks = deepcopy(window.project.datasets[0].peaks)
-        window.fraction_interval_spin.setValue(1.5)
-        window.fraction_button.setChecked(True)
-        self.assertEqual(window._span_selector_mode, "fraction")
-        window._on_fraction_span_selected(2.0, 8.0)
-        self.assertEqual(len(window.project.fraction_regions), 1)
-        region = window.project.fraction_regions[0]
-        self.assertEqual((region.start_min, region.end_min), (2.0, 8.0))
-        self.assertEqual(region.interval_min, 1.5)
-        cyan_lines = [
-            line
-            for line in window.axes.lines
-            if line.get_color() == "#0891b2"
-        ]
-        positions = sorted(
-            {round(float(line.get_xdata()[0]), 6) for line in cyan_lines}
-        )
-        self.assertEqual(positions, [2.0, 3.5, 5.0, 6.5, 8.0])
-        self.assertEqual(window.project.datasets[0].peaks, original_peaks)
-        window.clear_fraction_regions()
-        self.assertEqual(window.project.fraction_regions, [])
-        window.undo()
-        self.assertEqual(len(window.project.fraction_regions), 1)
-        window.project.dirty = False
-        window.close()
-
-    def test_mouse_mode_selects_integration_area_and_syncs_legacy_tools(self):
+    def test_mouse_mode_selects_integration_area_and_time_range(self):
         window = self.make_window()
         dataset = window.project.datasets[0]
         wide = dataset.peaks[0]
@@ -4789,10 +4707,11 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.mouse_mode_combo.currentData(), "normal")
         window.integrate_button.setChecked(True)
         self.assertEqual(window.mouse_mode_combo.currentData(), "integrate")
-        select_index = window.mouse_mode_combo.findData("peak_select")
+        select_index = window.mouse_mode_combo.findData("select")
         window.mouse_mode_combo.setCurrentIndex(select_index)
         self.assertFalse(window.integrate_button.isChecked())
-        self.assertEqual(window._mouse_mode, "peak_select")
+        self.assertEqual(window._mouse_mode, "select")
+        self.assertEqual(window._span_selector_mode, "select")
 
         event = ScreenPointerEvent(
             button=1,
@@ -4810,10 +4729,7 @@ class GuiTests(unittest.TestCase):
         range_signal = Mock()
         window.timeRangeSelected.connect(range_signal)
         dirty = window.project.dirty
-        range_index = window.mouse_mode_combo.findData("time_range")
-        window.mouse_mode_combo.setCurrentIndex(range_index)
-        self.assertEqual(window._span_selector_mode, "time_range")
-        window._on_time_range_selected(9.0, 3.0)
+        window._on_selection_span_selected(9.0, 3.0)
         self.assertEqual(window.selected_time_range, (3.0, 9.0))
         range_signal.assert_called_once_with(3.0, 9.0)
         self.assertEqual(window.project.dirty, dirty)
@@ -4835,9 +4751,9 @@ class GuiTests(unittest.TestCase):
             dialog.mouse_selection_button.click()
             self.assertTrue(dialog.mouse_selection_requested)
 
-            select_index = window.mouse_mode_combo.findData("peak_select")
+            select_index = window.mouse_mode_combo.findData("select")
             window.mouse_mode_combo.setCurrentIndex(select_index)
-            self.assertEqual(window._mouse_mode, "peak_select")
+            self.assertEqual(window._mouse_mode, "select")
             window.peak_table.selectRow(0)
 
             mouse_dialog = PeakRangeDialog(
@@ -4860,8 +4776,8 @@ class GuiTests(unittest.TestCase):
 
             window._on_edit_span_selected(4.0, 9.0)
             self.assertFalse(window.edit_peak_button.isChecked())
-            self.assertEqual(window._mouse_mode, "peak_select")
-            self.assertEqual(window.mouse_mode_combo.currentData(), "peak_select")
+            self.assertEqual(window._mouse_mode, "select")
+            self.assertEqual(window.mouse_mode_combo.currentData(), "select")
             self.assertEqual((peak.start_min, peak.end_min), (4.0, 9.0))
 
             before_cancel = (peak.start_min, peak.end_min)
@@ -4884,7 +4800,7 @@ class GuiTests(unittest.TestCase):
                 QtGui.QKeyEvent(key_press, escape_key, no_modifier)
             )
             self.assertFalse(window.edit_peak_button.isChecked())
-            self.assertEqual(window._mouse_mode, "peak_select")
+            self.assertEqual(window._mouse_mode, "select")
             self.assertEqual((peak.start_min, peak.end_min), before_cancel)
         finally:
             window.project.dirty = False
@@ -5010,13 +4926,18 @@ class GuiTests(unittest.TestCase):
         window.close()
 
     def test_numeric_fraction_range_add_edit_and_undo(self):
+        from hplc_app.project_io import load_project, save_project
+
         window = self.make_window()
         add_dialog = FractionRangeDialog(
             [], 1.0, 0.0, 20.0, language="en", parent=window
         )
+        self.assertEqual(add_dialog.interval.suffix(), " s")
+        self.assertEqual(add_dialog.interval.minimum(), 1.0)
+        self.assertEqual(add_dialog.interval.value(), 60.0)
         add_dialog.start.setValue(2.5)
         add_dialog.end.setValue(9.5)
-        add_dialog.interval.setValue(1.25)
+        add_dialog.interval.setValue(75.0)
         with patch("hplc_app.gui.FractionRangeDialog", return_value=add_dialog), \
                 patch("hplc_app.gui.dialog_exec", return_value=True):
             window.edit_fraction_range_numeric()
@@ -5037,9 +4958,10 @@ class GuiTests(unittest.TestCase):
             parent=window,
         )
         edit_dialog.select_region(region_id)
+        self.assertEqual(edit_dialog.interval.value(), 75.0)
         edit_dialog.start.setValue(3.0)
         edit_dialog.end.setValue(8.0)
-        edit_dialog.interval.setValue(0.5)
+        edit_dialog.interval.setValue(30.0)
         with patch("hplc_app.gui.FractionRangeDialog", return_value=edit_dialog), \
                 patch("hplc_app.gui.dialog_exec", return_value=True):
             window.edit_fraction_range_numeric()
@@ -5060,16 +4982,142 @@ class GuiTests(unittest.TestCase):
             (restored.start_min, restored.end_min, restored.interval_min),
             (2.5, 9.5, 1.25),
         )
+        with tempfile.TemporaryDirectory() as directory:
+            path = str(Path(directory) / "fraction-seconds.hplcproj")
+            save_project(path, window.project)
+            loaded = load_project(path)
+        loaded_region = loaded.fraction_regions[0]
+        self.assertEqual(
+            (
+                loaded_region.start_min,
+                loaded_region.end_min,
+                loaded_region.interval_min,
+            ),
+            (2.5, 9.5, 1.25),
+        )
         window.project.dirty = False
         window.close()
 
-    def test_preview_time_range_uses_shared_non_mutating_contract(self):
+    def test_selection_range_deletes_peaks_and_markers_in_one_undo_step(self):
+        window = self.make_window()
+        try:
+            dataset = window.project.datasets[0]
+            inside_peak = dataset.peaks[0]
+            outside_peak = PeakRegion(start_min=20.0, end_min=22.0)
+            dataset.peaks.append(outside_peak)
+            recalculate_dataset_peaks(dataset)
+            inside_marker = VerticalMarker(x_min=7.0)
+            outside_marker = VerticalMarker(x_min=15.0)
+            window.project.vertical_markers = [inside_marker, outside_marker]
+            raw_time = dataset.time_min.copy()
+            raw_intensity = dataset.intensity_uv.copy()
+            window._refresh_peak_table()
+            window._plot()
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("select")
+            )
+            window.project.dirty = False
+            undo_count = len(window._undo_stack)
+
+            window._on_selection_span_selected(4.0, 11.0)
+
+            self.assertEqual(window._selected_peak_ids(), [inside_peak.id])
+            self.assertEqual(
+                window._selected_vertical_marker_ids, {inside_marker.id}
+            )
+            self.assertTrue(window.delete_selected_plot_items())
+            self.assertEqual(
+                [peak.id for peak in dataset.peaks], [outside_peak.id]
+            )
+            self.assertEqual(
+                [marker.id for marker in window.project.vertical_markers],
+                [outside_marker.id],
+            )
+            self.assertEqual(len(window._undo_stack), undo_count + 1)
+            np.testing.assert_array_equal(dataset.time_min, raw_time)
+            np.testing.assert_array_equal(dataset.intensity_uv, raw_intensity)
+
+            window.undo()
+            restored = window._selected_dataset()
+            self.assertEqual(
+                {peak.id for peak in restored.peaks},
+                {inside_peak.id, outside_peak.id},
+            )
+            self.assertEqual(
+                {marker.id for marker in window.project.vertical_markers},
+                {inside_marker.id, outside_marker.id},
+            )
+            window.redo()
+            self.assertEqual(
+                [peak.id for peak in window._selected_dataset().peaks],
+                [outside_peak.id],
+            )
+            self.assertEqual(
+                [marker.id for marker in window.project.vertical_markers],
+                [outside_marker.id],
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_numeric_fraction_range_rejects_too_many_divider_lines(self):
+        dialog = FractionRangeDialog(
+            [], 1.0, 0.0, 100.0, language="en"
+        )
+        dialog.start.setValue(0.0)
+        dialog.end.setValue(100.0)
+        dialog.interval.setValue(1.0)
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning, \
+                patch.object(dialog, "accept") as accept:
+            dialog._accept()
+        warning.assert_called_once()
+        accept.assert_not_called()
+        dialog.close()
+
+    def test_fraction_divider_limit_applies_across_all_ranges(self):
+        first = FractionRegion(
+            start_min=0.0,
+            end_min=50.0,
+            interval_min=1.0 / 60.0,
+        )
+        dialog = FractionRangeDialog(
+            [first], 1.0, 60.0, 100.0, language="en"
+        )
+        dialog.start.setValue(60.0)
+        dialog.end.setValue(100.0)
+        dialog.interval.setValue(1.0)
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning, \
+                patch.object(dialog, "accept") as accept:
+            dialog._accept()
+        warning.assert_called_once()
+        accept.assert_not_called()
+        dialog.close()
+
+        project = Project(
+            fraction_regions=[
+                first,
+                FractionRegion(
+                    start_min=60.0,
+                    end_min=110.0,
+                    interval_min=1.0 / 60.0,
+                ),
+            ]
+        )
+        scene = compose_base_screen_scene(
+            project, color_resolver=lambda _dataset, _index: "#000000"
+        )
+        self.assertEqual(
+            sum(len(region.boundary_values) for region in scene.fraction_regions),
+            MAX_FRACTION_BOUNDARY_LINES,
+        )
+
+    def test_preview_selection_range_uses_shared_non_mutating_contract(self):
         if QT_API != 6 or not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
             window.screen_preview_checkbox.setChecked(True)
-            index = window.mouse_mode_combo.findData("time_range")
+            index = window.mouse_mode_combo.findData("select")
             window.mouse_mode_combo.setCurrentIndex(index)
             preview = window._screen_preview
             signal = Mock()
@@ -5086,11 +5134,11 @@ class GuiTests(unittest.TestCase):
                     data_coordinates=(("y1", float(time), 0.0),),
                 )
 
-            preview.handle_event("button_press_event", event(8.0, 20.0))
-            preview.handle_event("motion_notify_event", event(2.0, 80.0))
-            preview.handle_event("button_release_event", event(2.0, 80.0))
-            self.assertEqual(window.selected_time_range, (2.0, 8.0))
-            signal.assert_called_once_with(2.0, 8.0)
+            preview.handle_event("button_press_event", event(2.0, 20.0))
+            preview.handle_event("motion_notify_event", event(4.0, 80.0))
+            preview.handle_event("button_release_event", event(4.0, 80.0))
+            self.assertEqual(window.selected_time_range, (2.0, 4.0))
+            signal.assert_called_once_with(2.0, 4.0)
             self.assertEqual(len(window._undo_stack), undo_count)
             self.assertFalse(window.project.dirty)
             self.assertIsNone(preview._span_drag)
@@ -5112,7 +5160,7 @@ class GuiTests(unittest.TestCase):
             window._refresh_peak_table([wide.id])
             window._plot()
             window.screen_preview_checkbox.setChecked(True)
-            index = window.mouse_mode_combo.findData("peak_select")
+            index = window.mouse_mode_combo.findData("select")
             window.mouse_mode_combo.setCurrentIndex(index)
             event = ScreenPointerEvent(
                 button=1,

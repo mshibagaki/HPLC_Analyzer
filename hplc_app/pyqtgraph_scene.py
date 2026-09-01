@@ -494,7 +494,7 @@ class PyQtGraphSceneConsumer:
             self.pointer_cursor.setPos(float(x_value))
             self.pointer_cursor.show()
 
-    def set_span_selection(self, start=None, end=None, axis_id="y1", mode="fraction"):
+    def set_span_selection(self, start=None, end=None, axis_id="y1", mode="select"):
         """Transient drag feedback, excluded from the model and autorange."""
         if start is None or end is None:
             self.span_selection.hide()
@@ -505,7 +505,7 @@ class PyQtGraphSceneConsumer:
             else "#f59e0b"
             if mode == "edit"
             else "#7c3aed"
-            if mode == "time_range"
+            if mode == "select"
             else "#06b6d4"
         )
         self.span_selection.setBrush(self._brush(color, 0.25))
@@ -532,6 +532,15 @@ class PyQtGraphSceneConsumer:
         item = self.annotation_items.get(annotation_id)
         if item is not None:
             item.setPos(float(x_value), float(y_value))
+
+    def set_vertical_marker_position(self, marker_id, x_value):
+        item = self.marker_items.get(marker_id)
+        if item is None:
+            return
+        item.setValue(float(x_value))
+        label = getattr(item, "label", None)
+        if label is not None:
+            label.setText("%g min" % float(x_value))
 
     def set_peak_selection(self, selected_peak_ids):
         """Restyle existing peak items without rebuilding the scene."""
@@ -1020,6 +1029,11 @@ class PyQtGraphSceneConsumer:
                     angle=90,
                     movable=False,
                     pen=self.pg.mkPen(marker.color, width=marker.line_width),
+                    label=marker.label_text,
+                    labelOpts={
+                        "position": 0.96,
+                        "color": marker.color,
+                    },
                 ),
                 marker.axis_id,
             )

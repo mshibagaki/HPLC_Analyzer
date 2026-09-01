@@ -69,6 +69,7 @@ class ScreenVerticalMarkerSpec:
     color: str
     line_width: float
     alpha: float
+    label_text: str = ""
 
 
 @dataclass(frozen=True)
@@ -107,6 +108,20 @@ class BaseScreenScene:
     fraction_regions: Tuple[ScreenFractionRegionSpec, ...]
     text_annotations: Tuple[ScreenTextAnnotationSpec, ...]
     time_candidates: Tuple[float, ...]
+
+
+MAX_FRACTION_BOUNDARY_LINES = 5000
+
+
+def fraction_boundary_count(start_x, end_x, interval_min) -> int:
+    """Return the number of persisted-range divider lines before capping."""
+
+    start = min(float(start_x), float(end_x))
+    end = max(float(start_x), float(end_x))
+    interval = float(interval_min)
+    if not np.isfinite(interval) or interval <= 0.0:
+        return MAX_FRACTION_BOUNDARY_LINES + 1
+    return int(np.floor((end - start) / interval + 1.0e-9)) + 1
 
 
 def _readonly(values) -> np.ndarray:
@@ -392,22 +407,26 @@ def compose_base_screen_scene(
             ),
             line_width=2.0 if marker.id in selected_marker_ids else 1.15,
             alpha=0.95 if marker.id in selected_marker_ids else 0.8,
+            label_text="%g min" % float(marker.x_min),
         )
         for marker in project.vertical_markers
     )
 
     fraction_regions = []
+    remaining_fraction_boundaries = MAX_FRACTION_BOUNDARY_LINES
     for region in project.fraction_regions:
         start = min(float(region.start_min), float(region.end_min))
         end = max(float(region.start_min), float(region.end_min))
         interval = max(float(region.interval_min), 0.01)
-        count = min(int((end - start) / interval) + 1, 10000)
+        count = min(
+            fraction_boundary_count(start, end, interval),
+            remaining_fraction_boundaries,
+        )
         boundaries = []
-        for index in range(count + 1):
+        for index in range(count):
             value = start + index * interval
-            if value > end + 1.0e-9:
-                break
             boundaries.append(value)
+        remaining_fraction_boundaries -= count
         fraction_regions.append(
             ScreenFractionRegionSpec(
                 region_id=region.id,

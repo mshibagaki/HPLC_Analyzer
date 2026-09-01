@@ -50,6 +50,10 @@ from .preset_store import (
 )
 from .plot3d import COLORMAP_ALIASES, ThreeDPlotOptions, build_3d_chromatogram_figure
 from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
+from .screen_scene import (
+    MAX_FRACTION_BOUNDARY_LINES,
+    fraction_boundary_count,
+)
 from .qt_compat import (
     CHECKED,
     HORIZONTAL,
@@ -2092,9 +2096,9 @@ class AutoPeakDetectionDialog(QtWidgets.QDialog):
         range_layout.addWidget(self.selected_range_radio)
         if self.selected_time_range is None:
             note = QtWidgets.QLabel(
-                "範囲を使うには、先にマウスモードの「時間範囲を選択」で指定してください。"
+                "範囲を使うには、先にマウスモードの「選択モード」で指定してください。"
                 if language == "ja"
-                else "To use a range, first choose Select time range in the mouse-mode control."
+                else "To use a range, first choose Selection mode in the mouse-mode control."
             )
             note.setWordWrap(True)
             range_layout.addWidget(note)
@@ -3678,7 +3682,7 @@ class FractionRangeDialog(QtWidgets.QDialog):
                 self._default_bounds[0],
                 self._default_bounds[0] + 1.0,
             )
-        self._default_interval = max(float(default_interval), 0.00001)
+        self._default_interval = max(float(default_interval), 1.0 / 60.0)
         self.setWindowTitle(
             "フラクション範囲の数値入力"
             if language == "ja"
@@ -3706,11 +3710,13 @@ class FractionRangeDialog(QtWidgets.QDialog):
         self.start = QtWidgets.QDoubleSpinBox()
         self.end = QtWidgets.QDoubleSpinBox()
         self.interval = QtWidgets.QDoubleSpinBox()
-        for widget in (self.start, self.end, self.interval):
+        for widget in (self.start, self.end):
             widget.setDecimals(5)
             widget.setRange(-1.0e12, 1.0e12)
             widget.setSuffix(" min")
-        self.interval.setMinimum(0.00001)
+        self.interval.setDecimals(0)
+        self.interval.setRange(1.0, 60_000.0)
+        self.interval.setSuffix(" s")
         form.addRow("対象" if language == "ja" else "Target", self.target)
         form.addRow("開始" if language == "ja" else "Start", self.start)
         form.addRow("終了" if language == "ja" else "End", self.end)
@@ -3736,7 +3742,11 @@ class FractionRangeDialog(QtWidgets.QDialog):
         return str(self.target.currentData() or "")
 
     def values(self):
-        return self.start.value(), self.end.value(), self.interval.value()
+        return (
+            self.start.value(),
+            self.end.value(),
+            self.interval.value() / 60.0,
+        )
 
     def select_region(self, region_id: str):
         index = self.target.findData(region_id)
@@ -3752,7 +3762,7 @@ class FractionRangeDialog(QtWidgets.QDialog):
             interval = float(region.interval_min)
         self.start.setValue(start)
         self.end.setValue(end)
-        self.interval.setValue(interval)
+        self.interval.setValue(interval * 60.0)
 
     def _accept(self):
         if self.end.value() <= self.start.value():
@@ -3762,6 +3772,37 @@ class FractionRangeDialog(QtWidgets.QDialog):
                 "終了は開始より後にしてください。"
                 if self.language == "ja"
                 else "End must be greater than start.",
+            )
+            return
+        count = fraction_boundary_count(
+            self.start.value(),
+            self.end.value(),
+            self.interval.value() / 60.0,
+        )
+        count += sum(
+            fraction_boundary_count(
+                region.start_min,
+                region.end_min,
+                region.interval_min,
+            )
+            for region_id, region in self._regions.items()
+            if region_id != self.selected_region_id
+        )
+        if count > MAX_FRACTION_BOUNDARY_LINES:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Too many divider lines",
+                (
+                    "区切り線は全範囲合計で最大{limit:,}本です。範囲を短くするか、"
+                    "間隔を長くしてください。（現在 {count:,}本）"
+                    if self.language == "ja"
+                    else "Fraction ranges may contain at most {limit:,} "
+                    "divider lines in total. Shorten a range or increase its "
+                    "interval. (Current: {count:,})"
+                ).format(
+                    limit=MAX_FRACTION_BOUNDARY_LINES,
+                    count=count,
+                ),
             )
             return
         self.accept()

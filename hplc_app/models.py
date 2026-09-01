@@ -11,6 +11,14 @@ import numpy as np
 from .timestamps import run_id_timestamp
 
 
+LINE_STYLE_IDS = ("solid", "dashed", "dotted", "dash_dot")
+
+
+def normalize_line_style(value: object) -> str:
+    candidate = str(value or "solid").strip().lower()
+    return candidate if candidate in LINE_STYLE_IDS else "solid"
+
+
 CONDITION_PRESET_LABEL_FIELDS = frozenset(("label", "short_label"))
 
 # Run is authoritative for these measurement fields.  Wavelength and AU/V
@@ -362,6 +370,7 @@ class Dataset:
     offset: float = 0.0
     visible: bool = True
     color: str = ""
+    line_style: str = "solid"
     peaks: List[PeakRegion] = field(default_factory=list)
     # Kept outside ``peaks`` so older v1 readers ignore explicit fitted rows
     # instead of recalculating and double-counting them as integrations.
@@ -369,6 +378,9 @@ class Dataset:
     time_min: np.ndarray = field(default_factory=lambda: np.array([], dtype=float), repr=False)
     intensity_uv: np.ndarray = field(default_factory=lambda: np.array([], dtype=float), repr=False)
     raw_bytes: bytes = field(default=b"", repr=False)
+
+    def __post_init__(self):
+        self.line_style = normalize_line_style(self.line_style)
 
     def __getattribute__(self, name: str):
         if name in ("label", "short_label", "gradient_preset_name"):

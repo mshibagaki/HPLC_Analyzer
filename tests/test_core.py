@@ -51,6 +51,7 @@ from hplc_app.models import (
     Dataset,
     FractionRegion,
     GradientPoint,
+    LINE_STYLE_IDS,
     MeasurementMetadata,
     PeakRegion,
     Project,
@@ -59,6 +60,7 @@ from hplc_app.models import (
     TextAnnotation,
     WorkDirectory,
     VerticalMarker,
+    normalize_line_style,
 )
 from hplc_app.naming import build_project_filename, suggest_project_name_parts
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
@@ -106,6 +108,7 @@ from hplc_app.rendering import (
     ScreenRendererCapabilities,
     default_render_quality,
     default_trace_color,
+    matplotlib_line_style,
     minmax_decimate,
     screen_series,
 )
@@ -877,6 +880,7 @@ class AnalysisTests(unittest.TestCase):
 
     def test_base_screen_scene_preserves_trace_axis_legend_gradient_and_raw_data(self):
         first = self.synthetic_dataset()
+        first.line_style = "dashed"
         first.x_shift_min = 0.25
         first.offset = 12.0
         second = self.synthetic_dataset()
@@ -913,6 +917,7 @@ class AnalysisTests(unittest.TestCase):
             [trace.dataset_id for trace in scene.traces], [first.id, second.id]
         )
         self.assertEqual([trace.color for trace in scene.traces], ["#000001", "#000002"])
+        self.assertEqual([trace.line_style for trace in scene.traces], ["dashed", "solid"])
         self.assertEqual(scene.traces[0].x_values[0], 0.25)
         self.assertIn("secondary", scene.traces[1].label)
         self.assertIsNotNone(scene.gradient)
@@ -1732,6 +1737,32 @@ class ProjectTests(unittest.TestCase):
         self.assertIsNone(child["area_percent"])
         self.assertEqual(migrate_project_manifest(migrated), migrated)
 
+    def test_schema_107_adds_solid_trace_style_without_mutating_input(self):
+        manifest = {
+            "format_major": 1,
+            "schema_version": 107,
+            "datasets": [{"id": "legacy-trace", "peaks": []}],
+        }
+        untouched = deepcopy(manifest)
+
+        migrated = migrate_project_manifest(manifest)
+
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
+        self.assertEqual(migrated["datasets"][0]["line_style"], "solid")
+        self.assertEqual(migrate_project_manifest(migrated), migrated)
+
+    def test_trace_line_style_identifiers_have_stable_backend_mappings(self):
+        self.assertEqual(
+            LINE_STYLE_IDS, ("solid", "dashed", "dotted", "dash_dot")
+        )
+        self.assertEqual(
+            [matplotlib_line_style(value) for value in LINE_STYLE_IDS],
+            ["-", "--", ":", "-."],
+        )
+        self.assertEqual(normalize_line_style("unsupported"), "solid")
+        self.assertEqual(Dataset(line_style="unsupported").line_style, "solid")
+
     def test_schema_102_creates_one_stable_run_per_legacy_dataset(self):
         manifest = {
             "format_major": 1,
@@ -2475,6 +2506,7 @@ class ProjectTests(unittest.TestCase):
         dataset.measurement.gradient = [GradientPoint(0, 90, 10, 0, 0, 1.0)]
         dataset.measurement.group = "preserved group"
         dataset.y_axis = 2
+        dataset.line_style = "dash_dot"
         project = Project(
             title="roundtrip",
             analysis_date="20260809",
@@ -2529,6 +2561,7 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(restored.measurement.group, "preserved group")
             self.assertEqual(restored.run_id, dataset.run_id)
             self.assertEqual(restored.y_axis, 2)
+            self.assertEqual(restored.line_style, "dash_dot")
             self.assertEqual(restored.x_shift_min, 0.25)
             self.assertEqual(restored.gradient_preset_name, "RP-C4")
             self.assertEqual(loaded.condition_presets["280 nm"]["wavelength_nm"], 280.0)
@@ -2555,6 +2588,7 @@ class ProjectTests(unittest.TestCase):
                 manifest = json.loads(archive.read("project.json").decode("utf-8"))
             self.assertEqual(manifest["format_major"], PROJECT_FORMAT_MAJOR)
             self.assertEqual(manifest["schema_version"], PROJECT_SCHEMA_VERSION)
+            self.assertEqual(manifest["datasets"][0]["line_style"], "dash_dot")
             self.assertNotIn("preset_metadata", manifest)
 
     def test_readable_run_ids_are_allocated_once_in_project_order(self):
@@ -3854,6 +3888,7 @@ class ProjectTests(unittest.TestCase):
     def test_a4_report_pdf_and_print_pages(self):
         dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
         dataset.label = "Report sample"
+        dataset.line_style = "dotted"
         dataset.peaks = [PeakRegion(start_min=1.0, end_min=2.0)]
         recalculate_dataset_peaks(dataset)
         fitted_peak = fitted_peak_from_result(
@@ -3877,6 +3912,12 @@ class ProjectTests(unittest.TestCase):
             if axis.get_title(loc="left") == "Chromatogram"
         )
         retention_label = "%.2f" % dataset.peaks[0].retention_time_min
+        trace_line = next(
+            line
+            for line in plot_axis.lines
+            if line.get_label() == project.legend_label_for(dataset)
+        )
+        self.assertEqual(trace_line.get_linestyle(), ":")
         self.assertIn(retention_label, [text.get_text() for text in plot_axis.texts])
         boundary_lines = [
             line

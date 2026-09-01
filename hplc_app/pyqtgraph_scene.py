@@ -8,6 +8,7 @@ import weakref
 
 import numpy as np
 
+from .models import normalize_line_style
 from .rendering import minmax_decimate, screen_point_budget
 from .screen_events import ScreenPointerEvent
 from .screen_navigation import (
@@ -354,6 +355,20 @@ class PyQtGraphSceneConsumer:
         value = self.pg.mkColor(color)
         value.setAlphaF(float(alpha))
         return self.pg.mkPen(value, width=float(width))
+
+    def _trace_pen(self, trace):
+        style_name = {
+            "solid": "SolidLine",
+            "dashed": "DashLine",
+            "dotted": "DotLine",
+            "dash_dot": "DashDotLine",
+        }[normalize_line_style(trace.line_style)]
+        style_owner = getattr(self.qt_core.Qt, "PenStyle", self.qt_core.Qt)
+        return self.pg.mkPen(
+            trace.color,
+            width=trace.line_width,
+            style=getattr(style_owner, style_name),
+        )
 
     def _sync_auxiliary_views(self):
         if not self.split_y_axes:
@@ -773,7 +788,7 @@ class PyQtGraphSceneConsumer:
             item.setData(
                 x_values,
                 y_values,
-                pen=self.pg.mkPen(trace.color, width=trace.line_width),
+                pen=self._trace_pen(trace),
                 name=trace.label,
             )
             overview_x, overview_y = self._trace_screen_data(
@@ -784,7 +799,7 @@ class PyQtGraphSceneConsumer:
             overview.setData(
                 overview_x,
                 overview_y,
-                pen=self.pg.mkPen(trace.color, width=trace.line_width),
+                pen=self._trace_pen(trace),
             )
 
     def _remove_from_scene_views(self, items):
@@ -878,7 +893,7 @@ class PyQtGraphSceneConsumer:
                 item = self.pg.PlotCurveItem(
                     x_values,
                     y_values,
-                    pen=self.pg.mkPen(trace.color, width=trace.line_width),
+                    pen=self._trace_pen(trace),
                     name=trace.label,
                 )
                 self._add(item, trace.axis_id)
@@ -889,7 +904,7 @@ class PyQtGraphSceneConsumer:
                 overview_item = self.pg.PlotCurveItem(
                     overview_x,
                     overview_y,
-                    pen=self.pg.mkPen(trace.color, width=trace.line_width),
+                    pen=self._trace_pen(trace),
                 )
                 overview_view = (
                     self.overview_secondary

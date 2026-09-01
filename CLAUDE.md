@@ -11,8 +11,9 @@ assistant follow the same documents in the same order.
 3. **`VALIDATION_BLOCKERS.md`** — external and physical validation gates.
    Never treat a CI pass as evidence for a gate recorded here.
 4. **`WIN11_FEEDBACK_WORKFLOW.md`** — the current work plan: the batch definitions
-   (ア行 / カ行), their order and dependencies, per-batch acceptance criteria, the
-   verification commands, and the technical findings collected before implementation.
+   named by kana row, their order and dependencies, per-batch acceptance criteria,
+   the verification commands, and the technical findings collected before
+   implementation.
 5. **`CODEX_BRIEF.md`** — the work order for the current batches: what is
    startable now, the per-issue procedure, and the constraints worth repeating.
    It is a hand-off brief, not a rule file, and applies to any assistant despite

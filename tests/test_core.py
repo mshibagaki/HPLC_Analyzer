@@ -238,6 +238,7 @@ from tests.gcd_fixtures import (
 from scripts.package_windows7_offline_bundle import (
     archive_root_name,
     default_archive_path,
+    iter_source_files,
 )
 from scripts.artifact_names import artifact_filename, installer_basename
 from scripts.read_version import (
@@ -2407,6 +2408,49 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(
             filter_preset_names(["Alpha", "beta", "Legacy z"], "LEGACY"),
             ["Legacy z"],
+        )
+
+    def test_offline_bundle_ships_every_contract_file_the_build_tests_read(self):
+        """The Windows 7 offline build runs this suite before PyInstaller.
+
+        Every repository file those tests read as a source contract has to
+        travel inside the kit, or the offline build fails its own gate on a
+        machine that has no other copy of the repository.
+        """
+
+        shipped = {
+            path.relative_to(ROOT).as_posix() for path in iter_source_files(ROOT)
+        }
+        for relative in (
+            "REQUIREMENTS_STATUS.md",
+            "requirements-win11.txt",
+            "requirements-win11-pyqtgraph.txt",
+            "requirements-win7.txt",
+            "requirements-win7-bootstrap.txt",
+            ".github/INSTALLER_UPGRADE_EVIDENCE.md",
+            ".github/INSTALLER_UPGRADE_TEST.md",
+            ".github/RELEASE_CHECKLIST.md",
+            ".github/RELEASE_PROCESS.md",
+            ".github/RELEASE_TEMPLATE.md",
+            ".github/workflows/validation.yml",
+        ):
+            with self.subTest(relative=relative):
+                self.assertTrue((ROOT / relative).is_file(), relative)
+                self.assertIn(relative, shipped)
+
+        # A release document added later must travel with the kit as well.
+        for path in sorted((ROOT / ".github").rglob("*")):
+            if path.is_file() and path.suffix.lower() in (".md", ".yml", ".yaml"):
+                with self.subTest(document=path.name):
+                    self.assertIn(path.relative_to(ROOT).as_posix(), shipped)
+
+        # The wheel and installer payload is unchanged by that inclusion.
+        payload = sorted(
+            name for name in shipped if name.startswith("win7_offline/")
+        )
+        self.assertIn("win7_offline/MANIFEST.sha256", payload)
+        self.assertTrue(
+            any(name.endswith(".whl") for name in payload), "wheels must ship"
         )
 
     def test_application_version_is_single_valid_source_for_runtime_and_builds(self):

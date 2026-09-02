@@ -9848,8 +9848,128 @@ class GuiTests(unittest.TestCase):
                 window.export_report()
             self.assertEqual(
                 report_chooser.call_args.args[2],
-                str(Path(directory) / "analysis_report.pdf"),
+                str(Path(directory) / "analysis_report_Untitled-project.pdf"),
             )
+        window.project.dirty = False
+        window.close()
+
+    def test_report_pdf_default_name_carries_a_safe_project_name(self):
+        window = self.make_window()
+        # An unsaved project contributes its title; a saved one its file name.
+        cases = (
+            ("", "", "analysis_report_Untitled-project.pdf"),
+            ("Untitled project", "", "analysis_report_Untitled-project.pdf"),
+            ("Simple name", "", "analysis_report_Simple-name.pdf"),
+            ('bad:name*with?"chars"', "", "analysis_report_bad-name-with-chars.pdf"),
+            ("   ", "", "analysis_report_Untitled-project.pdf"),
+            ("A" * 120, "", "analysis_report_%s.pdf" % ("A" * 40)),
+        )
+        for title, project_path, expected in cases:
+            with self.subTest(title=title):
+                window.project.title = title
+                window.project.project_path = project_path
+                self.assertEqual(window._report_pdf_filename(), expected)
+                # Windows rejects these characters in any path component.
+                for character in '<>:"/\\|?*':
+                    self.assertNotIn(
+                        character, window._report_pdf_filename()[: -len(".pdf")]
+                    )
+
+        window.project.project_path = str(Path("C:/data/2026 run: A.hplcproj"))
+        window.project.title = "ignored while a file name exists"
+        self.assertEqual(
+            window._report_pdf_filename(), "analysis_report_2026-run-A.pdf"
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_report_print_previews_exactly_what_it_prints(self):
+        window = self.make_window()
+        window.dataset_table.selectAll()
+        captured = {}
+
+        class FakePreviewDialog:
+            instances = []
+            accepted = True
+
+            def __init__(self, printer, parent=None):
+                self.printer = printer
+                self.title = ""
+                self.painters = []
+                FakePreviewDialog.instances.append(self)
+
+            def setWindowTitle(self, title):
+                self.title = title
+
+            @property
+            def paintRequested(self):
+                dialog = self
+
+                class Signal:
+                    def connect(self, slot):
+                        dialog.painters.append(slot)
+
+                return Signal()
+
+        def run_dialog(dialog):
+            if isinstance(dialog, FakePreviewDialog):
+                # The preview repaints on its own; the printed output uses the
+                # very same slot, so painting twice must stay consistent.
+                for slot in dialog.painters:
+                    slot("preview-target")
+                    slot("printer-target")
+                return FakePreviewDialog.accepted
+            return True
+
+        def record(printer, pages):
+            captured.setdefault("targets", []).append(printer)
+            captured["pages"] = list(pages)
+
+        with patch.object(
+            QtPrintSupport, "QPrintPreviewDialog", FakePreviewDialog
+        ), patch("hplc_app.gui.dialog_exec", side_effect=run_dialog), patch.object(
+            window, "_draw_report_pages_to_printer", side_effect=record
+        ):
+            window.print_report()
+
+        self.assertEqual(len(FakePreviewDialog.instances), 1)
+        preview = FakePreviewDialog.instances[0]
+        self.assertEqual(preview.title, window.translator("print_report"))
+        # One painting routine served both the preview and the printer, with the
+        # same rendered pages, so they cannot drift apart.
+        self.assertEqual(captured["targets"], ["preview-target", "printer-target"])
+        self.assertTrue(captured["pages"])
+        self.assertTrue(
+            all(page.lower().endswith(".png") for page in captured["pages"])
+        )
+        self.assertIn("印刷ジョブ", window.statusBar().currentMessage())
+
+        # Cancelling the preview prints nothing and reports nothing.
+        window.statusBar().clearMessage()
+        FakePreviewDialog.instances = []
+        FakePreviewDialog.accepted = False
+        with patch.object(
+            QtPrintSupport, "QPrintPreviewDialog", FakePreviewDialog
+        ), patch("hplc_app.gui.dialog_exec", side_effect=run_dialog), patch.object(
+            window, "_draw_report_pages_to_printer", side_effect=record
+        ):
+            window.print_report()
+        self.assertEqual(window.statusBar().currentMessage(), "")
+        FakePreviewDialog.accepted = True
+        window.project.dirty = False
+        window.close()
+
+    def test_current_view_print_keeps_its_own_dialog(self):
+        window = self.make_window()
+        # The report gained a preview; printing the current view did not, and
+        # the Issue explicitly leaves it alone.
+        with patch.object(
+            QtPrintSupport, "QPrintDialog"
+        ) as print_dialog, patch(
+            "hplc_app.gui.dialog_exec", return_value=False
+        ):
+            window.print_current_view()
+        print_dialog.assert_called_once()
         window.project.dirty = False
         window.close()
 

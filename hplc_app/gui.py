@@ -76,6 +76,7 @@ from .models import (
 from .naming import (
     apply_project_name_parts,
     build_project_filename,
+    sanitize_filename_component,
     suggest_project_name_parts,
 )
 from .parser import load_chromatogram_file
@@ -7004,7 +7005,7 @@ class MainWindow(QtWidgets.QMainWindow):
         path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
             self.translator("export_report"),
-            self._default_save_path("analysis_report.pdf"),
+            self._default_save_path(self._report_pdf_filename()),
             self.translator("report_filter"),
         )
         if not path:
@@ -7021,6 +7022,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(self.translator("saved", path=actual), 7000)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
+
+    def _report_pdf_filename(self) -> str:
+        """Name the exported report after the project it came from.
+
+        A saved project contributes its file name, an unsaved one its title, and
+        an empty title falls back to the same default the Project model uses.
+        The shared sanitizer handles characters Windows rejects and the length
+        limit, so no new rule is introduced here.
+        """
+
+        source = (
+            Path(self.project.project_path).stem
+            if self.project.project_path
+            else self.project.title
+        )
+        return "analysis_report_%s.pdf" % sanitize_filename_component(
+            source, "Untitled-project"
+        )
 
     @staticmethod
     def _draw_report_pages_to_printer(printer, pages):
@@ -7078,10 +7097,6 @@ class MainWindow(QtWidgets.QMainWindow):
             printer.setPageSize(QtGui.QPageSize(QtGui.QPageSize.PageSizeId.A4))
         else:
             printer.setPageSize(QtPrintSupport.QPrinter.A4)
-        dialog = QtPrintSupport.QPrintDialog(printer, self)
-        dialog.setWindowTitle(self.translator("print_report"))
-        if not dialog_exec(dialog):
-            return
         try:
             with tempfile.TemporaryDirectory(prefix="hplc_report_") as directory:
                 pages = render_analysis_report_pages(
@@ -7091,15 +7106,28 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._application_language,
                     options,
                 )
-                self._draw_report_pages_to_printer(printer, pages)
-            self.statusBar().showMessage(
-                "印刷ジョブを送信しました。"
-                if self._application_language == "ja"
-                else "The report was sent to the printer.",
-                7000,
-            )
+                dialog = QtPrintSupport.QPrintPreviewDialog(printer, self)
+                dialog.setWindowTitle(self.translator("print_report"))
+                # The preview and the printer share one painting routine, and
+                # both work from the same rendered pages, so what is previewed
+                # is exactly what is printed.
+                dialog.paintRequested.connect(
+                    lambda target: self._draw_report_pages_to_printer(
+                        target, pages
+                    )
+                )
+                accepted = dialog_exec(dialog)
         except Exception as exc:
             QtWidgets.QMessageBox.critical(self, self.translator("error"), str(exc))
+            return
+        if not accepted:
+            return
+        self.statusBar().showMessage(
+            "印刷ジョブを送信しました。"
+            if self._application_language == "ja"
+            else "The report was sent to the printer.",
+            7000,
+        )
 
     def show_quantitation_help(self):
         dialog = QuantitationHelpDialog(self._application_language, self)

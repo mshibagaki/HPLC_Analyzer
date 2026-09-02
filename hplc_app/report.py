@@ -14,7 +14,11 @@ from matplotlib.text import Text
 
 from .analysis import baseline_trace, display_values, reference_values_for_display
 from .models import Dataset, PeakRegion, Project
-from .peak_fitting import PeakFitResult, evaluate_fit_profile
+from .peak_fitting import (
+    PeakFitResult,
+    evaluate_fit_profile,
+    is_saturation_corrected,
+)
 from .rendering import matplotlib_line_style
 
 
@@ -144,8 +148,11 @@ def _peak_rows(
         row = [
             str((number_labels or {}).get(peak.id, number)),
             (
-                "Fit %s -> #%s" % (
+                # A fitted row's numbers are read off the model curve, so the
+                # type column says so before the estimated area is read.
+                "Fit %s%s -> #%s (estimated)" % (
                     peak.fit_model.upper(),
+                    " sat." if is_saturation_corrected(peak) else "",
                     (parent_numbers or {}).get(peak.parent_peak_id, "?"),
                 )
                 if peak.is_fitted else "Integration"
@@ -362,9 +369,10 @@ def _plot_dataset(
             color="#c026d3",
             linestyle=":",
             linewidth=max(1.0, project.method.line_width),
-            label="F%d Fit %s (#%d)" % (
+            label="F%d Fit %s%s (#%d, estimated)" % (
                 fitted_number,
                 fitted_peak.fit_model.upper(),
+                " sat." if is_saturation_corrected(fitted_peak) else "",
                 parent_numbers[parent.id],
             ),
         )

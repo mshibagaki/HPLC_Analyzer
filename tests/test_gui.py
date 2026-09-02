@@ -5,10 +5,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import csv
+import math
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import numpy as np
 
@@ -36,6 +38,7 @@ from hplc_app.dialogs import (
     ProjectNamingDialog,
     QuantitationHelpDialog,
     ReportOptionsDialog,
+    SaturatedRangeDialog,
     ReportScopeDialog,
     TextAnnotationDialog,
     ThreeDChromatogramDialog,
@@ -62,6 +65,7 @@ from hplc_app.gui import (
     MainWindow,
 )
 from hplc_app.models import (
+    Dataset,
     FractionRegion,
     GradientPoint,
     PeakRegion,
@@ -71,11 +75,15 @@ from hplc_app.models import (
     WorkDirectory,
 )
 from hplc_app.parser import load_ascii_file
+from hplc_app.exporters import export_peak_csv
+from hplc_app.report import ReportOptions, analysis_report_figures
 from hplc_app.plot3d import ThreeDPlotOptions, gradient_colors
 from hplc_app.peak_fitting import (
     PeakFitResult,
     fitted_peak_from_result,
     mirror_fitted_peak_for_legacy,
+    gaussian_profile,
+    is_saturation_corrected,
 )
 from hplc_app.preset_store import (
     load_preset_store,
@@ -8596,6 +8604,194 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def _saturated_window(self):
+        """A window holding one clipped Gaussian and its integration."""
+        window = self.make_window()
+        while window.project.datasets:
+            window.project.remove_dataset_at(0)
+        time = np.linspace(4.0, 6.0, 1201)
+        clean = 20000.0 * gaussian_profile(time, 5.0, 0.06)
+        dataset = Dataset(
+            label="clipped",
+            short_label="clipped",
+            time_min=time,
+            intensity_uv=np.minimum(clean, 12000.0),
+        )
+        dataset.measurement.aux_range_au_per_v = 2.0
+        dataset.peaks = [PeakRegion(start_min=4.0, end_min=6.0)]
+        window.project.add_dataset(dataset)
+        recalculate_dataset_peaks(dataset)
+        window._refresh_all(0)
+        window.peak_table.selectRow(0)
+        return window, dataset
+
+    def test_saturated_peak_correction_adds_an_estimated_fitted_row(self):
+        window, dataset = self._saturated_window()
+        parent = dataset.peaks[0]
+        measured = (
+            parent.raw_area_uv_min,
+            parent.raw_height_uv,
+            parent.retention_time_min,
+            parent.area_percent,
+        )
+        raw_signal = dataset.intensity_uv.copy()
+        true_area = 20000.0 * 0.06 * math.sqrt(2.0 * math.pi)
+
+        with patch.object(
+            QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ):
+            window.correct_saturated_peak()
+
+        self.assertEqual(len(dataset.fitted_peaks), 1)
+        fitted = dataset.fitted_peaks[0]
+        self.assertTrue(is_saturation_corrected(fitted))
+        self.assertEqual(fitted.parent_peak_id, parent.id)
+        self.assertAlmostEqual(fitted.raw_area_uv_min / true_area, 1.0, delta=0.02)
+        self.assertAlmostEqual(fitted.raw_height_uv / 20000.0, 1.0, delta=0.02)
+        self.assertAlmostEqual(fitted.retention_time_min, 5.0, delta=0.01)
+        self.assertIn("saturated_point_count", fitted.fit_parameters)
+
+        # The measurement and its share are untouched by the estimate.
+        np.testing.assert_array_equal(dataset.intensity_uv, raw_signal)
+        self.assertEqual(
+            (
+                parent.raw_area_uv_min,
+                parent.raw_height_uv,
+                parent.retention_time_min,
+                parent.area_percent,
+            ),
+            measured,
+        )
+        self.assertGreater(fitted.raw_area_uv_min, parent.raw_area_uv_min)
+
+        # The table names the row and marks every estimated cell.
+        row = next(
+            index
+            for index in range(window.peak_table.rowCount())
+            if window.peak_table.item(index, 0).data(USER_ROLE) == fitted.id
+        )
+        self.assertIn(
+            "飽和補正", window.peak_table.item(row, PEAK_TYPE_COLUMN).text()
+        )
+        for column in (3, 4, 5, 6, 7, 9):
+            with self.subTest(column=column):
+                item = window.peak_table.item(row, column)
+                self.assertEqual(
+                    item.background().color().name(), "#fdf2ff"
+                )
+                self.assertEqual(
+                    item.toolTip(), window.translator("estimated_from_fit")
+                )
+        # %Area keeps its measured meaning and is left blank on the fitted row.
+        self.assertEqual(window.peak_table.item(row, 8).text(), "")
+
+        window.undo()
+        self.assertEqual(dataset.fitted_peaks, [])
+        window.redo()
+        self.assertEqual(len(dataset.fitted_peaks), 1)
+        window.project.dirty = False
+        window.close()
+
+    def test_saturation_correction_refuses_an_unsaturated_peak(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        window.peak_table.selectRow(0)
+        before = len(dataset.fitted_peaks)
+
+        with patch.object(
+            QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.No,
+        ) as question:
+            window.correct_saturated_peak()
+
+        # It stops and offers the manual range instead of inventing a result.
+        question.assert_called_once()
+        self.assertIn(
+            window.translator("not_saturated"), question.call_args.args[2]
+        )
+        self.assertEqual(len(dataset.fitted_peaks), before)
+
+        # Accepting the offer and naming a range does produce one fitted row.
+        with patch.object(
+            QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ), patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ), patch.object(
+            SaturatedRangeDialog,
+            "saturated_range",
+            new_callable=PropertyMock,
+            return_value=(
+                dataset.peaks[0].start_min + 0.4,
+                dataset.peaks[0].start_min + 0.6,
+            ),
+        ):
+            window.correct_saturated_peak()
+        self.assertEqual(len(dataset.fitted_peaks), before + 1)
+        self.assertTrue(is_saturation_corrected(dataset.fitted_peaks[-1]))
+        window.project.dirty = False
+        window.close()
+
+    def test_estimated_peak_values_are_marked_in_csv_and_report(self):
+        window, dataset = self._saturated_window()
+        with patch.object(
+            QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ):
+            window.correct_saturated_peak()
+        fitted = dataset.fitted_peaks[0]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "peaks.csv"
+            export_peak_csv(str(path), [dataset])
+            rows = list(csv.reader(path.read_text(encoding="utf-8-sig").splitlines()))
+        header = rows[0]
+        self.assertIn("area_source", header)
+        source_column = header.index("area_source")
+        kind_column = header.index("peak_type")
+        area_column = header.index("raw_area_uV_sec")
+        body = {row[1]: row for row in rows[1:]}
+        self.assertEqual(body["1"][source_column], "measured")
+        self.assertEqual(body["1"][kind_column], "integrated")
+        self.assertEqual(body["F1"][source_column], "fitted_curve")
+        self.assertEqual(body["F1"][kind_column], "fitted_saturation_corrected")
+        self.assertAlmostEqual(
+            float(body["F1"][area_column]), fitted.raw_area_uv_sec, places=6
+        )
+
+        figures = analysis_report_figures(window.project, [dataset], "en")
+        cells = [
+            cell.get_text().get_text()
+            for figure in figures
+            for axis in figure.axes
+            for table in axis.tables
+            for cell in table.get_celld().values()
+        ]
+        legend_labels = [
+            line.get_label()
+            for figure in figures
+            for axis in figure.axes
+            for line in axis.lines
+        ]
+        self.assertTrue(
+            any("estimated" in value for value in cells),
+            "the report table must mark the fitted row as an estimate",
+        )
+        self.assertTrue(any("sat." in value for value in cells))
+        self.assertTrue(
+            any("estimated" in str(label) for label in legend_labels),
+            "the report legend must mark the fitted curve as an estimate",
+        )
+        for figure in figures:
+            figure.clear()
+        window.project.dirty = False
+        window.close()
+
     def test_peak_fit_result_is_saved_plotted_and_undoable(self):
         window = self.make_window()
         parent = window.project.datasets[0].peaks[0]
@@ -8653,7 +8849,7 @@ class GuiTests(unittest.TestCase):
             window._peak_overlay_artists[peak.id]["fit_line"]
         )
         self.assertTrue(
-            any("Fit GAUSSIAN (#1)" in text.get_text()
+            any("Fit GAUSSIAN (#1, estimated)" in text.get_text()
                 for text in window.axes.get_legend().get_texts())
         )
         window.undo()
@@ -8786,7 +8982,7 @@ class GuiTests(unittest.TestCase):
             self.assertIn(child.id, preview.consumer.fit_items)
             labels = [label.text for _sample, label in preview._legend.items]
             self.assertTrue(
-                any("Fit GAUSSIAN (#1)" in label for label in labels)
+                any("Fit GAUSSIAN (#1, estimated)" in label for label in labels)
             )
             self.assertEqual(
                 window.peak_table.item(1, PEAK_TYPE_COLUMN).text(), "フィット"

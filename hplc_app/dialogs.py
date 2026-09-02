@@ -1284,6 +1284,68 @@ class AnalytePresetRegistrationDialog(QtWidgets.QDialog):
         self.accept()
 
 
+class SaturatedRangeDialog(QtWidgets.QDialog):
+    """Name the flat top by hand when automatic detection does not find it."""
+
+    def __init__(self, start_min, end_min, language="ja", parent=None, initial=None):
+        super().__init__(parent)
+        self.language = language
+        self.lower = float(min(start_min, end_min))
+        self.upper = float(max(start_min, end_min))
+        self.setWindowTitle(
+            "飽和範囲の指定" if language == "ja" else "Saturated range"
+        )
+        root = QtWidgets.QVBoxLayout(self)
+        note = QtWidgets.QLabel(
+            "頭が平らになっている時間範囲を指定してください。この範囲の点は"
+            "当てはめから除外されます。"
+            if language == "ja"
+            else "Give the time range whose top is flat. Those samples are "
+            "excluded from the fit."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+        form = QtWidgets.QFormLayout()
+        span = max(self.upper - self.lower, 1.0e-6)
+        self.start_spin = QtWidgets.QDoubleSpinBox()
+        self.end_spin = QtWidgets.QDoubleSpinBox()
+        for widget in (self.start_spin, self.end_spin):
+            widget.setDecimals(4)
+            widget.setRange(self.lower, self.upper)
+            widget.setSingleStep(span / 100.0)
+        default = initial or (
+            self.lower + span * 0.45,
+            self.lower + span * 0.55,
+        )
+        self.start_spin.setValue(float(default[0]))
+        self.end_spin.setValue(float(default[1]))
+        form.addRow("開始 (min)" if language == "ja" else "Start (min)", self.start_spin)
+        form.addRow("終了 (min)" if language == "ja" else "End (min)", self.end_spin)
+        root.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def _accept(self):
+        if self.start_spin.value() >= self.end_spin.value():
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.windowTitle(),
+                "開始は終了より小さくしてください。"
+                if self.language == "ja"
+                else "The start must be below the end.",
+            )
+            return
+        self.accept()
+
+    @property
+    def saturated_range(self):
+        return (self.start_spin.value(), self.end_spin.value())
+
+
 class MetadataDialog(QtWidgets.QDialog):
     def __init__(
         self,

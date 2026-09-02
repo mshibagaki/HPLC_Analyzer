@@ -9,7 +9,11 @@ import numpy as np
 
 from .analysis import baseline_trace, display_values, reference_values_for_display
 from .models import Dataset, Project
-from .peak_fitting import PeakFitResult, evaluate_fit_profile
+from .peak_fitting import (
+    PeakFitResult,
+    evaluate_fit_profile,
+    is_saturation_corrected,
+)
 
 
 @dataclass(frozen=True)
@@ -257,7 +261,7 @@ def compose_base_screen_scene(
             if peak.id not in fitted_parent_ids:
                 fit_x, fit_y = _fit_curve(dataset, peak, peak, unit)
                 if fit_x is not None:
-                    fit_label = "%s — Fit %s (#%d)" % (
+                    fit_label = "%s — Fit %s (#%d, estimated)" % (
                         project.legend_label_for(dataset),
                         peak.fit_model.upper(),
                         parent_numbers[peak.id],
@@ -361,10 +365,13 @@ def compose_base_screen_scene(
                     label_color=(
                         project.method.retention_label_color or "#000000"
                     ),
-                    fit_label="%s — F%d Fit %s (%s)" % (
+                    # The curve now stands for estimated area and height, so
+                    # the legend says so wherever the scene is drawn.
+                    fit_label="%s — F%d Fit %s%s (%s, estimated)" % (
                         project.legend_label_for(dataset),
                         fitted_number,
                         fitted_peak.fit_model.upper(),
+                        " sat." if is_saturation_corrected(fitted_peak) else "",
                         parent_label,
                     ),
                 )

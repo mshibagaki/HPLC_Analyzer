@@ -8,6 +8,7 @@ from typing import Iterable, List, Optional
 
 from .analysis import display_values
 from .models import Dataset
+from .peak_fitting import is_saturation_corrected
 
 
 PEAK_HEADERS = (
@@ -42,6 +43,7 @@ PEAK_HEADERS = (
     "fit_r_squared",
     "fit_aic",
     "fit_parameters_json",
+    "area_source",
 )
 
 
@@ -89,7 +91,15 @@ def export_peak_csv(path: str, datasets: Iterable[Dataset]) -> None:
                             else peak.integration_source != "auto"
                         ),
                         peak.notes,
-                        "fitted" if peak.is_fitted else "integrated",
+                        (
+                            (
+                                "fitted_saturation_corrected"
+                                if is_saturation_corrected(peak)
+                                else "fitted"
+                            )
+                            if peak.is_fitted
+                            else "integrated"
+                        ),
                         peak.parent_peak_id if peak.is_fitted else "",
                         peak.fit_model if peak.is_fitted else "",
                         (
@@ -107,6 +117,9 @@ def export_peak_csv(path: str, datasets: Iterable[Dataset]) -> None:
                             )
                             if peak.is_fitted else ""
                         ),
+                        # The area column now carries estimated values on fitted
+                        # rows, so every row states where its area came from.
+                        "fitted_curve" if peak.is_fitted else "measured",
                     )
                 )
 

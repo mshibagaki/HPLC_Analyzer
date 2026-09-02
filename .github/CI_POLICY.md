@@ -18,7 +18,7 @@ Do not place third-party binaries, download credentials, private URLs, or encryp
 python scripts/ci_validate.py --offline-assets required
 ```
 
-This required mode fails if the payload is absent and validates both `MANIFEST.sha256` and the pinned CPython 3.8 win32 wheel dependency closure when present. The physical Windows 7 offline build retains its own mandatory checks before installation or compilation.
+This required mode fails if the payload is absent and validates both `MANIFEST.sha256` and the pinned CPython 3.8 win32 wheel dependency closure when present, including the exact universal `pyqtgraph==0.13.3` artifact. The physical Windows 7 offline build retains its own mandatory checks before installation or compilation.
 
 ## Release boundary
 

@@ -134,6 +134,7 @@ from .settings_store import (
 )
 from .update_check import check_for_updates
 from .screen_renderer import create_screen_render_surface
+from .pyqtgraph_scene import pyqtgraph_scene_available
 from .screen_scene import compose_base_screen_scene
 from .screen_events import (
     ScreenPointerEvent,
@@ -872,12 +873,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 "This operation continues with the Matplotlib renderer.",
             ),
             "missing": (
-                "PyQtGraphがインストールされていないため、Matplotlibで表示しています。",
-                "PyQtGraph is not installed; the screen is using Matplotlib.",
-            ),
-            "qt5": (
-                "このQt5 / Windows 7ビルドでは、Matplotlibで表示します。",
-                "This Qt5 / Windows 7 build uses Matplotlib for the screen.",
+                "PyQtGraphがインストールされていないか読み込めないため、Matplotlibで表示しています。",
+                "PyQtGraph is not installed or could not be loaded; the screen is using Matplotlib.",
             ),
             "failed": (
                 "PyQtGraphの初期化または描画に失敗したため、Matplotlibへ戻しました。",
@@ -887,16 +884,12 @@ class MainWindow(QtWidgets.QMainWindow):
         message = messages.get(self._screen_preview_notice, ("", ""))
         self.screen_preview_label.setText(self._history_label(*message))
         self.screen_preview_checkbox.setToolTip(self._history_label(
-            "Windows 11では既定で有効です。選択はアプリ設定へ保存されます。",
-            "Enabled by default on Windows 11. The selection is saved in application settings.",
+            "Windows 11では既定、Windows 7では任意選択です。選択はアプリ設定へ保存されます。",
+            "Default on Windows 11 and opt-in on Windows 7. The selection is saved in application settings.",
         ))
 
     def _activate_preferred_screen_renderer(self):
         if self._screen_renderer_preference != "pyqtgraph":
-            return
-        if QT_API != 6:
-            self._screen_preview_notice = "qt5"
-            self._update_screen_preview_notice()
             return
         self.screen_preview_checkbox.setChecked(True)
 
@@ -914,8 +907,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if any(control.isChecked() for control in controls):
             self._stop_screen_preview(unsupported=True)
             return
-        if QT_API != 6:
-            self._stop_screen_preview(qt5=True)
+        if not pyqtgraph_scene_available():
+            self._stop_screen_preview(missing=True)
             return
         try:
             if self._screen_preview is None:
@@ -936,14 +929,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self._stop_screen_preview(failed=True)
 
     def _stop_screen_preview(
-        self, *, failed=False, unsupported=False, missing=False, qt5=False
+        self, *, failed=False, unsupported=False, missing=False
     ):
         if self._screen_preview is None and not self.screen_preview_checkbox.isChecked():
             return
+        keep_preference = failed or unsupported or missing
         preview, self._screen_preview = self._screen_preview, None
         self.screen_preview_checkbox.blockSignals(True)
         self.screen_preview_checkbox.setChecked(False)
         self.screen_preview_checkbox.blockSignals(False)
+        if keep_preference:
+            # A runtime fallback changes only the active renderer. Preserve the
+            # explicit application-level choice so restart can retry after an
+            # installation or transient initialization problem. PySide2 may
+            # otherwise expose the programmatic uncheck as the stored choice.
+            self._screen_renderer_preference = "pyqtgraph"
+            self._settings.set(SCREEN_RENDERER, "pyqtgraph", sync=True)
         self.plot_stack.setCurrentWidget(self.canvas)
         if preview is not None:
             preview.close()
@@ -956,7 +957,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("integrate" if self.integrate_button.isChecked() else
                                         "edit" if self.edit_peak_button.isChecked() else "select")
         self._screen_preview_notice = (
-            "qt5" if qt5 else "missing" if missing else
+            "missing" if missing else
             "failed" if failed else "unsupported" if unsupported else ""
         )
         self._update_screen_preview_notice()
@@ -1343,7 +1344,9 @@ class MainWindow(QtWidgets.QMainWindow):
         plot_layout.addWidget(self.toolbar)
         preview_controls = QtWidgets.QHBoxLayout()
         self.screen_preview_checkbox = QtWidgets.QCheckBox()
-        self.screen_preview_checkbox.setEnabled(QT_API == 6)
+        self.screen_preview_checkbox.setEnabled(
+            QT_API == 6 or pyqtgraph_scene_available()
+        )
         self.screen_preview_checkbox.toggled.connect(self._toggle_screen_preview)
         self.screen_preview_label = QtWidgets.QLabel()
         self.screen_preview_label.setWordWrap(True)

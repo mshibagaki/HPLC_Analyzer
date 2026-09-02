@@ -24,7 +24,7 @@ def pyqtgraph_scene_available() -> bool:
     try:
         importlib.import_module("pyqtgraph")
         importlib.import_module("pyqtgraph.Qt.QtWidgets")
-    except ImportError:
+    except Exception:
         return False
     return True
 

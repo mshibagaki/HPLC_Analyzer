@@ -21,6 +21,7 @@ EXPECTED_PACKAGES = {
     "PIL": "9.5.0",
     "PyInstaller": "5.13.2",
     "PySide2": "5.15.2.1",
+    "pyqtgraph": "0.13.3",
     "shiboken2": "5.15.2.1",
 }
 PE_MACHINE_I386 = 0x014C

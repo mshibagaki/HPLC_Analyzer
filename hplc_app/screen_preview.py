@@ -1,4 +1,4 @@
-"""Qt6 MainWindow screen adapter; Matplotlib remains output and fallback.
+"""Qt5/Qt6 MainWindow screen adapter; Matplotlib remains output and fallback.
 
 Model edits use the owner's undo-aware methods. The application-level renderer
 preference is owned by MainWindow and does not enter project files.
@@ -11,7 +11,16 @@ from math import isfinite
 
 from .pyqtgraph_navigation import PyQtGraphNavigationController
 from .pyqtgraph_scene import PyQtGraphSceneConsumer
-from .qt_compat import USER_ROLE
+from .qt_compat import (
+    EVENT_FOCUS_OUT,
+    EVENT_KEY_PRESS,
+    EVENT_LEAVE,
+    EVENT_RESIZE,
+    KEY_DELETE,
+    KEY_ESCAPE,
+    MOUSE_FOCUS_REASON,
+    USER_ROLE,
+)
 from .screen_events import ScreenPointerEvent
 from .screen_navigation import compose_overview_state
 
@@ -60,19 +69,20 @@ class ExperimentalScreenPreview:
         class PlotKeyFilter(core.QObject):
             def eventFilter(self, watched, event):
                 try:
-                    if event.type() in (core.QEvent.Type.Leave, core.QEvent.Type.FocusOut,
-                                        core.QEvent.Type.Resize):
+                    if event.type() in (
+                        EVENT_LEAVE, EVENT_FOCUS_OUT, EVENT_RESIZE,
+                    ):
                         preview.cancel_span_drag()
                         preview.cancel_move_drag()
                         preview.cancel_annotation_drag()
                         preview.cancel_zoom_drag()
-                    if event.type() == core.QEvent.Type.Leave:
+                    if event.type() == EVENT_LEAVE:
                         preview.consumer.set_pointer_cursor()
                         preview.owner._update_pointer_coordinates(
                             ScreenPointerEvent()
                         )
-                    if (event.type() == core.QEvent.Type.KeyPress
-                            and event.key() == core.Qt.Key.Key_Escape
+                    if (event.type() == EVENT_KEY_PRESS
+                            and event.key() == KEY_ESCAPE
                             and (preview._span_drag is not None
                                  or preview._move_target is not None
                                  or preview._annotation_target is not None
@@ -86,8 +96,8 @@ class ExperimentalScreenPreview:
                             preview.owner.edit_peak_button.setChecked(False)
                         event.accept()
                         return True
-                    if (event.type() == core.QEvent.Type.KeyPress
-                            and event.key() == core.Qt.Key.Key_Delete
+                    if (event.type() == EVENT_KEY_PRESS
+                            and event.key() == KEY_DELETE
                             and preview.owner.delete_selected_plot_items()):
                         event.accept()
                         return True
@@ -406,7 +416,7 @@ class ExperimentalScreenPreview:
             if drag is not None:
                 annotation = drag["annotation"]
                 self.consumer.widget.setFocus(
-                    self.consumer.qt_core.Qt.FocusReason.MouseFocusReason
+                    MOUSE_FOCUS_REASON
                 )
                 self._annotation_target = {
                     "annotation_id": annotation.id, "role": drag["axis_role"],
@@ -463,7 +473,7 @@ class ExperimentalScreenPreview:
             owner._on_canvas_press(event)
             if owner._move_drag is not None:
                 self.consumer.widget.setFocus(
-                    self.consumer.qt_core.Qt.FocusReason.MouseFocusReason
+                    MOUSE_FOCUS_REASON
                 )
                 self._move_target = {
                     "dataset_id": selected.id, "role": role,
@@ -528,7 +538,7 @@ class ExperimentalScreenPreview:
             return True
         if (name == "button_press_event" and event.button == 1 and valid
                 and not event.double_click and owner._selected_dataset() is not None):
-            self.consumer.widget.setFocus(self.consumer.qt_core.Qt.FocusReason.MouseFocusReason)
+            self.consumer.widget.setFocus(MOUSE_FOCUS_REASON)
             self._span_drag = {
                 "start": x_value, "pixel": event.canvas_x, "role": event.axis_role,
                 "view": owner._screen_view_state(),
@@ -563,7 +573,7 @@ class ExperimentalScreenPreview:
         valid = valid and time is not None and isfinite(time)
         self.consumer.set_pointer_cursor(time if valid else None, event.axis_role)
         if name == "button_press_event" and valid and event.button == 1 and not event.double_click:
-            self.consumer.widget.setFocus(self.consumer.qt_core.Qt.FocusReason.MouseFocusReason)
+            self.consumer.widget.setFocus(MOUSE_FOCUS_REASON)
             owner._split_selected_peak_at(time)
         # Split-tool clicks must not select markers/annotations or navigate back.
         return True
@@ -596,7 +606,7 @@ class ExperimentalScreenPreview:
                     if event.hit_kind != "vertical_marker":
                         event = event.with_hit_target(*integration_hit)
                     self.consumer.widget.setFocus(
-                        self.consumer.qt_core.Qt.FocusReason.MouseFocusReason
+                        MOUSE_FOCUS_REASON
                     )
                     owner._on_canvas_press(event)
                     return True
@@ -624,7 +634,7 @@ class ExperimentalScreenPreview:
                     owner.pointer_action.isChecked()
                     or event.hit_kind in ("vertical_marker", "annotation")
                 ):
-                    self.consumer.widget.setFocus(self.consumer.qt_core.Qt.FocusReason.MouseFocusReason)
+                    self.consumer.widget.setFocus(MOUSE_FOCUS_REASON)
                     owner._on_canvas_press(event)
                     return True
                 if owner._selected_vertical_marker_id:

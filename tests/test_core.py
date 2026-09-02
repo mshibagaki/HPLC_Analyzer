@@ -236,8 +236,11 @@ from tests.gcd_fixtures import (
     with_u64,
 )
 from scripts.package_windows7_offline_bundle import (
+    ROOT_DIRECTORIES,
+    ROOT_FILES,
     archive_root_name,
     default_archive_path,
+    iter_source_files,
 )
 from scripts.artifact_names import artifact_filename, installer_basename
 from scripts.read_version import (
@@ -2407,6 +2410,68 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(
             filter_preset_names(["Alpha", "beta", "Legacy z"], "LEGACY"),
             ["Legacy z"],
+        )
+
+    def test_offline_bundle_ships_every_contract_file_the_build_tests_read(self):
+        """The Windows 7 offline build runs this suite before PyInstaller.
+
+        Every repository file those tests read as a source contract has to
+        travel inside the kit, or the offline build fails its own gate on a
+        machine that has no other copy of the repository.
+        """
+
+        # The declared lists are the contract and are readable anywhere. The
+        # packager itself cannot run without the untracked win7_offline payload,
+        # so it is only exercised when that payload happens to be present.
+        declared_files = set(ROOT_FILES)
+        declared_directories = set(ROOT_DIRECTORIES)
+
+        def is_shipped(relative):
+            if relative in declared_files:
+                return True
+            return any(
+                relative.startswith(directory + "/")
+                for directory in declared_directories
+            )
+
+        for relative in (
+            "REQUIREMENTS_STATUS.md",
+            "requirements-win11.txt",
+            "requirements-win11-pyqtgraph.txt",
+            "requirements-win7.txt",
+            "requirements-win7-bootstrap.txt",
+            ".github/INSTALLER_UPGRADE_EVIDENCE.md",
+            ".github/INSTALLER_UPGRADE_TEST.md",
+            ".github/RELEASE_CHECKLIST.md",
+            ".github/RELEASE_PROCESS.md",
+            ".github/RELEASE_TEMPLATE.md",
+            ".github/workflows/validation.yml",
+        ):
+            with self.subTest(relative=relative):
+                self.assertTrue((ROOT / relative).is_file(), relative)
+                self.assertTrue(is_shipped(relative), relative)
+
+        # A release document added later must travel with the kit as well.
+        for path in sorted((ROOT / ".github").rglob("*")):
+            if path.is_file() and path.suffix.lower() in (".md", ".yml", ".yaml"):
+                with self.subTest(document=path.name):
+                    self.assertTrue(
+                        is_shipped(path.relative_to(ROOT).as_posix()), path.name
+                    )
+
+        # The payload directory stays part of the kit either way.
+        self.assertIn("win7_offline", declared_directories)
+        if not (ROOT / "win7_offline").is_dir():
+            return
+        emitted = {
+            path.relative_to(ROOT).as_posix() for path in iter_source_files(ROOT)
+        }
+        self.assertIn("REQUIREMENTS_STATUS.md", emitted)
+        self.assertIn("requirements-win11-pyqtgraph.txt", emitted)
+        self.assertIn(".github/RELEASE_PROCESS.md", emitted)
+        self.assertIn("win7_offline/MANIFEST.sha256", emitted)
+        self.assertTrue(
+            any(name.endswith(".whl") for name in emitted), "wheels must ship"
         )
 
     def test_application_version_is_single_valid_source_for_runtime_and_builds(self):

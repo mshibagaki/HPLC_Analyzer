@@ -22,9 +22,14 @@ ROOT_FILES = (
     "README_Windows7_Offline.txt",
     "LICENSE.txt",
     "THIRD_PARTY_NOTICES.txt",
+    # The offline build runs the whole test suite before PyInstaller, and those
+    # tests read the tracked requirement ledger and dependency pins as source
+    # contracts. A kit without them cannot pass its own gate.
+    "REQUIREMENTS_STATUS.md",
     "app.py",
     "HPLC_Analyzer.spec",
     "requirements-win11.txt",
+    "requirements-win11-pyqtgraph.txt",
     "requirements-win7.txt",
     "requirements-win7-bootstrap.txt",
     "run_source_windows11.bat",
@@ -38,6 +43,10 @@ ROOT_FILES = (
     "scripts/read_version.py",
 )
 ROOT_DIRECTORIES = (
+    # Whole directory rather than named files: the release documents are source
+    # contracts the tests assert on, so a document added later travels with the
+    # kit instead of breaking the offline build again.
+    ".github",
     "assets",
     "hplc_app",
     "installer",

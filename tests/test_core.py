@@ -236,6 +236,8 @@ from tests.gcd_fixtures import (
     with_u64,
 )
 from scripts.package_windows7_offline_bundle import (
+    ROOT_DIRECTORIES,
+    ROOT_FILES,
     archive_root_name,
     default_archive_path,
     iter_source_files,
@@ -2418,9 +2420,20 @@ class ProjectTests(unittest.TestCase):
         machine that has no other copy of the repository.
         """
 
-        shipped = {
-            path.relative_to(ROOT).as_posix() for path in iter_source_files(ROOT)
-        }
+        # The declared lists are the contract and are readable anywhere. The
+        # packager itself cannot run without the untracked win7_offline payload,
+        # so it is only exercised when that payload happens to be present.
+        declared_files = set(ROOT_FILES)
+        declared_directories = set(ROOT_DIRECTORIES)
+
+        def is_shipped(relative):
+            if relative in declared_files:
+                return True
+            return any(
+                relative.startswith(directory + "/")
+                for directory in declared_directories
+            )
+
         for relative in (
             "REQUIREMENTS_STATUS.md",
             "requirements-win11.txt",
@@ -2436,21 +2449,29 @@ class ProjectTests(unittest.TestCase):
         ):
             with self.subTest(relative=relative):
                 self.assertTrue((ROOT / relative).is_file(), relative)
-                self.assertIn(relative, shipped)
+                self.assertTrue(is_shipped(relative), relative)
 
         # A release document added later must travel with the kit as well.
         for path in sorted((ROOT / ".github").rglob("*")):
             if path.is_file() and path.suffix.lower() in (".md", ".yml", ".yaml"):
                 with self.subTest(document=path.name):
-                    self.assertIn(path.relative_to(ROOT).as_posix(), shipped)
+                    self.assertTrue(
+                        is_shipped(path.relative_to(ROOT).as_posix()), path.name
+                    )
 
-        # The wheel and installer payload is unchanged by that inclusion.
-        payload = sorted(
-            name for name in shipped if name.startswith("win7_offline/")
-        )
-        self.assertIn("win7_offline/MANIFEST.sha256", payload)
+        # The payload directory stays part of the kit either way.
+        self.assertIn("win7_offline", declared_directories)
+        if not (ROOT / "win7_offline").is_dir():
+            return
+        emitted = {
+            path.relative_to(ROOT).as_posix() for path in iter_source_files(ROOT)
+        }
+        self.assertIn("REQUIREMENTS_STATUS.md", emitted)
+        self.assertIn("requirements-win11-pyqtgraph.txt", emitted)
+        self.assertIn(".github/RELEASE_PROCESS.md", emitted)
+        self.assertIn("win7_offline/MANIFEST.sha256", emitted)
         self.assertTrue(
-            any(name.endswith(".whl") for name in payload), "wheels must ship"
+            any(name.endswith(".whl") for name in emitted), "wheels must ship"
         )
 
     def test_application_version_is_single_valid_source_for_runtime_and_builds(self):

@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -15,8 +16,13 @@ from . import APP_VERSION
 from .models import sanitize_condition_presets
 
 
-PRESET_STORE_FORMAT = 2
-PRESET_KINDS = ("conditions", "gradients")
+PRESET_STORE_FORMAT = 3
+PRESET_KINDS = ("conditions", "gradients", "analytes")
+ANALYTE_PRESET_FIELDS = (
+    "molar_absorptivity_214",
+    "molar_absorptivity_280",
+    "molecular_weight_g_mol",
+)
 _LEGACY_ID_NAMESPACE = uuid.UUID("311b96bd-a94a-4dc9-ae65-3591512ac6a8")
 
 
@@ -41,17 +47,52 @@ def _metadata_record(kind: str, name: str, raw=None) -> Dict[str, str]:
     }
 
 
+def sanitize_analyte_presets(presets) -> Dict[str, Dict[str, Optional[float]]]:
+    """Return analyte presets containing only supported positive values."""
+    result = {}
+    if not isinstance(presets, dict):
+        return result
+    for raw_name, raw_payload in presets.items():
+        name = str(raw_name or "").strip()
+        if not name or not isinstance(raw_payload, dict):
+            continue
+        payload = {}
+        valid = True
+        for field in ANALYTE_PRESET_FIELDS:
+            value = raw_payload.get(field)
+            if value in (None, ""):
+                payload[field] = None
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                valid = False
+                break
+            if not math.isfinite(numeric) or numeric <= 0:
+                valid = False
+                break
+            payload[field] = numeric
+        if valid:
+            result[name] = payload
+    return result
+
+
 def normalize_preset_metadata(
     condition_presets: Dict[str, Dict[str, Any]],
     gradient_presets: Dict[str, Dict[str, Any]],
     metadata=None,
+    analyte_presets=None,
 ) -> Dict[str, Dict[str, Dict[str, str]]]:
     """Keep metadata separate and create no fictional legacy timestamps."""
     raw = metadata if isinstance(metadata, dict) else {}
-    result = {"conditions": {}, "gradients": {}}
+    raw_analytes = raw.get("analytes", {})
+    if analyte_presets is None:
+        analyte_presets = raw_analytes if isinstance(raw_analytes, dict) else {}
+    result = {"conditions": {}, "gradients": {}, "analytes": {}}
     for kind, presets in (
         ("conditions", condition_presets),
         ("gradients", gradient_presets),
+        ("analytes", analyte_presets),
     ):
         raw_kind = raw.get(kind, {})
         if not isinstance(raw_kind, dict):
@@ -143,15 +184,22 @@ def apply_preset_operation(presets, metadata, kind, action, name, new_name=""):
     return updated_presets, updated_metadata
 
 
-def build_preset_package(conditions, gradients, metadata, names=None):
+def build_preset_package(
+    conditions, gradients, metadata, names=None, analytes=None
+):
     """Build a portable package containing preset payloads and metadata only."""
 
     selected = names or {
         "conditions": list(conditions),
         "gradients": list(gradients),
+        "analytes": list(analytes or {}),
     }
     package = {"format": 1, "presets": {}, "metadata": {}}
-    for kind, presets in (("conditions", conditions), ("gradients", gradients)):
+    for kind, presets in (
+        ("conditions", conditions),
+        ("gradients", gradients),
+        ("analytes", analytes or {}),
+    ):
         requested = selected.get(kind, [])
         package["presets"][kind] = {
             name: deepcopy(presets[name]) for name in requested if name in presets
@@ -165,7 +213,9 @@ def build_preset_package(conditions, gradients, metadata, names=None):
     return package
 
 
-def merge_preset_package(conditions, gradients, metadata, package, conflicts=None):
+def merge_preset_package(
+    conditions, gradients, metadata, package, conflicts=None, analytes=None
+):
     """Validate and atomically merge a portable package with explicit policies."""
 
     if not isinstance(package, dict) or package.get("format") != 1:
@@ -178,6 +228,7 @@ def merge_preset_package(conditions, gradients, metadata, package, conflicts=Non
     updated = {
         "conditions": deepcopy(conditions),
         "gradients": deepcopy(gradients),
+        "analytes": deepcopy(analytes or {}),
     }
     updated_metadata = deepcopy(metadata)
     used_ids = {
@@ -187,7 +238,7 @@ def merge_preset_package(conditions, gradients, metadata, package, conflicts=Non
         for record in records.values()
         if isinstance(record, dict) and record.get("id")
     }
-    imported_names = {"conditions": [], "gradients": []}
+    imported_names = {"conditions": [], "gradients": [], "analytes": []}
     for kind in PRESET_KINDS:
         values = incoming.get(kind, {})
         records = incoming_metadata.get(kind, {})
@@ -197,6 +248,11 @@ def merge_preset_package(conditions, gradients, metadata, package, conflicts=Non
             if not isinstance(name, str) or not name.strip() or not isinstance(payload, dict):
                 raise ValueError("Invalid preset entry")
             target = name.strip()
+            if kind == "analytes":
+                sanitized = sanitize_analyte_presets({target: payload})
+                if target not in sanitized:
+                    raise ValueError("Invalid analyte preset: %s" % name)
+                payload = sanitized[target]
             policy = policies.get((kind, target), policies.get(target, "error"))
             exists = target in updated[kind]
             if exists and policy == "skip":
@@ -222,7 +278,15 @@ def merge_preset_package(conditions, gradients, metadata, package, conflicts=Non
             used_ids.add(record["id"])
             updated_metadata.setdefault(kind, {})[target] = record
             imported_names[kind].append(target)
-    return updated["conditions"], updated["gradients"], updated_metadata, imported_names
+    legacy_result = (
+        updated["conditions"],
+        updated["gradients"],
+        updated_metadata,
+        imported_names,
+    )
+    if analytes is None:
+        return legacy_result
+    return legacy_result + (sanitize_analyte_presets(updated["analytes"]),)
 
 
 def stable_preset_names(names, metadata, kind: str, sort_by: str = "created"):
@@ -307,14 +371,27 @@ def load_preset_store_with_metadata(
     Dict[str, Dict[str, Any]],
     Dict[str, Dict[str, Dict[str, str]]],
 ]:
-    """Load payloads and application-only metadata from format 1 or 2."""
+    """Load legacy payloads and application-only metadata."""
+    conditions, gradients, _analytes, metadata = load_complete_preset_store(path)
+    return conditions, gradients, metadata
+
+
+def load_complete_preset_store(
+    path: Optional[Path] = None,
+) -> Tuple[
+    Dict[str, Dict[str, Any]],
+    Dict[str, Dict[str, Any]],
+    Dict[str, Dict[str, Optional[float]]],
+    Dict[str, Dict[str, Dict[str, str]]],
+]:
+    """Load every application-wide preset kind and its metadata."""
     source = Path(path) if path is not None else preset_store_path()
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        return {}, {}, normalize_preset_metadata({}, {})
+        return {}, {}, {}, normalize_preset_metadata({}, {})
     if not isinstance(payload, dict):
-        return {}, {}, normalize_preset_metadata({}, {})
+        return {}, {}, {}, normalize_preset_metadata({}, {})
     raw_conditions = payload.get("condition_presets", {})
     if not isinstance(raw_conditions, dict):
         raw_conditions = {}
@@ -323,10 +400,14 @@ def load_preset_store_with_metadata(
     if not isinstance(gradients, dict):
         gradients = {}
     gradients = deepcopy(gradients)
+    analytes = sanitize_analyte_presets(payload.get("analyte_presets", {}))
     metadata = normalize_preset_metadata(
-        conditions, gradients, payload.get("preset_metadata", {})
+        conditions,
+        gradients,
+        payload.get("preset_metadata", {}),
+        analytes,
     )
-    return conditions, gradients, metadata
+    return conditions, gradients, analytes, metadata
 
 
 def save_preset_store(
@@ -334,20 +415,31 @@ def save_preset_store(
     gradient_presets: Dict[str, Dict[str, Any]],
     path: Optional[Path] = None,
     metadata=None,
+    analyte_presets=None,
 ) -> Path:
     """Atomically save presets so an interrupted upgrade cannot corrupt them."""
     destination = Path(path) if path is not None else preset_store_path()
     destination.parent.mkdir(parents=True, exist_ok=True)
     conditions = sanitize_condition_presets(condition_presets)
     gradients = deepcopy(gradient_presets or {})
+    previous = None
+    if analyte_presets is None or metadata is None:
+        previous = load_complete_preset_store(destination)
+    analytes = sanitize_analyte_presets(
+        previous[2] if analyte_presets is None and previous is not None else analyte_presets
+    )
     if metadata is None:
-        old_conditions, old_gradients, old_metadata = load_preset_store_with_metadata(
-            destination
-        )
+        (
+            old_conditions,
+            old_gradients,
+            old_analytes,
+            old_metadata,
+        ) = previous
         metadata = old_metadata
         for kind, old_presets, new_presets in (
             ("conditions", old_conditions, conditions),
             ("gradients", old_gradients, gradients),
+            ("analytes", old_analytes, analytes),
         ):
             removed = {
                 name: payload
@@ -370,13 +462,14 @@ def save_preset_store(
                 record_preset_saved(metadata, kind, renamed_from, name)
                 removed.pop(renamed_from, None)
     normalized_metadata = normalize_preset_metadata(
-        conditions, gradients, metadata
+        conditions, gradients, metadata, analytes
     )
     payload = {
         "format_version": PRESET_STORE_FORMAT,
         "written_by": APP_VERSION,
         "condition_presets": conditions,
         "gradient_presets": gradients,
+        "analyte_presets": analytes,
         "preset_metadata": normalized_metadata,
     }
     descriptor, temporary_name = tempfile.mkstemp(

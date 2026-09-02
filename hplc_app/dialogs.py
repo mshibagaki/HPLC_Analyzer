@@ -39,6 +39,7 @@ from .models import (
 )
 from .naming import build_project_filename, normalize_analysis_date
 from .preset_store import (
+    PRESET_KINDS,
     apply_preset_operation,
     build_preset_package,
     filter_preset_names,
@@ -47,6 +48,7 @@ from .preset_store import (
     record_preset_deleted,
     record_preset_saved,
     record_preset_used,
+    sanitize_analyte_presets,
     stable_preset_names,
 )
 from .plot3d import (
@@ -96,13 +98,22 @@ def _preset_display(value) -> str:
 
 
 class PresetManagerDialog(QtWidgets.QDialog):
-    """Manage application-level condition and gradient preset names."""
+    """Manage application-level preset names."""
 
-    def __init__(self, conditions, gradients, metadata, language="ja", parent=None):
+    def __init__(
+        self,
+        conditions,
+        gradients,
+        metadata,
+        language="ja",
+        parent=None,
+        analytes=None,
+    ):
         super().__init__(parent)
         self.language = language
         self.conditions = deepcopy(conditions)
         self.gradients = deepcopy(gradients)
+        self.analytes = sanitize_analyte_presets(analytes)
         self.metadata = deepcopy(metadata)
         self.setWindowTitle("プリセット管理" if language == "ja" else "Preset manager")
         self.resize(620, 480)
@@ -110,8 +121,13 @@ class PresetManagerDialog(QtWidgets.QDialog):
         self.tabs = QtWidgets.QTabWidget()
         self.condition_list = QtWidgets.QListWidget()
         self.gradient_list = QtWidgets.QListWidget()
+        self.analyte_list = QtWidgets.QListWidget()
         self.tabs.addTab(self.condition_list, "条件" if language == "ja" else "Conditions")
         self.tabs.addTab(self.gradient_list, "グラジエント" if language == "ja" else "Gradients")
+        self.tabs.addTab(
+            self.analyte_list,
+            "分析対象" if language == "ja" else "Analytes",
+        )
         root.addWidget(self.tabs, 1)
         actions = QtWidgets.QHBoxLayout()
         self.rename_button = QtWidgets.QPushButton("名前変更…" if language == "ja" else "Rename…")
@@ -139,17 +155,21 @@ class PresetManagerDialog(QtWidgets.QDialog):
         self.tabs.currentChanged.connect(lambda _index: self._update_buttons())
         self.condition_list.currentRowChanged.connect(lambda _row: self._update_buttons())
         self.gradient_list.currentRowChanged.connect(lambda _row: self._update_buttons())
+        self.analyte_list.currentRowChanged.connect(lambda _row: self._update_buttons())
         self._refresh()
 
     def _current(self):
         if self.tabs.currentIndex() == 0:
             return "conditions", self.conditions, self.condition_list
-        return "gradients", self.gradients, self.gradient_list
+        if self.tabs.currentIndex() == 1:
+            return "gradients", self.gradients, self.gradient_list
+        return "analytes", self.analytes, self.analyte_list
 
     def _refresh(self, selected=""):
         for presets, widget in (
             (self.conditions, self.condition_list),
             (self.gradients, self.gradient_list),
+            (self.analytes, self.analyte_list),
         ):
             widget.clear()
             for name in sorted(presets, key=lambda value: (value.casefold(), value)):
@@ -189,8 +209,10 @@ class PresetManagerDialog(QtWidgets.QDialog):
             return
         if kind == "conditions":
             self.conditions = updated
-        else:
+        elif kind == "gradients":
             self.gradients = updated
+        else:
+            self.analytes = updated
         self._refresh(str(target).strip())
 
     def _delete(self):
@@ -211,8 +233,10 @@ class PresetManagerDialog(QtWidgets.QDialog):
         )
         if kind == "conditions":
             self.conditions = updated
-        else:
+        elif kind == "gradients":
             self.gradients = updated
+        else:
+            self.analytes = updated
         self._refresh()
 
     def _export_package(self):
@@ -237,7 +261,12 @@ class PresetManagerDialog(QtWidgets.QDialog):
         if choice == choices[1]:
             if not current:
                 return False
-            names = {"conditions": [], "gradients": [], kind: [current]}
+            names = {
+                "conditions": [],
+                "gradients": [],
+                "analytes": [],
+                kind: [current],
+            }
         path, _selected_filter = QtWidgets.QFileDialog.getSaveFileName(
             self,
             "プリセットを書き出す" if self.language == "ja" else "Export presets",
@@ -249,7 +278,11 @@ class PresetManagerDialog(QtWidgets.QDialog):
         if not Path(path).suffix:
             path += ".json"
         package = build_preset_package(
-            self.conditions, self.gradients, self.metadata, names
+            self.conditions,
+            self.gradients,
+            self.metadata,
+            names,
+            analytes=self.analytes,
         )
         try:
             Path(path).write_text(
@@ -277,6 +310,7 @@ class PresetManagerDialog(QtWidgets.QDialog):
                 for kind, existing in (
                     ("conditions", self.conditions),
                     ("gradients", self.gradients),
+                    ("analytes", self.analytes),
                 ):
                     values = incoming.get(kind, {})
                     if isinstance(values, dict):
@@ -293,6 +327,7 @@ class PresetManagerDialog(QtWidgets.QDialog):
                 self.metadata,
                 package,
                 validation_conflicts,
+                analytes=self.analytes,
             )
             conflicts = {}
             labels = (
@@ -304,6 +339,7 @@ class PresetManagerDialog(QtWidgets.QDialog):
             for kind, existing in (
                 ("conditions", self.conditions),
                 ("gradients", self.gradients),
+                ("analytes", self.analytes),
             ):
                 values = incoming.get(kind, {})
                 if not isinstance(values, dict):
@@ -322,20 +358,32 @@ class PresetManagerDialog(QtWidgets.QDialog):
                     if not accepted:
                         return False
                     conflicts[(kind, name)] = policies[labels.index(choice)]
-            conditions, gradients, metadata, imported = merge_preset_package(
+            (
+                conditions,
+                gradients,
+                metadata,
+                imported,
+                analytes,
+            ) = merge_preset_package(
                 self.conditions,
                 self.gradients,
                 self.metadata,
                 package,
                 conflicts,
+                analytes=self.analytes,
             )
         except (OSError, UnicodeError, ValueError, TypeError, json.JSONDecodeError) as exc:
             QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(exc))
             return False
         self.conditions = conditions
         self.gradients = gradients
+        self.analytes = analytes
         self.metadata = metadata
-        selected = (imported["conditions"] + imported["gradients"])
+        selected = (
+            imported["conditions"]
+            + imported["gradients"]
+            + imported["analytes"]
+        )
         self._refresh(selected[-1] if selected else "")
         return True
 
@@ -1144,13 +1192,126 @@ class TextAnnotationDialog(QtWidgets.QDialog):
         self.accept()
 
 
+class _EditablePresetComboBox(QtWidgets.QComboBox):
+    """Editable combo retaining the QLineEdit helpers used by existing callers."""
+
+    def text(self):
+        return self.currentText()
+
+    def setText(self, value):
+        self.setEditText(str(value))
+
+
+class AnalytePresetRegistrationDialog(QtWidgets.QDialog):
+    """Collect one reusable analyte name and its quantitation constants."""
+
+    def __init__(
+        self,
+        language="ja",
+        parent=None,
+        name="",
+        payload=None,
+        existing_names=(),
+    ):
+        super().__init__(parent)
+        self.language = language
+        self.existing_names = set(existing_names)
+        values = payload if isinstance(payload, dict) else {}
+        self.setWindowTitle(
+            "分析対象を登録" if language == "ja" else "Register analyte"
+        )
+        form = QtWidgets.QFormLayout(self)
+        self.name_edit = QtWidgets.QLineEdit(name)
+        self.eps214_edit = QtWidgets.QLineEdit(
+            format_optional(values.get("molar_absorptivity_214"))
+        )
+        self.eps280_edit = QtWidgets.QLineEdit(
+            format_optional(values.get("molar_absorptivity_280"))
+        )
+        self.mw_edit = QtWidgets.QLineEdit(
+            format_optional(values.get("molecular_weight_g_mol"))
+        )
+        form.addRow("名前" if language == "ja" else "Name", self.name_edit)
+        form.addRow("ε214 (M⁻¹ cm⁻¹)", self.eps214_edit)
+        form.addRow("ε280 (M⁻¹ cm⁻¹)", self.eps280_edit)
+        form.addRow(
+            "分子量 (g/mol)" if language == "ja" else "Molecular weight (g/mol)",
+            self.mw_edit,
+        )
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        self.preset_name = ""
+        self.preset_payload = {}
+
+    def _accept(self):
+        name = self.name_edit.text().strip()
+        try:
+            payload = {
+                "molar_absorptivity_214": optional_float(self.eps214_edit.text()),
+                "molar_absorptivity_280": optional_float(self.eps280_edit.text()),
+                "molecular_weight_g_mol": optional_float(self.mw_edit.text()),
+            }
+            if not name:
+                raise ValueError(
+                    "名前を入力してください。"
+                    if self.language == "ja"
+                    else "Enter an analyte name."
+                )
+            if name in self.existing_names:
+                raise ValueError(
+                    "同じ名前が既に登録されています。"
+                    if self.language == "ja"
+                    else "An analyte with this name is already registered."
+                )
+            if any(
+                value is not None and (not math.isfinite(value) or value <= 0)
+                for value in payload.values()
+            ):
+                raise ValueError(
+                    "数値は正の値にしてください。"
+                    if self.language == "ja"
+                    else "Numeric values must be positive."
+                )
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(exc))
+            return
+        self.preset_name = name
+        self.preset_payload = payload
+        self.accept()
+
+
 class MetadataDialog(QtWidgets.QDialog):
-    def __init__(self, dataset: Dataset, language: str = "ja", parent=None):
+    def __init__(
+        self,
+        dataset: Dataset,
+        language: str = "ja",
+        parent=None,
+        analyte_presets=None,
+        preset_metadata=None,
+    ):
         super().__init__(parent)
         self.dataset = dataset
         self.original_label = dataset.label
         self.original_short_label = dataset.short_label
         self.language = language
+        self.analyte_presets = sanitize_analyte_presets(analyte_presets)
+        # Only the analyte records belong to this dialog. Normalizing every kind
+        # here returns empty condition and gradient records, and the caller
+        # stores this dictionary back as the application-wide metadata, so their
+        # stable IDs and created/used history would be erased by pressing OK.
+        self.preset_metadata = (
+            deepcopy(preset_metadata) if isinstance(preset_metadata, dict) else {}
+        )
+        for kind in PRESET_KINDS:
+            if not isinstance(self.preset_metadata.get(kind), dict):
+                self.preset_metadata[kind] = {}
+        self.preset_metadata["analytes"] = normalize_preset_metadata(
+            {}, {}, self.preset_metadata, self.analyte_presets
+        )["analytes"]
         self.setWindowTitle("詳細・定量条件" if language == "ja" else "Details and quantitation")
         self.resize(720, 760)
         root = QtWidgets.QVBoxLayout(self)
@@ -1199,20 +1360,44 @@ class MetadataDialog(QtWidgets.QDialog):
         self.aux_edit.setPlaceholderText("e.g. 0.5, 1, 2.5")
         measurement_form.insertRow(1, "AU/V", self.aux_edit)
 
-        add_section(
-            "試料情報" if language == "ja" else "Analyte information",
-            (
-                ("analyte", "分析対象物" if language == "ja" else "Analyte", meta.analyte_name),
-                ("analyte_id", "分析対象物ID" if language == "ja" else "Analyte ID", meta.analyte_id),
-                ("analyte_aliases", "別名（カンマ区切り）" if language == "ja" else "Aliases (comma-separated)", ", ".join(meta.analyte_aliases)),
-                ("analyte_source", "データ出典" if language == "ja" else "Data source", meta.analyte_source),
-                ("epsilon_unit", "吸光係数の単位" if language == "ja" else "Extinction coefficient unit", meta.extinction_coefficient_unit),
-                ("injection", "注入量 (µL)" if language == "ja" else "Injection volume (µL)", format_optional(meta.injection_volume_ul)),
-                ("eps214", "ε214 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_214)),
-                ("eps280", "ε280 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_280)),
-                ("mw", "分子量 (g/mol)" if language == "ja" else "Molecular weight (g/mol)", format_optional(meta.molecular_weight_g_mol)),
-            ),
+        analyte_group = QtWidgets.QGroupBox(
+            "試料情報" if language == "ja" else "Analyte information"
         )
+        analyte_form = QtWidgets.QFormLayout(analyte_group)
+        self.analyte_combo = _EditablePresetComboBox()
+        self.analyte_combo.setEditable(True)
+        self.analyte_combo.addItem(
+            "新しく登録…" if language == "ja" else "Register new…",
+            "__register__",
+        )
+        for name in sorted(
+            self.analyte_presets, key=lambda value: (value.casefold(), value)
+        ):
+            self.analyte_combo.addItem(name, name)
+        self.analyte_combo.setEditText(meta.analyte_name)
+        self._last_analyte_text = meta.analyte_name
+        self.fields["analyte"] = self.analyte_combo
+        analyte_form.addRow(
+            "分析対象物" if language == "ja" else "Analyte",
+            self.analyte_combo,
+        )
+        for key, label, value in (
+            ("analyte_id", "分析対象物ID" if language == "ja" else "Analyte ID", meta.analyte_id),
+            ("analyte_aliases", "別名（カンマ区切り）" if language == "ja" else "Aliases (comma-separated)", ", ".join(meta.analyte_aliases)),
+            ("analyte_source", "データ出典" if language == "ja" else "Data source", meta.analyte_source),
+            ("injection", "注入量 (µL)" if language == "ja" else "Injection volume (µL)", format_optional(meta.injection_volume_ul)),
+            ("eps214", "ε214 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_214)),
+            ("eps280", "ε280 (M⁻¹ cm⁻¹)", format_optional(meta.molar_absorptivity_280)),
+            ("mw", "分子量 (g/mol)" if language == "ja" else "Molecular weight (g/mol)", format_optional(meta.molecular_weight_g_mol)),
+        ):
+            widget = QtWidgets.QLineEdit(str(value))
+            self.fields[key] = widget
+            analyte_form.addRow(label, widget)
+        root.addWidget(analyte_group)
+        self.analyte_combo.lineEdit().textEdited.connect(
+            lambda text: setattr(self, "_last_analyte_text", text)
+        )
+        self.analyte_combo.activated.connect(self._analyte_preset_activated)
 
         other_group = QtWidgets.QGroupBox("コメント・由来" if language == "ja" else "Comments and source")
         other_form = QtWidgets.QFormLayout(other_group)
@@ -1233,6 +1418,40 @@ class MetadataDialog(QtWidgets.QDialog):
         buttons.accepted.connect(self._accept)
         buttons.rejected.connect(self.reject)
         root.addWidget(buttons)
+
+    def _analyte_preset_activated(self, index):
+        name = self.analyte_combo.itemData(index)
+        if name == "__register__":
+            previous = self._last_analyte_text
+            dialog = AnalytePresetRegistrationDialog(
+                self.language,
+                self,
+                existing_names=self.analyte_presets,
+            )
+            if not dialog_exec(dialog):
+                self.analyte_combo.setEditText(previous)
+                return
+            name = dialog.preset_name
+            self.analyte_presets[name] = deepcopy(dialog.preset_payload)
+            record_preset_saved(self.preset_metadata, "analytes", "", name)
+            existing = self.analyte_combo.findData(name)
+            if existing < 0:
+                self.analyte_combo.addItem(name, name)
+        payload = self.analyte_presets.get(name)
+        if payload is None:
+            return
+        self.analyte_combo.setEditText(name)
+        self._last_analyte_text = name
+        self.fields["eps214"].setText(
+            format_optional(payload.get("molar_absorptivity_214"))
+        )
+        self.fields["eps280"].setText(
+            format_optional(payload.get("molar_absorptivity_280"))
+        )
+        self.fields["mw"].setText(
+            format_optional(payload.get("molecular_weight_g_mol"))
+        )
+        record_preset_used(self.preset_metadata, "analytes", name)
 
     def _accept(self):
         try:
@@ -1271,7 +1490,7 @@ class MetadataDialog(QtWidgets.QDialog):
         meta.column_name = self.fields["column"].text().strip()
         meta.column_temperature_c = numeric["temperature"]
         meta.injection_volume_ul = numeric["injection"]
-        meta.analyte_name = self.fields["analyte"].text().strip()
+        meta.analyte_name = self.analyte_combo.currentText().strip()
         meta.analyte_id = self.fields["analyte_id"].text().strip()
         if meta.analyte_name and not meta.analyte_id:
             meta.analyte_id = "analyte-" + new_id()
@@ -1281,9 +1500,6 @@ class MetadataDialog(QtWidgets.QDialog):
             if item.strip()
         ]
         meta.analyte_source = self.fields["analyte_source"].text().strip()
-        meta.extinction_coefficient_unit = (
-            self.fields["epsilon_unit"].text().strip() or "M^-1 cm^-1"
-        )
         meta.molar_absorptivity_214 = numeric["eps214"]
         meta.molar_absorptivity_280 = numeric["eps280"]
         meta.molecular_weight_g_mol = numeric["mw"]
@@ -1546,6 +1762,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         preset_metadata=None,
         group_runs_callback=None,
         ungroup_runs_callback=None,
+        analyte_presets=None,
     ):
         super().__init__(parent)
         self.project = project
@@ -1553,8 +1770,12 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.selected_dataset_id = selected_dataset_id
         self.presets = sanitize_condition_presets(project.condition_presets)
         self.gradient_presets = deepcopy(project.gradient_presets)
+        self.analyte_presets = sanitize_analyte_presets(analyte_presets)
         self.preset_metadata = normalize_preset_metadata(
-            self.presets, self.gradient_presets, deepcopy(preset_metadata)
+            self.presets,
+            self.gradient_presets,
+            deepcopy(preset_metadata),
+            self.analyte_presets,
         )
         self.loaded_condition_preset_name = ""
         self.gradient_assignments = {}
@@ -2090,8 +2311,16 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         except BatchCellError as exc:
             self._show_cell_error(exc)
             return
-        dialog = MetadataDialog(working, self.language, self)
+        dialog = MetadataDialog(
+            working,
+            self.language,
+            self,
+            analyte_presets=self.analyte_presets,
+            preset_metadata=self.preset_metadata,
+        )
         if dialog_exec(dialog):
+            self.analyte_presets = dialog.analyte_presets
+            self.preset_metadata = dialog.preset_metadata
             self.detail_overrides[original.id] = working
             for related_row, dataset in enumerate(self.project.datasets):
                 if dataset.run_id == original.run_id:

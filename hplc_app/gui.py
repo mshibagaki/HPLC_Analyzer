@@ -87,11 +87,12 @@ from .peak_fitting import (
 )
 from .plot3d import ThreeDPlotOptions, suggest_z_tick_interval
 from .preset_store import (
-    load_preset_store_with_metadata,
+    load_complete_preset_store,
     merge_preset_sources,
     normalize_preset_metadata,
     record_preset_deleted,
     record_preset_saved,
+    sanitize_analyte_presets,
     save_preset_store,
 )
 from .project_io import (
@@ -557,8 +558,9 @@ class MainWindow(QtWidgets.QMainWindow):
         (
             stored_conditions,
             stored_gradients,
+            stored_analytes,
             stored_metadata,
-        ) = load_preset_store_with_metadata()
+        ) = load_complete_preset_store()
         merged_conditions, merged_gradients = merge_preset_sources(
             settings_conditions,
             settings_gradients,
@@ -569,13 +571,21 @@ class MainWindow(QtWidgets.QMainWindow):
             merged_conditions
         )
         self._global_gradient_presets = merged_gradients
+        self._global_analyte_presets = sanitize_analyte_presets(
+            stored_analytes
+        )
         self._global_preset_metadata = normalize_preset_metadata(
             self._global_condition_presets,
             self._global_gradient_presets,
             stored_metadata,
+            self._global_analyte_presets,
         )
         self._application_language = self._settings.get(UI_LANGUAGE)
-        if self._global_condition_presets or self._global_gradient_presets:
+        if (
+            self._global_condition_presets
+            or self._global_gradient_presets
+            or self._global_analyte_presets
+        ):
             # v1.1.4 and earlier used QSettings only. Mirror those values into
             # a version-independent JSON file on first v1.1.5 launch, and
             # restore QSettings from that file if a future build changes path.
@@ -678,6 +688,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._global_condition_presets,
                 self._global_gradient_presets,
                 metadata=self._global_preset_metadata,
+                analyte_presets=self._global_analyte_presets,
             )
         except (OSError, TypeError, ValueError):
             # QSettings remains the fallback if the roaming-profile directory
@@ -702,6 +713,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for kind, presets in (
             ("conditions", self._global_condition_presets),
             ("gradients", self._global_gradient_presets),
+            ("analytes", self._global_analyte_presets),
         ):
             records = self._global_preset_metadata.setdefault(kind, {})
             for name in presets:
@@ -718,6 +730,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._global_condition_presets,
             self._global_gradient_presets,
             self._global_preset_metadata,
+            self._global_analyte_presets,
         )
 
     def _merge_global_presets_into_project(self):
@@ -6028,20 +6041,30 @@ class MainWindow(QtWidgets.QMainWindow):
             self._global_preset_metadata,
             self._application_language,
             self,
+            analytes=self._global_analyte_presets,
         )
         if not dialog_exec(dialog):
             return False
+        project_presets_changed = (
+            dialog.conditions != self._global_condition_presets
+            or dialog.gradients != self._global_gradient_presets
+        )
         if (
-            dialog.conditions == self._global_condition_presets
-            and dialog.gradients == self._global_gradient_presets
+            not project_presets_changed
+            and dialog.analytes == self._global_analyte_presets
         ):
             return False
         self._global_preset_metadata = deepcopy(dialog.metadata)
+        self._global_analyte_presets = deepcopy(dialog.analytes)
         self.project.condition_presets = deepcopy(dialog.conditions)
         self.project.gradient_presets = deepcopy(dialog.gradients)
         self._persist_global_presets()
-        self.project.dirty = True
-        self._update_title()
+        # Analyte presets live only in the application-wide store, so managing
+        # them alone changes nothing inside the Project and must not report the
+        # Project as unsaved.
+        if project_presets_changed:
+            self.project.dirty = True
+            self._update_title()
         return True
 
     def check_for_updates(self, manual=True):
@@ -6202,8 +6225,17 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, APP_NAME, self.translator("no_dataset"))
             return
         before = self._capture_analysis_state()
-        dialog = MetadataDialog(dataset, self._application_language, self)
+        dialog = MetadataDialog(
+            dataset,
+            self._application_language,
+            self,
+            analyte_presets=self._global_analyte_presets,
+            preset_metadata=self._global_preset_metadata,
+        )
         if dialog_exec(dialog):
+            self._global_analyte_presets = dialog.analyte_presets
+            self._global_preset_metadata = dialog.preset_metadata
+            self._save_global_preset_file()
             try:
                 recalculate_dataset_peaks(dataset)
             except ValueError as exc:
@@ -6318,9 +6350,11 @@ class MainWindow(QtWidgets.QMainWindow):
             preset_metadata=self._global_preset_metadata,
             group_runs_callback=group_runs,
             ungroup_runs_callback=ungroup_runs,
+            analyte_presets=self._global_analyte_presets,
         )
         if dialog_exec(dialog):
             self._global_preset_metadata = dialog.preset_metadata
+            self._global_analyte_presets = dialog.analyte_presets
             for dataset in self.project.datasets:
                 try:
                     recalculate_dataset_peaks(dataset)

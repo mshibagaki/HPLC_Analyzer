@@ -17,6 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from hplc_app.analysis import recalculate_dataset_peaks
 from hplc_app.database import database_sections
 from hplc_app.dialogs import (
+    AnalytePresetRegistrationDialog,
     AutoPeakDetectionDialog,
     AxisLabelsDialog,
     BatchMetadataDialog,
@@ -78,7 +79,9 @@ from hplc_app.peak_fitting import (
 )
 from hplc_app.preset_store import (
     load_preset_store,
+    load_complete_preset_store,
     load_preset_store_with_metadata,
+    normalize_preset_metadata,
     preset_store_path,
 )
 from hplc_app.qt_compat import (
@@ -2027,7 +2030,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(dialog.action_button.text(), "Close")
         dialog.close()
 
-    def test_preset_manager_renames_duplicates_and_deletes_both_kinds(self):
+    def test_preset_manager_renames_duplicates_and_deletes_all_kinds(self):
         metadata = {
             "conditions": {
                 "C18": {"id": "condition-id", "created_at": "", "updated_at": "", "last_used_at": ""}
@@ -2035,12 +2038,16 @@ class GuiTests(unittest.TestCase):
             "gradients": {
                 "fast": {"id": "gradient-id", "created_at": "", "updated_at": "", "last_used_at": ""}
             },
+            "analytes": {
+                "LL-37": {"id": "analyte-id", "created_at": "", "updated_at": "", "last_used_at": ""}
+            },
         }
         dialog = PresetManagerDialog(
             {"C18": {"column_name": "C18"}},
             {"fast": {"gradient": []}},
             metadata,
             "en",
+            analytes={"LL-37": {"molecular_weight_g_mol": 4493.3}},
         )
         dialog.condition_list.setCurrentRow(0)
         with patch.object(
@@ -2068,6 +2075,17 @@ class GuiTests(unittest.TestCase):
         ):
             dialog._delete()
         self.assertNotIn("fast copy", dialog.gradients)
+
+        dialog.tabs.setCurrentIndex(2)
+        dialog.analyte_list.setCurrentRow(0)
+        with patch.object(
+            QtWidgets.QInputDialog, "getText", return_value=("LL-37 copy", True)
+        ):
+            dialog._rename_or_duplicate("duplicate")
+        self.assertIn("LL-37 copy", dialog.analytes)
+        self.assertNotEqual(
+            dialog.metadata["analytes"]["LL-37 copy"]["id"], "analyte-id"
+        )
         dialog.close()
 
     def test_preset_manager_exports_and_imports_with_explicit_conflict_choice(self):
@@ -6321,13 +6339,183 @@ class GuiTests(unittest.TestCase):
         dialog.fields["analyte_id"].setText("analyte-ll37")
         dialog.fields["analyte_aliases"].setText("CAP18, hCAP-18")
         dialog.fields["analyte_source"].setText("UniProt P49913")
-        dialog.fields["epsilon_unit"].setText("M^-1 cm^-1")
+        original_unit = window.project.datasets[0].measurement.extinction_coefficient_unit
+        self.assertNotIn("epsilon_unit", dialog.fields)
         dialog._accept()
         metadata = window.project.datasets[0].measurement
         self.assertEqual(metadata.analyte_id, "analyte-ll37")
         self.assertEqual(metadata.analyte_aliases, ["CAP18", "hCAP-18"])
         self.assertEqual(metadata.analyte_source, "UniProt P49913")
         self.assertEqual(metadata.extinction_coefficient_unit, "M^-1 cm^-1")
+        self.assertEqual(metadata.extinction_coefficient_unit, original_unit)
+        window.project.dirty = False
+        window.close()
+
+    def test_metadata_analyte_preset_selection_overwrites_all_three_values(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        dataset.measurement.molar_absorptivity_214 = 1.0
+        dataset.measurement.molar_absorptivity_280 = 2.0
+        dataset.measurement.molecular_weight_g_mol = 3.0
+        dialog = MetadataDialog(
+            dataset,
+            "en",
+            analyte_presets={
+                "LL-37": {
+                    "molar_absorptivity_214": 12500.0,
+                    "molar_absorptivity_280": None,
+                    "molecular_weight_g_mol": 4493.3,
+                }
+            },
+        )
+        index = dialog.analyte_combo.findData("LL-37")
+        dialog._analyte_preset_activated(index)
+        self.assertEqual(dialog.fields["eps214"].text(), "12500")
+        self.assertEqual(dialog.fields["eps280"].text(), "")
+        self.assertEqual(dialog.fields["mw"].text(), "4493.3")
+        dialog._accept()
+        self.assertEqual(dataset.measurement.analyte_name, "LL-37")
+        self.assertEqual(dataset.measurement.molar_absorptivity_214, 12500.0)
+        self.assertIsNone(dataset.measurement.molar_absorptivity_280)
+        self.assertEqual(dataset.measurement.molecular_weight_g_mol, 4493.3)
+        window.project.dirty = False
+        window.close()
+
+    def test_metadata_can_register_analyte_preset_for_application_store(self):
+        window = self.make_window()
+        dialog = MetadataDialog(window.project.datasets[0], "en")
+
+        def register(registration):
+            self.assertIsInstance(registration, AnalytePresetRegistrationDialog)
+            registration.name_edit.setText("New analyte")
+            registration.eps214_edit.setText("1234")
+            registration.eps280_edit.setText("5678")
+            registration.mw_edit.setText("901.2")
+            registration._accept()
+            return True
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=register):
+            dialog._analyte_preset_activated(0)
+        self.assertEqual(
+            dialog.analyte_presets["New analyte"]["molecular_weight_g_mol"],
+            901.2,
+        )
+        self.assertIn("New analyte", dialog.preset_metadata["analytes"])
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_editing_details_keeps_condition_and_gradient_preset_metadata(self):
+        window = self.make_window()
+        window._global_condition_presets = {"C18": {"column_name": "C18"}}
+        window._global_gradient_presets = {"fast": {"gradient": []}}
+        window._global_analyte_presets = {
+            "LL-37": {
+                "molar_absorptivity_214": 12500.0,
+                "molar_absorptivity_280": None,
+                "molecular_weight_g_mol": 4493.3,
+            }
+        }
+        window._global_preset_metadata = normalize_preset_metadata(
+            window._global_condition_presets,
+            window._global_gradient_presets,
+            None,
+            window._global_analyte_presets,
+        )
+        before = deepcopy(window._global_preset_metadata)
+        window.dataset_table.selectRow(0)
+
+        with patch("hplc_app.gui.dialog_exec", return_value=True):
+            window.edit_metadata()
+
+        # The details dialog owns the analyte records only. Accepting it must not
+        # erase the identity and history of the other application-wide kinds.
+        for kind in ("conditions", "gradients"):
+            with self.subTest(kind=kind):
+                self.assertEqual(
+                    window._global_preset_metadata[kind], before[kind]
+                )
+        stored = load_complete_preset_store()
+        self.assertEqual(sorted(stored[3]["conditions"]), ["C18"])
+        self.assertEqual(sorted(stored[3]["gradients"]), ["fast"])
+        self.assertEqual(sorted(stored[2]), ["LL-37"])
+        window.project.dirty = False
+        window.close()
+
+    def test_managing_only_analyte_presets_leaves_the_project_unchanged(self):
+        window = self.make_window()
+        window._global_condition_presets = {"C18": {"column_name": "C18"}}
+        window._global_gradient_presets = {"fast": {"gradient": []}}
+        window.project.condition_presets = deepcopy(window._global_condition_presets)
+        window.project.gradient_presets = deepcopy(window._global_gradient_presets)
+        window._global_analyte_presets = {}
+        window._global_preset_metadata = normalize_preset_metadata(
+            window._global_condition_presets,
+            window._global_gradient_presets,
+            None,
+            {},
+        )
+        window.project.dirty = False
+        analyte = {
+            "LL-37": {
+                "molar_absorptivity_214": 12500.0,
+                "molar_absorptivity_280": None,
+                "molecular_weight_g_mol": 4493.3,
+            }
+        }
+
+        def manage_analytes(dialog):
+            dialog.analytes = deepcopy(analyte)
+            return True
+
+        with patch("hplc_app.gui.dialog_exec", side_effect=manage_analytes):
+            self.assertTrue(window.manage_presets())
+
+        # Analyte presets are application-wide and never enter the Project, so
+        # managing them alone must not report unsaved Project changes.
+        self.assertEqual(window._global_analyte_presets, analyte)
+        self.assertFalse(window.project.dirty)
+        self.assertEqual(load_complete_preset_store()[2], analyte)
+
+        def manage_conditions(dialog):
+            dialog.conditions = {"C4": {"column_name": "C4"}}
+            return True
+
+        with patch("hplc_app.gui.dialog_exec", side_effect=manage_conditions):
+            self.assertTrue(window.manage_presets())
+        self.assertTrue(window.project.dirty)
+        self.assertEqual(sorted(window.project.condition_presets), ["C4"])
+        window.project.dirty = False
+        window.close()
+
+    def test_analyte_preset_with_same_constants_keeps_quantitation_result(self):
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        metadata = dataset.measurement
+        metadata.aux_range_au_per_v = 1.0
+        metadata.flow_rate_ml_min = 1.0
+        metadata.cell_path_length_cm = 1.0
+        metadata.molar_absorptivity_280 = 5500.0
+        metadata.molecular_weight_g_mol = 4493.3
+        recalculate_dataset_peaks(dataset)
+        before = dataset.peaks[0].amount_nmol
+        self.assertIsNotNone(before)
+
+        dialog = MetadataDialog(
+            dataset,
+            "en",
+            analyte_presets={
+                "LL-37": {
+                    "molar_absorptivity_214": None,
+                    "molar_absorptivity_280": 5500.0,
+                    "molecular_weight_g_mol": 4493.3,
+                }
+            },
+        )
+        dialog._analyte_preset_activated(dialog.analyte_combo.findData("LL-37"))
+        dialog._accept()
+        recalculate_dataset_peaks(dataset)
+        self.assertAlmostEqual(dataset.peaks[0].amount_nmol, before, places=12)
         window.project.dirty = False
         window.close()
 
@@ -8620,16 +8808,25 @@ class GuiTests(unittest.TestCase):
                 "solvents": {},
             }
         }
+        first._global_analyte_presets = {
+            "LL-37": {
+                "molar_absorptivity_214": 12500.0,
+                "molar_absorptivity_280": None,
+                "molecular_weight_g_mol": 4493.3,
+            }
+        }
         first._persist_global_presets()
-        _conditions, _gradients, metadata = load_preset_store_with_metadata()
+        _conditions, _gradients, analytes, metadata = load_complete_preset_store()
         condition_id = metadata["conditions"]["280 nm C4"]["id"]
         self.assertTrue(metadata["conditions"]["280 nm C4"]["created_at"])
+        self.assertEqual(analytes, first._global_analyte_presets)
         first.project.dirty = False
         first.close()
 
         second = MainWindow()
         self.assertIn("280 nm C4", second.project.condition_presets)
         self.assertIn("10-90 B", second.project.gradient_presets)
+        self.assertIn("LL-37", second._global_analyte_presets)
         self.assertEqual(
             second._global_preset_metadata["conditions"]["280 nm C4"]["id"],
             condition_id,

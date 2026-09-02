@@ -82,9 +82,11 @@ from hplc_app.preset_store import (
     apply_preset_operation,
     build_preset_package,
     filter_preset_names,
+    load_complete_preset_store,
     load_preset_store,
     load_preset_store_with_metadata,
     merge_preset_sources,
+    normalize_preset_metadata,
     merge_preset_package,
     record_preset_saved,
     record_preset_used,
@@ -1988,7 +1990,7 @@ class ProjectTests(unittest.TestCase):
             )
             self.assertEqual(saved_path, path)
             payload = json.loads(path.read_text(encoding="utf-8"))
-            self.assertEqual(payload["format_version"], 2)
+            self.assertEqual(payload["format_version"], 3)
             self.assertEqual(payload["written_by"], APP_VERSION)
             conditions, gradients = load_preset_store(path)
             self.assertEqual(conditions["280 nm C4"]["wavelength_nm"], 280.0)
@@ -1999,6 +2001,61 @@ class ProjectTests(unittest.TestCase):
             self.assertTrue(condition_metadata["id"])
             self.assertTrue(condition_metadata["created_at"])
             self.assertEqual(condition_metadata["last_used_at"], "")
+
+    def test_analyte_presets_round_trip_without_changing_legacy_load_api(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "presets.json"
+            analytes = {
+                "LL-37": {
+                    "molar_absorptivity_214": 12500.0,
+                    "molar_absorptivity_280": None,
+                    "molecular_weight_g_mol": 4493.3,
+                }
+            }
+            save_preset_store({}, {}, path, analyte_presets=analytes)
+            conditions, gradients = load_preset_store(path)
+            self.assertEqual((conditions, gradients), ({}, {}))
+            _conditions, _gradients, loaded, metadata = (
+                load_complete_preset_store(path)
+            )
+            self.assertEqual(loaded, analytes)
+            self.assertTrue(metadata["analytes"]["LL-37"]["id"])
+
+            # Older callers that save only condition/gradient presets must not
+            # erase analytes written by a newer build.
+            save_preset_store({}, {}, path)
+            self.assertEqual(load_complete_preset_store(path)[2], analytes)
+
+    def test_analyte_package_merge_rejects_invalid_values_atomically(self):
+        conditions = {"C18": {"column_name": "C18"}}
+        analytes = {
+            "LL-37": {
+                "molar_absorptivity_214": 12500.0,
+                "molar_absorptivity_280": None,
+                "molecular_weight_g_mol": 4493.3,
+            }
+        }
+        metadata = normalize_preset_metadata(conditions, {}, None, analytes)
+        package = build_preset_package(
+            conditions, {}, metadata, analytes=analytes
+        )
+        package["presets"]["analytes"]["Broken"] = {
+            "molar_absorptivity_214": -1.0,
+            "molar_absorptivity_280": None,
+            "molecular_weight_g_mol": None,
+        }
+
+        with self.assertRaises(ValueError):
+            merge_preset_package(
+                conditions, {}, metadata, package, analytes=analytes
+            )
+
+        # The rejection leaves every existing preset and record untouched.
+        self.assertEqual(conditions, {"C18": {"column_name": "C18"}})
+        self.assertEqual(sorted(analytes), ["LL-37"])
+        self.assertEqual(
+            metadata, normalize_preset_metadata(conditions, {}, None, analytes)
+        )
 
     def test_preset_manager_operations_are_atomic_and_preserve_identity(self):
         presets = {"original": {"column_name": "C18"}}

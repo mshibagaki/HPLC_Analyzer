@@ -1444,6 +1444,44 @@ class BatchConditionTable(QtWidgets.QTableWidget):
         super().keyPressEvent(event)
 
 
+class ConditionCopyDialog(QtWidgets.QDialog):
+    """Choose which pending condition-table values enter the session copy."""
+
+    def __init__(self, options, language="ja", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(
+            "コピーする条件"
+            if language == "ja"
+            else "Conditions to copy"
+        )
+        root = QtWidgets.QVBoxLayout(self)
+        root.addWidget(QtWidgets.QLabel(
+            "選択行からコピーする要素を選んでください。"
+            if language == "ja"
+            else "Choose the values to copy from the selected row."
+        ))
+        grid = QtWidgets.QGridLayout()
+        self.field_checks = {}
+        for index, (field, ja, en) in enumerate(options):
+            check = QtWidgets.QCheckBox(ja if language == "ja" else en)
+            check.setChecked(True)
+            self.field_checks[field] = check
+            grid.addWidget(check, index // 2, index % 2)
+        root.addLayout(grid)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def selected_fields(self):
+        return tuple(
+            field for field, check in self.field_checks.items()
+            if check.isChecked()
+        )
+
+
 class BatchMetadataDialog(QtWidgets.QDialog):
     """Editable condition overview with atomic validation and preset support."""
 
@@ -1465,9 +1503,27 @@ class BatchMetadataDialog(QtWidgets.QDialog):
     # Appended after the editable range so the existing column numbers, their
     # validation and the clipboard rectangle contract all stay unchanged.
     RUN_ID_COLUMN = 16
-    SOURCE_COLUMN = 17
+    TIMESTAMP_COLUMN = 17
+    SOURCE_COLUMN = 18
     EDITABLE_COLUMNS = frozenset(range(1, GRADIENT_COLUMN))
     RUN_SHARED_COLUMNS = frozenset((1, 2, 6, 7, 8, 9, 10, 11, 12, 13, 14))
+    COPY_FIELDS = (
+        ("label", 1, "ラベル", "Label"),
+        ("group", 2, "グループ", "Group"),
+        ("y_axis", 3, "縦軸", "Y axis"),
+        ("wavelength_nm", 4, "波長", "Wavelength"),
+        ("aux_range_au_per_v", 5, "AU/V", "AU/V"),
+        ("flow_rate_ml_min", 6, "流量", "Flow"),
+        ("cell_path_length_cm", 7, "セル長", "Cell length"),
+        ("column_name", 8, "カラム", "Column"),
+        ("column_temperature_c", 9, "カラム温度", "Column temperature"),
+        ("injection_volume_ul", 10, "注入量", "Injection volume"),
+        ("analyte_name", 11, "分析対象物", "Analyte"),
+        ("molar_absorptivity_214", 12, "ε214", "ε214"),
+        ("molar_absorptivity_280", 13, "ε280", "ε280"),
+        ("molecular_weight_g_mol", 14, "分子量", "Molecular weight"),
+        ("gradient", GRADIENT_COLUMN, "グラジエント", "Gradient"),
+    )
     POSITIVE_FIELDS = frozenset(
         (
             "wavelength_nm",
@@ -1488,6 +1544,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         language: str = "ja",
         parent=None,
         preset_metadata=None,
+        group_runs_callback=None,
+        ungroup_runs_callback=None,
     ):
         super().__init__(parent)
         self.project = project
@@ -1501,8 +1559,15 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.loaded_condition_preset_name = ""
         self.gradient_assignments = {}
         self.detail_overrides = {}
+        self.group_runs_callback = group_runs_callback
+        self.ungroup_runs_callback = ungroup_runs_callback
+        self._condition_copy_payload = None
         self._syncing_table = False
-        self.setWindowTitle("条件の一括入力・プリセット" if language == "ja" else "Batch conditions and presets")
+        self.setWindowTitle(
+            "測定・試料条件の入力"
+            if language == "ja"
+            else "Measurement / sample conditions input"
+        )
         self.resize(1250, 620)
         root = QtWidgets.QVBoxLayout(self)
 
@@ -1526,7 +1591,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             "選択中データから名前を付けて保存" if language == "ja" else "Save selected dataset as preset"
         )
         self.delete_preset_button = QtWidgets.QPushButton("プリセット削除" if language == "ja" else "Delete preset")
-        self.apply_preset_button = QtWidgets.QPushButton("チェック行へ適用" if language == "ja" else "Apply to checked rows")
+        self.apply_preset_button = QtWidgets.QPushButton("選択行へ適用" if language == "ja" else "Apply to selected rows")
         preset_row.addWidget(self.preview_preset_button)
         preset_row.addWidget(self.save_preset_button)
         preset_row.addWidget(self.delete_preset_button)
@@ -1546,7 +1611,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.gradient_preset_sort = QtWidgets.QComboBox()
         _populate_preset_sort_combo(self.gradient_preset_sort, language)
         self.apply_gradient_button = QtWidgets.QPushButton(
-            "チェック行へ適用" if language == "ja" else "Apply to checked rows"
+            "選択行へ適用" if language == "ja" else "Apply to selected rows"
         )
         self.preview_gradient_preset_button = QtWidgets.QPushButton(
             "内容・差分…" if language == "ja" else "Preview / diff…"
@@ -1559,9 +1624,29 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         root.addLayout(gradient_preset_row)
 
         selection_row = QtWidgets.QHBoxLayout()
-        self.check_all_button = QtWidgets.QPushButton("全データをチェック" if language == "ja" else "Check all")
-        self.check_group_button = QtWidgets.QPushButton("同じグループをチェック" if language == "ja" else "Check same group")
-        self.clear_checks_button = QtWidgets.QPushButton("チェック解除" if language == "ja" else "Clear checks")
+        self.check_all_button = QtWidgets.QPushButton("全データを選択" if language == "ja" else "Select all")
+        self.check_group_button = QtWidgets.QPushButton("同じグループを選択" if language == "ja" else "Select same group")
+        self.clear_checks_button = QtWidgets.QPushButton("選択解除" if language == "ja" else "Clear selection")
+        self.copy_conditions_button = QtWidgets.QPushButton(
+            "選択行から条件をコピー"
+            if language == "ja"
+            else "Copy conditions from selected row"
+        )
+        self.paste_conditions_button = QtWidgets.QPushButton(
+            "ペースト" if language == "ja" else "Paste"
+        )
+        self.group_runs_button = QtWidgets.QPushButton(
+            "選択を同一Runへ"
+            if language == "ja"
+            else "Group selected into Run"
+        )
+        self.ungroup_runs_button = QtWidgets.QPushButton(
+            "選択をRunから分離"
+            if language == "ja"
+            else "Ungroup selected Runs"
+        )
+        self.group_runs_button.setEnabled(group_runs_callback is not None)
+        self.ungroup_runs_button.setEnabled(ungroup_runs_callback is not None)
         self.edit_details_button = QtWidgets.QPushButton(
             "選択行の詳細設定…" if language == "ja" else "Edit selected row details…"
         )
@@ -1578,16 +1663,25 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         selection_row.addStretch(1)
         root.addLayout(selection_row)
 
+        operation_row = QtWidgets.QHBoxLayout()
+        operation_row.addWidget(self.copy_conditions_button)
+        operation_row.addWidget(self.paste_conditions_button)
+        operation_row.addSpacing(16)
+        operation_row.addWidget(self.group_runs_button)
+        operation_row.addWidget(self.ungroup_runs_button)
+        operation_row.addStretch(1)
+        root.addLayout(operation_row)
+
         note = QtWidgets.QLabel(
-            "条件セルは直接編集でき、Shift/Ctrlで複数選択、Ctrl+C/Ctrl+Vで矩形範囲をコピー／貼り付けできます。Run単位の値は同じRunの行へ同期され、OK時に全行を検証してから一括適用します。"
+            "左端の選択欄で操作対象を選びます。条件セルは直接編集でき、Shift/CtrlとCtrl+C/Ctrl+Vで矩形範囲もコピー／貼り付けできます。Run単位の値は同じRunの行へ同期され、OK時に全行を検証してから一括適用します。"
             if language == "ja"
-            else "Edit condition cells directly, use Shift/Ctrl for multi-selection, and use Ctrl+C/Ctrl+V for rectangular clipboard ranges. Run-level values are synchronized across the same Run, and every row is validated before changes are applied on OK."
+            else "Use the left Select column to choose operation targets. Condition cells remain directly editable, and Shift/Ctrl with Ctrl+C/Ctrl+V copies and pastes rectangular ranges. Run-level values are synchronized across the same Run, and every row is validated before changes are applied on OK."
         )
         note.setWordWrap(True)
         root.addWidget(note)
 
         headers = (
-            "対象" if language == "ja" else "Use",
+            "選択" if language == "ja" else "Select",
             "ラベル" if language == "ja" else "Label",
             "グループ" if language == "ja" else "Group",
             "縦軸" if language == "ja" else "Y axis",
@@ -1604,6 +1698,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             "分子量" if language == "ja" else "Molecular weight",
             "グラジエント" if language == "ja" else "Gradient",
             "Run ID",
+            "タイムスタンプ" if language == "ja" else "Timestamp",
             "元ファイル" if language == "ja" else "Source file",
         )
         self.table = BatchConditionTable(len(project.datasets), len(headers))
@@ -1648,6 +1743,11 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             run_id.setFlags(run_id.flags() & ~ITEM_IS_EDITABLE)
             run_id.setToolTip(dataset.run_id)
             self.table.setItem(row, self.RUN_ID_COLUMN, run_id)
+            timestamp_text = dataset.measurement.acquisition_datetime
+            timestamp = QtWidgets.QTableWidgetItem(timestamp_text)
+            timestamp.setFlags(timestamp.flags() & ~ITEM_IS_EDITABLE)
+            timestamp.setToolTip(timestamp_text)
+            self.table.setItem(row, self.TIMESTAMP_COLUMN, timestamp)
             source_text = dataset.original_path or dataset.original_filename
             source = QtWidgets.QTableWidgetItem(source_text)
             source.setFlags(source.flags() & ~ITEM_IS_EDITABLE)
@@ -1655,6 +1755,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             self.table.setItem(row, self.SOURCE_COLUMN, source)
         header = self.table.horizontalHeader()
         header.moveSection(header.visualIndex(self.RUN_ID_COLUMN), 1)
+        header.moveSection(header.visualIndex(self.TIMESTAMP_COLUMN), 2)
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(self.SOURCE_COLUMN, 320)
 
@@ -1689,6 +1790,10 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self.check_all_button.clicked.connect(lambda: self._set_all_checks(True))
         self.clear_checks_button.clicked.connect(lambda: self._set_all_checks(False))
         self.check_group_button.clicked.connect(self._check_same_group)
+        self.copy_conditions_button.clicked.connect(self._copy_conditions)
+        self.paste_conditions_button.clicked.connect(self._paste_conditions)
+        self.group_runs_button.clicked.connect(self._group_checked_runs)
+        self.ungroup_runs_button.clicked.connect(self._ungroup_checked_runs)
         self.edit_details_button.clicked.connect(self._edit_selected_details)
         self.edit_gradient_button.clicked.connect(self._edit_selected_gradient)
         self.table.itemChanged.connect(self._table_item_changed)
@@ -2192,6 +2297,204 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             for row in range(self.table.rowCount())
             if self.table.item(row, 0) and self.table.item(row, 0).checkState() == CHECKED
         ]
+
+    def _selection_message(self, ja: str, en: str, *, warning=False):
+        method = (
+            QtWidgets.QMessageBox.warning
+            if warning
+            else QtWidgets.QMessageBox.information
+        )
+        method(
+            self,
+            "条件のコピー"
+            if self.language == "ja"
+            else "Condition copy",
+            ja if self.language == "ja" else en,
+        )
+
+    def _pending_gradient_payload(self, row: int):
+        original = self.project.datasets[row]
+        working = deepcopy(self.detail_overrides.get(original.id, original))
+        self._apply_row_to_dataset(row, working)
+        assigned_name = self.gradient_assignments.get(original.run_id)
+        if assigned_name:
+            self._apply_gradient_payload(
+                working,
+                assigned_name,
+                self.gradient_presets[assigned_name],
+            )
+        return {
+            "name": working.effective_gradient_preset_name(),
+            "gradient": [asdict(point) for point in working.measurement.gradient],
+            "solvents": {
+                line: asdict(solvent)
+                for line, solvent in working.measurement.solvents.items()
+            },
+        }
+
+    def _copy_conditions(self):
+        rows = self._checked_rows()
+        if len(rows) != 1:
+            self._selection_message(
+                "条件をコピーする行を1件だけ選択してください。",
+                "Select exactly one row to copy conditions from.",
+                warning=True,
+            )
+            return
+        options = [
+            (field, ja, en)
+            for field, _column, ja, en in self.COPY_FIELDS
+        ]
+        dialog = ConditionCopyDialog(options, self.language, self)
+        if not dialog_exec(dialog):
+            return
+        selected = set(dialog.selected_fields())
+        if not selected:
+            self._selection_message(
+                "コピーする要素を1件以上選択してください。",
+                "Select at least one value to copy.",
+                warning=True,
+            )
+            return
+        row = rows[0]
+        payload = {"columns": {}}
+        try:
+            for field, column, _ja, _en in self.COPY_FIELDS:
+                if field not in selected:
+                    continue
+                if field == "gradient":
+                    payload["gradient"] = self._pending_gradient_payload(row)
+                    continue
+                text = self._cell_text(row, column)
+                self._validate_cell_value(row, column, text)
+                payload["columns"][field] = (column, text)
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
+            return
+        self._condition_copy_payload = payload
+
+    def _paste_conditions(self):
+        if self._condition_copy_payload is None:
+            self._selection_message(
+                "先に1行から条件をコピーしてください。",
+                "Copy conditions from one row before pasting.",
+            )
+            return
+        rows = self._checked_rows()
+        if not rows:
+            self._selection_message(
+                "貼り付け先を1件以上選択してください。",
+                "Select at least one destination row.",
+                warning=True,
+            )
+            return
+        columns = self._condition_copy_payload["columns"]
+        try:
+            for row in rows:
+                for _field, (column, text) in columns.items():
+                    self._validate_cell_value(row, column, text)
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
+            return
+        for row in rows:
+            for _field, (column, text) in columns.items():
+                self.table.item(row, column).setText(text)
+        gradient = self._condition_copy_payload.get("gradient")
+        if gradient is None:
+            return
+        updated_runs = set()
+        for row in rows:
+            original = self.project.datasets[row]
+            if original.run_id in updated_runs:
+                continue
+            updated_runs.add(original.run_id)
+            working = deepcopy(self.detail_overrides.get(original.id, original))
+            try:
+                self._apply_row_to_dataset(row, working)
+            except BatchCellError as exc:
+                self._show_cell_error(exc)
+                return
+            self._apply_gradient_payload(
+                working, gradient["name"], gradient
+            )
+            self.detail_overrides[original.id] = working
+            self.gradient_assignments.pop(original.run_id, None)
+            for related_row, related in enumerate(self.project.datasets):
+                if related.run_id == original.run_id:
+                    self.table.item(
+                        related_row, self.GRADIENT_COLUMN
+                    ).setText(gradient["name"])
+
+    def _refresh_run_identity_columns(self):
+        for row, dataset in enumerate(self.project.datasets):
+            run_id = self.table.item(row, self.RUN_ID_COLUMN)
+            timestamp = self.table.item(row, self.TIMESTAMP_COLUMN)
+            run_id.setText(dataset.run_id)
+            run_id.setToolTip(dataset.run_id)
+            value = dataset.measurement.acquisition_datetime
+            timestamp.setText(value)
+            timestamp.setToolTip(value)
+
+    def _group_checked_runs(self):
+        if self.group_runs_callback is None:
+            return
+        rows = self._checked_rows()
+        current = self.table.currentRow()
+        if current not in rows:
+            self.group_runs_callback([], "")
+            return
+        target_values = {
+            column: self._cell_text(current, column)
+            for column in self.RUN_SHARED_COLUMNS
+        }
+        target_gradient = self._cell_text(current, self.GRADIENT_COLUMN)
+        target_dataset = self.project.datasets[current]
+        source_run_ids = {
+            self.project.datasets[row].run_id for row in rows
+        }
+        dataset_ids = [self.project.datasets[row].id for row in rows]
+        if not self.group_runs_callback(dataset_ids, target_dataset.id):
+            return
+        self._syncing_table = True
+        try:
+            for row in rows:
+                for column, text in target_values.items():
+                    self.table.item(row, column).setText(text)
+                self.table.item(row, self.GRADIENT_COLUMN).setText(
+                    target_gradient
+                )
+        finally:
+            self._syncing_table = False
+        for row in rows:
+            dataset = self.project.datasets[row]
+            if dataset.id != target_dataset.id:
+                self.detail_overrides.pop(dataset.id, None)
+        target_assignment = self.gradient_assignments.get(target_dataset.run_id)
+        for run_id in source_run_ids:
+            self.gradient_assignments.pop(run_id, None)
+        if target_assignment:
+            self.gradient_assignments[target_dataset.run_id] = target_assignment
+        self._refresh_run_identity_columns()
+
+    def _ungroup_checked_runs(self):
+        if self.ungroup_runs_callback is None:
+            return
+        rows = self._checked_rows()
+        dataset_ids = [self.project.datasets[row].id for row in rows]
+        assignments = {
+            self.project.datasets[row].id: self.gradient_assignments.get(
+                self.project.datasets[row].run_id
+            )
+            for row in rows
+        }
+        if not self.ungroup_runs_callback(dataset_ids):
+            return
+        for row in rows:
+            dataset = self.project.datasets[row]
+            assignment = assignments.get(dataset.id)
+            if assignment:
+                self.gradient_assignments[dataset.run_id] = assignment
+        self._refresh_run_identity_columns()
 
     def _set_all_checks(self, checked: bool):
         for row in range(self.table.rowCount()):

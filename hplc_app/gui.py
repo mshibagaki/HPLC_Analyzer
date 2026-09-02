@@ -2387,17 +2387,37 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def group_selected_runs(self):
-        rows = self._selected_dataset_rows()
-        current = self.dataset_table.currentRow()
+        return self._group_dataset_rows(
+            self._selected_dataset_rows(), self.dataset_table.currentRow()
+        )
+
+    def _group_dataset_ids_into_run(self, dataset_ids, target_dataset_id):
+        selected_ids = set(dataset_ids)
+        rows = [
+            row for row, dataset in enumerate(self.project.datasets)
+            if dataset.id in selected_ids
+        ]
+        current = next(
+            (
+                row for row, dataset in enumerate(self.project.datasets)
+                if dataset.id == target_dataset_id
+            ),
+            -1,
+        )
+        return self._group_dataset_rows(rows, current)
+
+    def _group_dataset_rows(self, rows, current):
+        rows = sorted(set(rows))
         if len(rows) < 2 or current not in rows:
             QtWidgets.QMessageBox.information(
                 self, APP_NAME, self.translator("select_run_group")
             )
-            return
+            return False
         datasets = [self.project.datasets[row] for row in rows]
         if len({dataset.run_id for dataset in datasets}) < 2:
-            return
+            return False
         target = self.project.run_for(self.project.datasets[current])
+        run_ids = list(dict.fromkeys(dataset.run_id for dataset in datasets))
         answer = QtWidgets.QMessageBox.question(
             self,
             APP_NAME,
@@ -2405,24 +2425,40 @@ class MainWindow(QtWidgets.QMainWindow):
                 "confirm_run_group",
                 count=len(datasets),
                 run_id=target.id,
+                run_ids="\n".join("- " + run_id for run_id in run_ids),
                 label=target.label,
             ),
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:
-            return
+            return False
         before = self._capture_analysis_state()
         self.project.group_datasets_into_run(datasets, target)
         self._push_undo_snapshot(
-            before, self._history_label("Runを統合", "Group Runs")
+            before,
+            self._history_label(
+                "統合先Runへ統合", "Group into target Run"
+            ),
         )
         self.project.dirty = True
         self._refresh_all(current)
+        return True
 
     def ungroup_selected_runs(self):
-        rows = self._selected_dataset_rows()
+        return self._ungroup_dataset_rows(self._selected_dataset_rows())
+
+    def _ungroup_dataset_ids(self, dataset_ids):
+        selected_ids = set(dataset_ids)
+        rows = [
+            row for row, dataset in enumerate(self.project.datasets)
+            if dataset.id in selected_ids
+        ]
+        return self._ungroup_dataset_rows(rows)
+
+    def _ungroup_dataset_rows(self, rows):
+        rows = sorted(set(rows))
         if not rows:
-            return
+            return False
         run_counts = {}
         for dataset in self.project.datasets:
             run_counts[dataset.run_id] = run_counts.get(dataset.run_id, 0) + 1
@@ -2432,7 +2468,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if run_counts.get(self.project.datasets[row].run_id, 0) > 1
         ]
         if not datasets:
-            return
+            return False
         answer = QtWidgets.QMessageBox.question(
             self,
             APP_NAME,
@@ -2440,7 +2476,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
         )
         if answer != QtWidgets.QMessageBox.Yes:
-            return
+            return False
         before = self._capture_analysis_state()
         self.project.ungroup_datasets(datasets)
         self._push_undo_snapshot(
@@ -2448,6 +2484,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.project.dirty = True
         self._refresh_all(rows[0])
+        return True
 
     def _dataset_item_changed(self, item: QtWidgets.QTableWidgetItem):
         if self._updating_table or self._dataset_selection_sync_guard:
@@ -6257,13 +6294,30 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def edit_batch_metadata(self):
         selected = self._selected_dataset()
-        before = self._capture_analysis_state()
+        before = [self._capture_analysis_state()]
+
+        def group_runs(dataset_ids, target_dataset_id):
+            changed = self._group_dataset_ids_into_run(
+                dataset_ids, target_dataset_id
+            )
+            if changed:
+                before[0] = self._capture_analysis_state()
+            return changed
+
+        def ungroup_runs(dataset_ids):
+            changed = self._ungroup_dataset_ids(dataset_ids)
+            if changed:
+                before[0] = self._capture_analysis_state()
+            return changed
+
         dialog = BatchMetadataDialog(
             self.project,
             selected.id if selected is not None else "",
             self._application_language,
             self,
             preset_metadata=self._global_preset_metadata,
+            group_runs_callback=group_runs,
+            ungroup_runs_callback=ungroup_runs,
         )
         if dialog_exec(dialog):
             self._global_preset_metadata = dialog.preset_metadata
@@ -6273,7 +6327,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 except ValueError:
                     pass
             self._push_undo_snapshot(
-                before,
+                before[0],
                 self._history_label(
                     "条件の一括編集", "Edit batch conditions"
                 ),

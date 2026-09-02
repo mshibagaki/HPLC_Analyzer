@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import csv
+import gc
 import math
 import tempfile
 from types import SimpleNamespace
@@ -264,6 +265,70 @@ class GuiTests(unittest.TestCase):
                 self._original_config_directory
             )
         self._preset_directory.cleanup()
+        self.release_widgets()
+
+    @classmethod
+    def release_widgets(cls):
+        """Destroy the widgets a test leaves behind.
+
+        ``QWidget.close()`` only hides a window, so Qt keeps every top level
+        widget and its Matplotlib figure alive for the rest of the process. On
+        Windows 11 that merely wastes memory, but the pinned Windows 7 build
+        runs this whole suite in one 32-bit process before PyInstaller, and the
+        accumulated windows exhaust its 2 GB address space part way through.
+
+        ``deleteLater`` alone is not enough: ``processEvents`` does not deliver
+        ``DeferredDelete``, so those events have to be sent explicitly.
+        ``close()`` is deliberately not called, because ``closeEvent`` can raise
+        an unsaved-changes dialog that would block an offscreen run.
+        """
+
+        widgets = QtWidgets.QApplication.topLevelWidgets()
+        # Let queued draws run while their canvases still exist, then stop
+        # Matplotlib from re-arming one. Its idle draw is a timer bound to the
+        # canvas, and destroying the canvas does not cancel it.
+        cls._drain_events()
+        for widget in widgets:
+            cls._cancel_pending_draws(widget)
+        MainWindow._open_windows.clear()
+        for widget in widgets:
+            widget.deleteLater()
+        deferred = (
+            QtCore.QEvent.Type.DeferredDelete
+            if QT_API == 6
+            else QtCore.QEvent.DeferredDelete
+        )
+        QtWidgets.QApplication.sendPostedEvents(None, deferred)
+        # Anything still queued for the widgets just destroyed is drained here,
+        # in the teardown that destroyed them, rather than in the next test.
+        cls._drain_events()
+        gc.collect()
+
+    @staticmethod
+    def _drain_events():
+        """Run queued work, tolerating callbacks for already-freed widgets."""
+
+        for _ in range(3):
+            try:
+                QtWidgets.QApplication.processEvents()
+            except RuntimeError:
+                # A queued callback reached a widget this teardown destroyed on
+                # purpose; nothing else is expected to raise from here.
+                continue
+
+    @staticmethod
+    def _cancel_pending_draws(widget):
+        """Stop Matplotlib re-drawing a canvas that is about to be destroyed."""
+
+        candidates = list(widget.findChildren(QtWidgets.QWidget))
+        candidates.append(widget)
+        for candidate in candidates:
+            # Matplotlib returns from its idle draw when this is False, before
+            # it touches the underlying widget. Recognising the canvas by the
+            # attribute keeps this working for whichever Qt backend module
+            # supplied it, on Qt5 and Qt6 alike.
+            if hasattr(candidate, "_draw_pending"):
+                candidate._draw_pending = False
 
     def make_window(self):
         first = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -7681,6 +7746,51 @@ class GuiTests(unittest.TestCase):
         )
         window.project.dirty = False
         window.close()
+
+    def test_gui_tests_do_not_leave_windows_alive_for_the_next_test(self):
+        """The pinned Windows 7 build runs this suite in one 32-bit process.
+
+        Every window a test leaves behind keeps its Matplotlib figure and its
+        whole widget tree, and the accumulated memory exhausts that process
+        before the suite finishes. This pins the release path so the leak
+        cannot come back unnoticed.
+        """
+
+        from matplotlib.figure import Figure
+
+        def live(kind):
+            gc.collect()
+            return sum(
+                1 for item in gc.get_objects() if isinstance(item, kind)
+            )
+
+        self.release_widgets()
+        windows_before = live(MainWindow)
+        figures_before = live(Figure)
+
+        created = [self.make_window() for _ in range(3)]
+        for window in created:
+            window.project.dirty = False
+            window.show()
+        self.app.processEvents()
+        self.assertGreaterEqual(live(MainWindow), windows_before + 3)
+        self.assertGreaterEqual(live(Figure), figures_before + 3)
+        self.assertGreaterEqual(
+            len(QtWidgets.QApplication.topLevelWidgets()), 3
+        )
+
+        # Closing is what the tests do, and on its own it releases nothing.
+        for window in created:
+            window.close()
+        self.app.processEvents()
+        gc.collect()
+        self.assertGreaterEqual(live(MainWindow), windows_before + 3)
+
+        del created, window
+        self.release_widgets()
+        self.assertLessEqual(live(MainWindow), windows_before)
+        self.assertLessEqual(live(Figure), figures_before)
+        self.assertEqual(MainWindow._open_windows, set())
 
     def test_dataset_table_forwards_external_file_drops_to_main_window(self):
         window = self.make_window()

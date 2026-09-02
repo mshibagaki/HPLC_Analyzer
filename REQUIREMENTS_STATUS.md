@@ -44,7 +44,7 @@ Windows 11 field use on `c5fe4c6` found three defects in rows listed above as im
 | #237 | Selection and display | Changing the integration selection restyles the lines but not the filled region, because `LinearRegionItem.setBrush` does not schedule a repaint the way `setPen` does on the line items |
 | #238 | Peak fitting | Saturated peak correction returns approximately the clipping ceiling instead of the reconstructed peak. `emg_profile` normalizes by the maximum over the samples it is given, and the correction deliberately removes the apex samples, so `amplitude_uv` no longer means the model curve's height. Measured recovery error on a synthetic clipped EMG peak is -30% of height and area at 70% clipping and -50% at 50% clipping. The Gaussian path is unaffected, and the existing regression test pins only that path |
 
-Issues #239, #240, #241 and #242 in the same batch are usability and layout requests rather than defects, except that #241 also adds the missing input floor behind a reported crash: axis tick spacing accepts values down to 0.000001 min, which asks both renderers for tens of millions of tick lines.
+Issues #239, #240, #241 and #242 in the same batch are usability and layout requests rather than defects, except that #241 also adds the missing input floor behind a reported crash: axis tick spacing accepts values down to 0.000001 min, which asks both renderers for tens of millions of tick lines. The requested floor is 0.1 min, and the spacing fields stay in minutes.
 
 ## Project compatibility notes for Issues #181 and #221
 

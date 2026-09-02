@@ -27,6 +27,7 @@ import numpy as np
 
 from hplc_app import APP_VERSION, PROJECT_FORMAT_MAJOR, PROJECT_SCHEMA_VERSION
 from hplc_app.analysis import (
+    _trapz,
     convert_uv,
     detect_peaks,
     gradient_at,
@@ -72,10 +73,17 @@ from hplc_app.parser import (
 )
 from hplc_app.peak_fitting import (
     PeakFitResult,
+    detect_saturated_span,
     emg_profile,
+    evaluate_fit_profile,
     fit_peak,
+    fit_saturated_peak,
+    fitted_apex_min,
+    fitted_area_uv_min,
+    fitted_fwhm_min,
     fitted_peak_from_result,
     gaussian_profile,
+    is_saturation_corrected,
     mirror_fitted_peak_for_legacy,
 )
 from hplc_app.preset_store import (
@@ -1449,6 +1457,159 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(tailed.model, "emg")
         self.assertGreater(tailed.parameters["tau_min"], 0.2)
         self.assertGreater(tailed.r_squared, 0.98)
+
+    def test_fitted_area_matches_the_documented_formula_for_both_models(self):
+        # Gaussian: the closed form is the reference the code claims to use.
+        gaussian = PeakFitResult(
+            "gaussian",
+            {"amplitude_uv": 12345.0, "center_min": 5.0, "sigma_min": 0.08},
+            5.0, 0.0, 1.0, 0.0, 100,
+        )
+        expected = 12345.0 * 0.08 * math.sqrt(2.0 * math.pi)
+        self.assertAlmostEqual(fitted_area_uv_min(gaussian), expected, places=9)
+        self.assertAlmostEqual(fitted_area_uv_min(gaussian), 2475.546084, places=6)
+        self.assertAlmostEqual(
+            fitted_fwhm_min(gaussian),
+            2.0 * math.sqrt(2.0 * math.log(2.0)) * 0.08,
+            places=9,
+        )
+        self.assertAlmostEqual(fitted_apex_min("gaussian", gaussian.parameters), 5.0)
+
+        # The same closed form must also equal a dense numerical integration,
+        # which is how the EMG area is obtained.
+        grid = np.linspace(5.0 - 1.6, 5.0 + 1.6, 200001)
+        numeric = float(_trapz(evaluate_fit_profile(grid, gaussian), grid))
+        self.assertAlmostEqual(numeric / expected, 1.0, places=6)
+
+        emg = PeakFitResult(
+            "emg",
+            {
+                "amplitude_uv": 9000.0,
+                "center_min": 5.0,
+                "sigma_min": 0.05,
+                "tau_min": 0.12,
+            },
+            5.0, 0.0, 1.0, 0.0, 100,
+        )
+        fine = np.linspace(5.0 - 2.0, 5.0 + 6.0, 400001)
+        reference = float(_trapz(evaluate_fit_profile(fine, emg), fine))
+        self.assertAlmostEqual(fitted_area_uv_min(emg) / reference, 1.0, places=4)
+        self.assertAlmostEqual(fitted_area_uv_min(emg), 2080.1754, places=3)
+
+    def test_saturated_peak_correction_recovers_the_clipped_area(self):
+        time = np.linspace(4.0, 6.0, 1201)
+        amplitude, center, sigma = 20000.0, 5.0, 0.06
+        clean = amplitude * gaussian_profile(time, center, sigma)
+        true_area = amplitude * sigma * math.sqrt(2.0 * math.pi)
+        clipped = np.minimum(clean, 12000.0)
+        dataset = Dataset(time_min=time.copy(), intensity_uv=clipped.copy())
+        raw_signal = dataset.intensity_uv.copy()
+        region = PeakRegion(start_min=4.0, end_min=6.0)
+        dataset.peaks = [region]
+        recalculate_dataset_peaks(dataset)
+        parent = dataset.peaks[0]
+        measured_area = parent.raw_area_uv_min
+        # The clipped trace really is missing a fifth of the peak.
+        self.assertLess(measured_area, true_area * 0.85)
+
+        span = detect_saturated_span(dataset, parent)
+        self.assertIsNotNone(span)
+        self.assertGreaterEqual(span.point_count, 3)
+        self.assertLess(span.start_min, center)
+        self.assertGreater(span.end_min, center)
+
+        result, used = fit_saturated_peak(dataset, parent, "gaussian")
+        self.assertEqual(used, span)
+        corrected_area = fitted_area_uv_min(result)
+        self.assertAlmostEqual(corrected_area / true_area, 1.0, delta=0.02)
+        self.assertAlmostEqual(
+            result.parameters["amplitude_uv"] / amplitude, 1.0, delta=0.02
+        )
+        self.assertAlmostEqual(result.retention_time_min, center, delta=0.01)
+
+        fitted = fitted_peak_from_result(parent, result, dataset, used)
+        self.assertTrue(is_saturation_corrected(fitted))
+        self.assertAlmostEqual(fitted.raw_area_uv_min, corrected_area, places=9)
+        self.assertAlmostEqual(
+            fitted.raw_area_uv_sec, corrected_area * 60.0, places=6
+        )
+        self.assertAlmostEqual(
+            fitted.raw_height_uv, result.parameters["amplitude_uv"], places=9
+        )
+        self.assertEqual(
+            fitted.fit_parameters["saturated_point_count"],
+            float(span.point_count),
+        )
+        self.assertEqual(
+            fitted.fit_parameters["saturated_start_min"], span.start_min
+        )
+        self.assertEqual(fitted.fit_parameters["saturated_end_min"], span.end_min)
+
+        # The measurement itself is untouched by the estimate.
+        np.testing.assert_array_equal(dataset.intensity_uv, raw_signal)
+        self.assertEqual(dataset.peaks[0].raw_area_uv_min, measured_area)
+        self.assertEqual(dataset.peaks[0].area_percent, 100.0)
+
+    def test_saturation_detection_ignores_a_merely_rounded_apex(self):
+        time = np.linspace(4.0, 6.0, 1201)
+        clean = 20000.0 * gaussian_profile(time, 5.0, 0.06)
+        dataset = Dataset(time_min=time.copy(), intensity_uv=clean.copy())
+        region = PeakRegion(start_min=4.0, end_min=6.0)
+
+        # A smooth apex is flat to within the tolerance over a few samples, but
+        # it never covers a real part of the peak width.
+        self.assertIsNone(detect_saturated_span(dataset, region))
+        with self.assertRaises(ValueError) as raised:
+            fit_saturated_peak(dataset, region, "gaussian")
+        self.assertEqual(str(raised.exception), "not_saturated")
+
+        # A range given by hand is still honoured, and is validated.
+        result, span = fit_saturated_peak(
+            dataset, region, "gaussian", saturated_range=(4.95, 5.05)
+        )
+        self.assertEqual((span.start_min, span.end_min), (4.95, 5.05))
+        self.assertGreater(span.point_count, 2)
+        self.assertAlmostEqual(result.retention_time_min, 5.0, delta=0.01)
+        for bad in ((3.0, 5.0), (5.0, 7.0), (5.0, 5.0)):
+            with self.assertRaises(ValueError):
+                fit_saturated_peak(dataset, region, "gaussian", saturated_range=bad)
+
+    def test_fitted_rows_carry_estimated_values_and_no_area_share(self):
+        dataset = self.synthetic_dataset()
+        dataset.measurement.aux_range_au_per_v = 2.0
+        dataset.peaks = [
+            PeakRegion(start_min=3.5, end_min=6.5),
+            PeakRegion(start_min=6.6, end_min=8.0),
+        ]
+        recalculate_dataset_peaks(dataset)
+        parent = dataset.peaks[0]
+        shares_before = [peak.area_percent for peak in dataset.peaks]
+
+        result = fit_peak(dataset, parent, "gaussian")
+        fitted = fitted_peak_from_result(parent, result, dataset)
+        dataset.fitted_peaks = [fitted]
+        recalculate_dataset_peaks(dataset)
+
+        # Areas and heights now come from the curve, in both unit families.
+        self.assertIsNotNone(fitted.raw_area_uv_min)
+        self.assertAlmostEqual(
+            fitted.raw_area_uv_min, fitted_area_uv_min(result), places=9
+        )
+        self.assertAlmostEqual(
+            fitted.area_mau_min, fitted.raw_area_uv_min * 2.0 * 1.0e-3, places=12
+        )
+        self.assertAlmostEqual(
+            fitted.height_mau, fitted.raw_height_uv * 2.0 * 1.0e-3, places=12
+        )
+        self.assertIsNotNone(fitted.fwhm_min)
+        # %Area stays a property of the measured integrations, and quantitation
+        # is not derived from an estimated area.
+        self.assertIsNone(fitted.area_percent)
+        self.assertIsNone(fitted.amount_nmol)
+        self.assertIsNone(fitted.amount_ug)
+        self.assertEqual([peak.area_percent for peak in dataset.peaks], shares_before)
+        self.assertAlmostEqual(sum(shares_before), 100.0, places=9)
+        self.assertFalse(is_saturation_corrected(fitted))
 
     def test_explicit_fitted_rows_do_not_enter_integration_denominator(self):
         dataset = self.synthetic_dataset()
@@ -4016,7 +4177,7 @@ class ProjectTests(unittest.TestCase):
         ]
         self.assertIn("Area (mAU·sec)", report_cells)
         self.assertIn("F1", report_cells)
-        self.assertIn("Fit GAUSSIAN -> #1", report_cells)
+        self.assertIn("Fit GAUSSIAN -> #1 (estimated)", report_cells)
         self.assertTrue(
             any(line.get_color() == "#c026d3" for line in plot_axis.lines)
         )

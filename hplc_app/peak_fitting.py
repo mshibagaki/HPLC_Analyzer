@@ -4,12 +4,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from .analysis import calculate_baseline
+from .analysis import _fwhm, _trapz, calculate_baseline
 from .models import Dataset, PeakRegion
+
+
+SECONDS_PER_MINUTE = 60.0
+GAUSSIAN_FWHM_FACTOR = 2.0 * math.sqrt(2.0 * math.log(2.0))
+# A clipped detector writes the same ceiling value for several samples in a row.
+# Three consecutive samples inside one part per thousand of the peak height is
+# the smallest run that is not simply a rounded apex.
+SATURATION_MIN_RUN = 3
+SATURATION_TOLERANCE_RATIO = 1.0e-3
+# Any smooth apex is flat to within the tolerance over a few samples, so the
+# run also has to cover a real part of the peak. A Gaussian apex stays within
+# one part per thousand for about 4% of its width at half height; a clipped top
+# covers far more, so a tenth of that width separates the two cleanly.
+SATURATION_MIN_WIDTH_RATIO = 0.10
+
+
+@dataclass(frozen=True)
+class SaturatedSpan:
+    """The flat top treated as clipped, in acquisition-time minutes."""
+
+    start_min: float
+    end_min: float
+    point_count: int
 
 
 @dataclass(frozen=True)
@@ -33,10 +56,140 @@ _LEGACY_FIT_FIELDS = (
 )
 
 
+def _model_grid(center: float, sigma: float, tau: float):
+    """Uniform grid wide and fine enough for the EMG tail to stop mattering."""
+
+    left = center - 8.0 * sigma
+    right = center + 8.0 * sigma + 20.0 * tau
+    step = min(sigma, tau) / 50.0
+    count = int(min(200001, max(2001, math.ceil((right - left) / step) + 1)))
+    return np.linspace(left, right, count)
+
+
+def fitted_area_uv_min(result: PeakFitResult) -> float:
+    """Return the area under the fitted model curve in µV·min.
+
+    A Gaussian uses its closed form, ``amplitude * sigma * sqrt(2*pi)``. The EMG
+    profile in this module is normalized to unit height and has no matching
+    closed form, so it is integrated with the same trapezoid helper the
+    measured integration uses, on a grid wide and fine enough that the tail
+    stops contributing. Both are the area of the complete model curve, not of
+    the samples inside the integration window, because the point of a fitted
+    area is the peak the detector would have recorded.
+    """
+
+    parameters = result.parameters
+    amplitude = float(parameters["amplitude_uv"])
+    sigma = max(float(parameters["sigma_min"]), 1.0e-12)
+    if result.model == "gaussian":
+        return amplitude * sigma * math.sqrt(2.0 * math.pi)
+    if result.model != "emg":
+        raise ValueError("Unknown fitted model: %s" % result.model)
+    center = float(parameters["center_min"])
+    tau = max(float(parameters["tau_min"]), 1.0e-12)
+    grid = _model_grid(center, sigma, tau)
+    return float(_trapz(evaluate_fit_profile(grid, result), grid))
+
+
+def fitted_apex_min(model: str, parameters: Dict[str, float]) -> float:
+    """Return the apex of the model curve itself, in minutes.
+
+    Reading the apex off the fitted samples puts it at the edge of the gap when
+    the saturated-peak correction removes the clipped top, so the model decides
+    instead: a Gaussian peaks at its centre, and the EMG mode is located on the
+    same grid its area uses.
+    """
+
+    center = float(parameters["center_min"])
+    if model == "gaussian":
+        return center
+    if model != "emg":
+        raise ValueError("Unknown fitted model: %s" % model)
+    sigma = max(float(parameters["sigma_min"]), 1.0e-12)
+    tau = max(float(parameters["tau_min"]), 1.0e-12)
+    grid = _model_grid(center, sigma, tau)
+    profile = emg_profile(grid, center, sigma, tau)
+    return float(grid[int(np.argmax(profile))])
+
+
+def fitted_fwhm_min(result: PeakFitResult) -> Optional[float]:
+    """Return the width at half height of the fitted curve, in minutes."""
+
+    parameters = result.parameters
+    sigma = max(float(parameters["sigma_min"]), 1.0e-12)
+    if result.model == "gaussian":
+        return GAUSSIAN_FWHM_FACTOR * sigma
+    center = float(parameters["center_min"])
+    tau = max(float(parameters["tau_min"]), 1.0e-12)
+    grid = _model_grid(center, sigma, tau)
+    profile = emg_profile(grid, center, sigma, tau)
+    above = np.flatnonzero(profile >= 0.5)
+    if above.size < 2:
+        return None
+    return float(grid[above[-1]] - grid[above[0]])
+
+
+def detect_saturated_span(
+    dataset: Dataset,
+    region: PeakRegion,
+    min_run: int = SATURATION_MIN_RUN,
+    tolerance_ratio: float = SATURATION_TOLERANCE_RATIO,
+    min_width_ratio: float = SATURATION_MIN_WIDTH_RATIO,
+) -> Optional[SaturatedSpan]:
+    """Return the longest flat top of a clipped peak, or None when unclipped.
+
+    A sample counts as clipped when its baseline-corrected value is within
+    ``tolerance_ratio`` of the region's maximum. Only the longest consecutive
+    run of such samples is reported, and only when it reaches both ``min_run``
+    samples and ``min_width_ratio`` of the peak's width at half height, so an
+    ordinary rounded apex is not mistaken for saturation.
+    """
+
+    start, end = sorted((float(region.start_min), float(region.end_min)))
+    mask = (dataset.time_min >= start) & (dataset.time_min <= end)
+    if int(np.count_nonzero(mask)) < 3:
+        return None
+    time = np.asarray(dataset.time_min[mask], dtype=float)
+    raw = np.asarray(dataset.intensity_uv[mask], dtype=float)
+    baseline, _start, _end = calculate_baseline(raw, region)
+    corrected = raw - baseline
+    peak_height = float(np.max(corrected))
+    if not np.isfinite(peak_height) or peak_height <= 0:
+        return None
+    tolerance = peak_height * float(tolerance_ratio)
+    plateau = corrected >= peak_height - tolerance
+    best_start = best_length = current_start = current_length = 0
+    for index, flagged in enumerate(plateau):
+        if flagged:
+            if current_length == 0:
+                current_start = index
+            current_length += 1
+            if current_length > best_length:
+                best_start, best_length = current_start, current_length
+        else:
+            current_length = 0
+    if best_length < max(2, int(min_run)):
+        return None
+    apex_index = int(np.argmax(corrected))
+    half_width = _fwhm(time, corrected, apex_index, peak_height)
+    if half_width is None or half_width <= 0:
+        return None
+    plateau_width = float(time[best_start + best_length - 1] - time[best_start])
+    if plateau_width < half_width * float(min_width_ratio):
+        return None
+    return SaturatedSpan(
+        float(time[best_start]),
+        float(time[best_start + best_length - 1]),
+        int(best_length),
+    )
+
+
 def apply_fit_result(
     fitted_peak: PeakRegion,
     parent_peak: PeakRegion,
     result: PeakFitResult,
+    dataset: Optional[Dataset] = None,
+    saturated: Optional[SaturatedSpan] = None,
 ) -> PeakRegion:
     """Update one explicit fitted child without changing parent integration values."""
 
@@ -57,28 +210,66 @@ def apply_fit_result(
     fitted_peak.fit_rmse_uv = result.rmse_uv
     fitted_peak.fit_r_squared = result.r_squared
     fitted_peak.fit_aic = result.aic
-    # Fitted rows are descriptive results, not additional integrations.
-    fitted_peak.raw_height_uv = None
-    fitted_peak.raw_area_uv_min = None
-    fitted_peak.raw_area_uv_sec = None
-    fitted_peak.height_mau = None
-    fitted_peak.area_mau_min = None
-    fitted_peak.area_mau_sec = None
+    # Issue #181 blanked these because a fitted row is not another integration.
+    # Issue #218 fills them from the fitted curve instead: the area of the model
+    # is the whole point of correcting a clipped peak, and it cannot be read off
+    # the samples. They stay derived, estimated values -- every surface that
+    # shows them marks the row as fitted, and %Area keeps its measured meaning
+    # because dataset.fitted_peaks never enters the integration total.
+    area_uv_min = fitted_area_uv_min(result)
+    height_uv = float(result.parameters["amplitude_uv"])
+    aux = None
+    if dataset is not None:
+        aux = dataset.measurement.aux_range_au_per_v
+    scale = aux * 1.0e-3 if aux is not None and aux > 0 else None
+    fitted_peak.raw_height_uv = height_uv
+    fitted_peak.raw_area_uv_min = area_uv_min
+    fitted_peak.raw_area_uv_sec = area_uv_min * SECONDS_PER_MINUTE
+    fitted_peak.height_mau = height_uv * scale if scale is not None else None
+    fitted_peak.area_mau_min = area_uv_min * scale if scale is not None else None
+    fitted_peak.area_mau_sec = (
+        fitted_peak.area_mau_min * SECONDS_PER_MINUTE
+        if fitted_peak.area_mau_min is not None
+        else None
+    )
+    # %Area stays a property of the measured integrations only.
     fitted_peak.area_percent = None
-    fitted_peak.fwhm_min = None
+    fitted_peak.fwhm_min = fitted_fwhm_min(result)
     fitted_peak.gradient_a_pct = None
     fitted_peak.gradient_b_pct = None
     fitted_peak.gradient_c_pct = None
     fitted_peak.gradient_d_pct = None
+    # Quantitation stays blank: an amount derived from an estimated area would
+    # be indistinguishable from a measured one in the same column.
     fitted_peak.amount_nmol = None
     fitted_peak.amount_ug = None
+    if saturated is not None:
+        fitted_peak.integration_source = "saturation_fit"
+        fitted_peak.fit_parameters["saturated_start_min"] = float(
+            saturated.start_min
+        )
+        fitted_peak.fit_parameters["saturated_end_min"] = float(saturated.end_min)
+        fitted_peak.fit_parameters["saturated_point_count"] = float(
+            saturated.point_count
+        )
     return fitted_peak
 
 
 def fitted_peak_from_result(
-    parent_peak: PeakRegion, result: PeakFitResult
+    parent_peak: PeakRegion,
+    result: PeakFitResult,
+    dataset: Optional[Dataset] = None,
+    saturated: Optional[SaturatedSpan] = None,
 ) -> PeakRegion:
-    return apply_fit_result(PeakRegion(), parent_peak, result)
+    return apply_fit_result(
+        PeakRegion(), parent_peak, result, dataset, saturated
+    )
+
+
+def is_saturation_corrected(peak: PeakRegion) -> bool:
+    """Report whether a fitted row came from the saturated-peak correction."""
+
+    return bool(peak.is_fitted) and peak.integration_source == "saturation_fit"
 
 
 def mirror_fitted_peak_for_legacy(
@@ -159,6 +350,21 @@ def _score_profile(y, profile, parameter_count: int) -> Tuple[float, float, floa
     return amplitude, rmse, r_squared, aic
 
 
+def _search_grid(x, y, centers, sigmas, taus, best=None):
+    for center in centers:
+        for sigma in sigmas:
+            for tau in taus:
+                profile = (
+                    gaussian_profile(x, center, sigma)
+                    if tau is None
+                    else emg_profile(x, center, sigma, tau)
+                )
+                score = _score_profile(y, profile, 3 if tau is None else 4)
+                if best is None or score[3] < best[0][3]:
+                    best = (score, float(center), float(sigma), tau, profile)
+    return best
+
+
 def _fit_model(x, y, model: str) -> PeakFitResult:
     span = float(x[-1] - x[0])
     step = max(float(np.median(np.diff(x))), span / 1000.0, 1.0e-9)
@@ -171,30 +377,51 @@ def _fit_model(x, y, model: str) -> PeakFitResult:
     sigmas = np.geomspace(
         max(step, span / 200.0), max(step * 1.01, span / 2.5), 55
     )
-    best = None
     taus = (None,) if model == "gaussian" else np.geomspace(max(step, span / 300.0), max(step * 1.01, span), 18)
-    for center in centers:
-        for sigma in sigmas:
-            for tau in taus:
-                profile = (
-                    gaussian_profile(x, center, sigma)
-                    if tau is None
-                    else emg_profile(x, center, sigma, tau)
-                )
-                score = _score_profile(y, profile, 3 if tau is None else 4)
-                if best is None or score[3] < best[0][3]:
-                    best = (score, float(center), float(sigma), tau, profile)
+    best = _search_grid(x, y, centers, sigmas, taus)
+    # The coarse sweep can land a fraction of a grid step away from the best
+    # centre. That is harmless while the apex samples are present and dominate
+    # the fit, but the saturated-peak correction fits the flanks alone, where
+    # the same offset changes the reconstructed height and area noticeably.
+    # Each refinement grid is centred on the current optimum and therefore
+    # contains it, so the fit can only improve.
+    center_step = float(centers[1] - centers[0]) if len(centers) > 1 else step
+    sigma_ratio = float(sigmas[1] / sigmas[0]) if len(sigmas) > 1 else 1.5
+    tau_ratio = float(taus[1] / taus[0]) if taus[0] is not None and len(taus) > 1 else 1.5
+    for _round in range(3):
+        _score, center, sigma, tau, _profile = best
+        refined_centers = np.linspace(center - center_step, center + center_step, 9)
+        refined_sigmas = np.geomspace(sigma / sigma_ratio, sigma * sigma_ratio, 9)
+        refined_taus = (
+            (None,)
+            if tau is None
+            else np.geomspace(tau / tau_ratio, tau * tau_ratio, 9)
+        )
+        best = _search_grid(x, y, refined_centers, refined_sigmas, refined_taus, best)
+        center_step /= 4.0
+        sigma_ratio = sigma_ratio ** 0.25
+        tau_ratio = tau_ratio ** 0.25
     score, center, sigma, tau, profile = best
     amplitude, rmse, r_squared, aic = score
     parameters = {"amplitude_uv": amplitude, "center_min": center, "sigma_min": sigma}
     if tau is not None:
         parameters["tau_min"] = float(tau)
-    fitted_apex = float(x[int(np.argmax(profile))])
+    fitted_apex = fitted_apex_min(model, parameters)
     return PeakFitResult(model, parameters, fitted_apex, rmse, r_squared, aic, int(x.size))
 
 
-def fit_peak(dataset: Dataset, region: PeakRegion, model: str = "auto") -> PeakFitResult:
-    """Fit a baseline-corrected region without mutating Dataset or PeakRegion."""
+def fit_peak(
+    dataset: Dataset,
+    region: PeakRegion,
+    model: str = "auto",
+    exclude_range=None,
+) -> PeakFitResult:
+    """Fit a baseline-corrected region without mutating Dataset or PeakRegion.
+
+    ``exclude_range`` drops a closed time interval from the samples the model
+    sees. The saturated-peak correction uses it to fit the unclipped flanks
+    only; nothing is smoothed or interpolated, the points are simply not used.
+    """
 
     if model not in ("auto", "gaussian", "emg"):
         raise ValueError("Unknown peak fit model: %s" % model)
@@ -206,6 +433,14 @@ def fit_peak(dataset: Dataset, region: PeakRegion, model: str = "auto") -> PeakF
     raw = np.asarray(dataset.intensity_uv[mask], dtype=float)
     baseline, _start, _end = calculate_baseline(raw, region)
     y = raw - baseline
+    if exclude_range is not None:
+        low, high = sorted((float(exclude_range[0]), float(exclude_range[1])))
+        keep = (x < low) | (x > high)
+        if int(np.count_nonzero(keep)) < 8:
+            raise ValueError(
+                "Peak fitting requires at least eight unsaturated data points"
+            )
+        x, y = x[keep], y[keep]
     if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
         raise ValueError("Peak fitting requires finite values")
     if float(np.max(y)) <= 0:
@@ -224,3 +459,36 @@ def fit_peak(dataset: Dataset, region: PeakRegion, model: str = "auto") -> PeakF
     # tailed, in addition to the information-criterion improvement.
     materially_better = emg.r_squared - gaussian.r_squared >= 0.001
     return emg if materially_better and emg.aic + 2.0 < gaussian.aic else gaussian
+
+
+def fit_saturated_peak(
+    dataset: Dataset,
+    region: PeakRegion,
+    model: str = "auto",
+    saturated_range=None,
+):
+    """Rebuild a clipped peak from its unsaturated flanks.
+
+    The flat top is either detected or supplied by the caller, then excluded
+    from the fit, so the model describes the shape the detector could still
+    record. Raw arrays and the parent integration are untouched.
+    """
+
+    if saturated_range is None:
+        span = detect_saturated_span(dataset, region)
+        if span is None:
+            raise ValueError("not_saturated")
+    else:
+        low, high = sorted(
+            (float(saturated_range[0]), float(saturated_range[1]))
+        )
+        start, end = sorted((float(region.start_min), float(region.end_min)))
+        if low < start or high > end or low >= high:
+            raise ValueError("saturated_range_outside_peak")
+        mask = (dataset.time_min >= low) & (dataset.time_min <= high)
+        count = int(np.count_nonzero(mask))
+        if count < 2:
+            raise ValueError("saturated_range_too_narrow")
+        span = SaturatedSpan(low, high, count)
+    result = fit_peak(dataset, region, model, exclude_range=(span.start_min, span.end_min))
+    return result, span

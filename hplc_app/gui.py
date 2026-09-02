@@ -48,6 +48,7 @@ from .dialogs import (
     ThreeDChromatogramDialog,
     WorkDirectoriesDialog,
     dialog_exec,
+    SaturatedRangeDialog,
 )
 from .database import initialize_database, sync_project_to_database
 from .exporters import (
@@ -84,6 +85,8 @@ from .peak_fitting import (
     fit_peak,
     fitted_peak_from_result,
     mirror_fitted_peak_for_legacy,
+    fit_saturated_peak,
+    is_saturation_corrected,
 )
 from .plot3d import ThreeDPlotOptions, suggest_z_tick_interval
 from .preset_store import (
@@ -245,6 +248,12 @@ DATASET_COLUMNS_BY_ID = {
     for logical_column, column_id in DATASET_COLUMN_IDS.items()
 }
 DATASET_HIDDEN_COLUMN_IDS = ("group", "source")
+
+# Columns whose fitted-row values are derived from the model curve rather than
+# measured. PEAK_AREA_PERCENT_COLUMN is absent on purpose: fitted rows never
+# receive a %Area, because that share belongs to the measured integrations.
+ESTIMATED_PEAK_COLUMNS = frozenset((3, 4, 5, 6, 7, 9))
+ESTIMATED_VALUE_BACKGROUND = "#fdf2ff"
 
 MOUSE_MODE_IDS = (
     "normal",
@@ -1497,6 +1506,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fraction_numeric_button = QtWidgets.QPushButton()
         self.auto_detect_button = QtWidgets.QPushButton()
         self.fit_peak_button = QtWidgets.QPushButton()
+        self.saturation_correction_button = QtWidgets.QPushButton()
         self.select_all_peaks_button = QtWidgets.QPushButton()
         self.delete_peak_button = QtWidgets.QPushButton()
         self.integration_list_button = QtWidgets.QPushButton()
@@ -1507,14 +1517,17 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.split_peak_button, 1, 2)
         integration_controls.addWidget(self.auto_detect_button, 2, 0, 1, 2)
         integration_controls.addWidget(self.fit_peak_button, 2, 2)
-        integration_controls.addWidget(self.select_all_peaks_button, 3, 0, 1, 2)
-        integration_controls.addWidget(self.delete_peak_button, 3, 2)
         integration_controls.addWidget(
-            self.fraction_numeric_button, 4, 0, 1, 2
+            self.saturation_correction_button, 3, 0, 1, 3
         )
-        integration_controls.addWidget(self.clear_fractions_button, 4, 2)
-        integration_controls.addWidget(self.integration_list_button, 5, 0, 1, 3)
-        integration_controls.setRowStretch(6, 1)
+        integration_controls.addWidget(self.select_all_peaks_button, 4, 0, 1, 2)
+        integration_controls.addWidget(self.delete_peak_button, 4, 2)
+        integration_controls.addWidget(
+            self.fraction_numeric_button, 5, 0, 1, 2
+        )
+        integration_controls.addWidget(self.clear_fractions_button, 5, 2)
+        integration_controls.addWidget(self.integration_list_button, 6, 0, 1, 3)
+        integration_controls.setRowStretch(7, 1)
 
         controls.addWidget(self.display_group, 4)
         controls.addWidget(self.navigation_group, 2)
@@ -1568,6 +1581,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.delete_peak_button.clicked.connect(self.delete_peak)
         self.auto_detect_button.clicked.connect(self.auto_detect_peaks)
         self.fit_peak_button.clicked.connect(self.fit_selected_peak)
+        self.saturation_correction_button.clicked.connect(
+            self.correct_saturated_peak
+        )
         self.select_all_peaks_button.clicked.connect(self.peak_table.selectAll)
         self.integration_list_button.clicked.connect(self.open_integration_list)
         self.move_trace_button.toggled.connect(self._toggle_move_mode)
@@ -2208,6 +2224,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.annotation_action.setToolTip(t("text_annotation_hint"))
         self.auto_detect_button.setText(t("auto_detect"))
         self.fit_peak_button.setText(t("fit_peak"))
+        self.saturation_correction_button.setText(t("saturation_correction"))
+        self.saturation_correction_button.setToolTip(
+            t("saturation_correction_hint")
+        )
         self.select_all_peaks_button.setText(t("select_all_peaks"))
         self.integration_list_button.setText(t("integration_list"))
         self.peak_title.setText(t("peaks"))
@@ -2743,6 +2763,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 fitted_number += 1
                 row_label = "F%d" % fitted_number
                 peak_type = "フィット" if self._application_language == "ja" else "Fit"
+                if is_saturation_corrected(peak):
+                    peak_type = (
+                        "フィット（飽和補正）"
+                        if self._application_language == "ja"
+                        else "Fit (saturation corrected)"
+                    )
                 parent_label = (
                     "#%d" % parent_numbers[peak.parent_peak_id]
                     if peak.parent_peak_id in parent_numbers
@@ -2791,6 +2817,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 if column == 0:
                     item.setData(USER_ROLE, peak.id)
+                # Since Issue #218 a fitted row carries derived height, area and
+                # width read off the model curve. They share their columns with
+                # measured values, so they are tinted and explained rather than
+                # left to look like something the detector recorded.
+                if peak.is_fitted and column in ESTIMATED_PEAK_COLUMNS:
+                    item.setBackground(QtGui.QColor(ESTIMATED_VALUE_BACKGROUND))
+                    item.setToolTip(self.translator("estimated_from_fit"))
                 table.setItem(row, column, item)
         table.resizeColumnsToContents()
         table.setColumnWidth(PEAK_NOTES_COLUMN, 240)
@@ -5623,10 +5656,10 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             return
         if fitted_peak is None:
-            fitted_peak = fitted_peak_from_result(parent_peak, result)
+            fitted_peak = fitted_peak_from_result(parent_peak, result, dataset)
             dataset.fitted_peaks.append(fitted_peak)
         else:
-            apply_fit_result(fitted_peak, parent_peak, result)
+            apply_fit_result(fitted_peak, parent_peak, result, dataset)
         mirror_fitted_peak_for_legacy(parent_peak, fitted_peak)
         self._push_undo_snapshot(
             before,
@@ -5647,6 +5680,130 @@ class MainWindow(QtWidgets.QMainWindow):
             "%s: R²=%.5f, RMSE=%.4g µV"
             % (result.model.upper(), result.r_squared, result.rmse_uv),
             7000,
+        )
+
+    def _selected_fit_target(self):
+        """Return (dataset, parent integration, existing fitted child)."""
+
+        dataset = self._selected_dataset()
+        selected_peak = self._peak_at_table_row(self.peak_table.currentRow(), dataset)
+        if dataset is None or selected_peak is None:
+            QtWidgets.QMessageBox.information(
+                self, APP_NAME, self.translator("select_peak")
+            )
+            return None
+        fitted_peak = selected_peak if selected_peak.is_fitted else None
+        parent_peak = (
+            dataset.parent_peak_for(selected_peak)
+            if fitted_peak is not None
+            else selected_peak
+        )
+        if parent_peak is None:
+            QtWidgets.QMessageBox.warning(
+                self, self.translator("warning"), self.translator("missing_fit_parent")
+            )
+            return None
+        return dataset, parent_peak, fitted_peak
+
+    def _ask_fit_model(self):
+        labels = (
+            ("自動選択", "auto"),
+            ("Gaussian", "gaussian"),
+            ("EMG（テーリング）", "emg"),
+        ) if self._application_language == "ja" else (
+            ("Automatic", "auto"),
+            ("Gaussian", "gaussian"),
+            ("EMG (tailing)", "emg"),
+        )
+        selected_label, accepted = QtWidgets.QInputDialog.getItem(
+            self,
+            self.translator("fit_peak"),
+            "モデル" if self._application_language == "ja" else "Model",
+            [label for label, _value in labels],
+            0,
+            False,
+        )
+        return dict(labels).get(selected_label, "auto") if accepted else None
+
+    def correct_saturated_peak(self):
+        """Rebuild a clipped peak from its unsaturated flanks as a fitted row."""
+
+        target = self._selected_fit_target()
+        if target is None:
+            return
+        dataset, parent_peak, fitted_peak = target
+        model = self._ask_fit_model()
+        if model is None:
+            return
+        saturated_range = None
+        while True:
+            try:
+                result, span = fit_saturated_peak(
+                    dataset, parent_peak, model, saturated_range
+                )
+                break
+            except ValueError as exc:
+                reason = str(exc)
+                if reason == "not_saturated" and saturated_range is None:
+                    answer = QtWidgets.QMessageBox.question(
+                        self,
+                        self.translator("saturation_correction"),
+                        self.translator("not_saturated"),
+                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    )
+                    if answer != QtWidgets.QMessageBox.Yes:
+                        return
+                    dialog = SaturatedRangeDialog(
+                        parent_peak.start_min,
+                        parent_peak.end_min,
+                        self._application_language,
+                        self,
+                    )
+                    if not dialog_exec(dialog):
+                        return
+                    saturated_range = dialog.saturated_range
+                    continue
+                message = (
+                    self.translator(reason)
+                    if reason in (
+                        "not_saturated",
+                        "saturated_range_outside_peak",
+                        "saturated_range_too_narrow",
+                    )
+                    else reason
+                )
+                QtWidgets.QMessageBox.warning(
+                    self, self.translator("warning"), message
+                )
+                return
+        before = self._capture_analysis_state()
+        if fitted_peak is None:
+            fitted_peak = fitted_peak_from_result(
+                parent_peak, result, dataset, span
+            )
+            dataset.fitted_peaks.append(fitted_peak)
+        else:
+            apply_fit_result(fitted_peak, parent_peak, result, dataset, span)
+        mirror_fitted_peak_for_legacy(parent_peak, fitted_peak)
+        self._push_undo_snapshot(
+            before,
+            self._history_label("飽和ピーク補正", "Saturated peak correction"),
+        )
+        self.project.dirty = True
+        self._refresh_peak_table([fitted_peak.id])
+        self._plot()
+        self._update_title()
+        self.statusBar().showMessage(
+            "%s: %s %.4f–%.4f min (%d pts), R²=%.5f"
+            % (
+                self.translator("saturation_corrected"),
+                result.model.upper(),
+                span.start_min,
+                span.end_min,
+                span.point_count,
+                result.r_squared,
+            ),
+            9000,
         )
 
     def _sync_legacy_fit_for_parent(self, dataset: Dataset, parent_id: str):

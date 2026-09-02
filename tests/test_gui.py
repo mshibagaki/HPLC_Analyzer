@@ -20,6 +20,7 @@ from hplc_app.dialogs import (
     AutoPeakDetectionDialog,
     AxisLabelsDialog,
     BatchMetadataDialog,
+    ConditionCopyDialog,
     DirectoryImportDialog,
     DisplaySettingsDialog,
     FractionRangeDialog,
@@ -6142,6 +6143,154 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_condition_copy_requires_one_source_and_handles_empty_session(self):
+        window = self.make_window()
+        dialog = BatchMetadataDialog(
+            window.project, window.project.datasets[0].id, "en"
+        )
+        dialog.table.item(1, 0).setCheckState(CHECKED)
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._copy_conditions()
+        warning.assert_called_once()
+        self.assertIn("exactly one", warning.call_args.args[2])
+        self.assertIsNone(dialog._condition_copy_payload)
+
+        dialog._condition_copy_payload = None
+        with patch.object(QtWidgets.QMessageBox, "information") as information:
+            dialog._paste_conditions()
+        information.assert_called_once()
+        self.assertIn("before pasting", information.call_args.args[2])
+        dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_condition_copy_pastes_only_chosen_values_as_one_undo_step(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        original = deepcopy(window.project)
+        second_before = deepcopy(second)
+        second_aux = second.measurement.aux_range_au_per_v
+        second_label = second.label
+
+        def accept_copy(dialog):
+            self.assertIsInstance(dialog, BatchMetadataDialog)
+            dialog.table.item(0, 2).setText("Copied group")
+            dialog.table.item(0, 4).setText("251")
+            dialog.table.item(0, 5).setText("9")
+
+            def choose_fields(copy_dialog):
+                self.assertIsInstance(copy_dialog, ConditionCopyDialog)
+                self.assertEqual(
+                    set(copy_dialog.field_checks),
+                    {field for field, _column, _ja, _en in dialog.COPY_FIELDS},
+                )
+                for check in copy_dialog.field_checks.values():
+                    check.setChecked(False)
+                copy_dialog.field_checks["group"].setChecked(True)
+                copy_dialog.field_checks["wavelength_nm"].setChecked(True)
+                return True
+
+            with patch(
+                "hplc_app.dialogs.dialog_exec", side_effect=choose_fields
+            ):
+                dialog._copy_conditions()
+            self.assertEqual(
+                set(dialog._condition_copy_payload["columns"]),
+                {"group", "wavelength_nm"},
+            )
+            self.assertNotIn("gradient", dialog._condition_copy_payload)
+
+            # Keep the source selected and add a second destination: paste is
+            # intentionally valid for multiple selected rows.
+            dialog.table.item(1, 0).setCheckState(CHECKED)
+            dialog._paste_conditions()
+            self.assertEqual(dialog.table.item(1, 2).text(), "Copied group")
+            self.assertEqual(dialog.table.item(1, 4).text(), "251")
+            self.assertEqual(dialog.table.item(1, 1).text(), second_label)
+            self.assertEqual(
+                dialog.table.item(1, 5).text(),
+                "" if second_aux is None else "%g" % second_aux,
+            )
+            dialog._accept()
+            return dialog.result()
+
+        with patch("hplc_app.gui.dialog_exec", side_effect=accept_copy):
+            window.edit_batch_metadata()
+
+        self.assertEqual(first.measurement.group, "Copied group")
+        self.assertEqual(second.measurement.group, "Copied group")
+        self.assertEqual(first.measurement.wavelength_nm, 251.0)
+        self.assertEqual(second.measurement.wavelength_nm, 251.0)
+        self.assertEqual(second.measurement.aux_range_au_per_v, second_aux)
+        self.assertEqual(second.label, second_label)
+        self.assertEqual(second.y_axis, second_before.y_axis)
+        for field, _column, _ja, _en in BatchMetadataDialog.COPY_FIELDS:
+            if field in {
+                "label", "group", "y_axis", "wavelength_nm", "gradient"
+            }:
+                continue
+            self.assertEqual(
+                getattr(second.measurement, field),
+                getattr(second_before.measurement, field),
+            )
+        self.assertEqual(
+            second.measurement.gradient, second_before.measurement.gradient
+        )
+        self.assertEqual(
+            second.measurement.solvents, second_before.measurement.solvents
+        )
+        self.assertEqual(len(window._undo_stack), 1)
+        window.undo()
+        self.assertEqual(
+            [dataset.measurement.group for dataset in window.project.datasets],
+            [dataset.measurement.group for dataset in original.datasets],
+        )
+        self.assertEqual(
+            [dataset.measurement.wavelength_nm for dataset in window.project.datasets],
+            [dataset.measurement.wavelength_nm for dataset in original.datasets],
+        )
+        window.redo()
+        self.assertEqual(
+            [dataset.measurement.wavelength_nm for dataset in window.project.datasets],
+            [251.0, 251.0],
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_condition_copy_can_stage_only_the_gradient_program(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        first.gradient_preset_name = "Copied gradient"
+        second.measurement.gradient = []
+        second.gradient_preset_name = ""
+        second_wavelength = second.measurement.wavelength_nm
+        dialog = BatchMetadataDialog(window.project, first.id, "en")
+
+        def choose_gradient(copy_dialog):
+            for check in copy_dialog.field_checks.values():
+                check.setChecked(False)
+            copy_dialog.field_checks["gradient"].setChecked(True)
+            return True
+
+        with patch(
+            "hplc_app.dialogs.dialog_exec", side_effect=choose_gradient
+        ):
+            dialog._copy_conditions()
+        dialog._set_all_checks(False)
+        dialog.table.item(1, 0).setCheckState(CHECKED)
+        dialog._paste_conditions()
+        self.assertEqual(
+            dialog.table.item(1, dialog.GRADIENT_COLUMN).text(),
+            "Copied gradient",
+        )
+        dialog._accept()
+        self.assertEqual(second.measurement.gradient, first.measurement.gradient)
+        self.assertEqual(second.measurement.solvents, first.measurement.solvents)
+        self.assertEqual(second.gradient_preset_name, "Copied gradient")
+        self.assertEqual(second.measurement.wavelength_nm, second_wavelength)
+        window.project.dirty = False
+        window.close()
+
     def test_metadata_sections_no_moving_average_or_dilution_and_help_equation(self):
         window = self.make_window()
         dialog = MetadataDialog(window.project.datasets[0], "ja")
@@ -7234,9 +7383,19 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(
             dialog.table.horizontalHeaderItem(dialog.RUN_ID_COLUMN).text(), "Run ID"
         )
-        # Appended logically, shown next to "Use" so a row's Run is readable
-        # without disturbing the existing column numbers.
+        self.assertEqual(
+            dialog.table.horizontalHeaderItem(dialog.TIMESTAMP_COLUMN).text(),
+            "Timestamp",
+        )
+        self.assertEqual(
+            dialog.table.horizontalHeaderItem(0).text(), "Select"
+        )
+        self.assertEqual(dialog.table.item(0, 0).checkState(), CHECKED)
+        self.assertEqual(dialog.table.item(1, 0).checkState(), UNCHECKED)
+        # Appended logically, shown next to Select so one Run identity remains
+        # readable without disturbing the existing editable column numbers.
         self.assertEqual(header.visualIndex(dialog.RUN_ID_COLUMN), 1)
+        self.assertEqual(header.visualIndex(dialog.TIMESTAMP_COLUMN), 2)
         self.assertEqual(
             [
                 dialog.table.item(row, dialog.RUN_ID_COLUMN).text()
@@ -7244,11 +7403,22 @@ class GuiTests(unittest.TestCase):
             ],
             [first.run_id, second.run_id],
         )
+        self.assertEqual(
+            [
+                dialog.table.item(row, dialog.TIMESTAMP_COLUMN).text()
+                for row in range(dialog.table.rowCount())
+            ],
+            [
+                first.measurement.acquisition_datetime,
+                second.measurement.acquisition_datetime,
+            ],
+        )
         self.assertNotEqual(first.run_id, second.run_id)
         self.assertFalse(
             bool(dialog.table.item(0, dialog.RUN_ID_COLUMN).flags() & ITEM_IS_EDITABLE)
         )
         self.assertNotIn(dialog.RUN_ID_COLUMN, dialog.EDITABLE_COLUMNS)
+        self.assertNotIn(dialog.TIMESTAMP_COLUMN, dialog.EDITABLE_COLUMNS)
         dialog.close()
 
         shared_run = window.project.run_for(first)
@@ -7726,9 +7896,13 @@ class GuiTests(unittest.TestCase):
     def test_run_group_and_ungroup_preserve_channel_values_and_are_undoable(self):
         window = self.make_window()
         first, second = window.project.datasets
-        first.label = "Authoritative"
+        first.label = "Target label"
         first.measurement.column_name = "C4"
         second.measurement.column_name = "Other"
+        first.measurement.acquisition_datetime = "2026-01-02 03:04:05"
+        second.measurement.acquisition_datetime = "2026-02-03 04:05:06"
+        target_timestamp = first.measurement.acquisition_datetime
+        source_timestamp = second.measurement.acquisition_datetime
         first_wavelength = first.measurement.wavelength_nm
         second_wavelength = second.measurement.wavelength_nm
         original_run_ids = [first.run_id, second.run_id]
@@ -7753,18 +7927,34 @@ class GuiTests(unittest.TestCase):
             return_value=QtWidgets.QMessageBox.Yes,
         ) as question:
             window.group_selected_runs()
-        self.assertIn("Authoritative", question.call_args.args[2])
+        question_text = question.call_args.args[2]
+        self.assertIn("Target label", question_text)
+        self.assertIn("統合先 Run", question_text)
+        self.assertNotIn("正本Run", question_text)
+        for run_id in original_run_ids:
+            self.assertIn(run_id, question_text)
         self.assertEqual(first.run_id, second.run_id)
-        self.assertEqual(second.label, "Authoritative")
+        self.assertEqual(second.label, "Target label")
         self.assertEqual(second.measurement.column_name, "C4")
+        self.assertEqual(first.measurement.acquisition_datetime, target_timestamp)
+        self.assertEqual(second.measurement.acquisition_datetime, target_timestamp)
         self.assertEqual(first.measurement.wavelength_nm, first_wavelength)
         self.assertEqual(second.measurement.wavelength_nm, second_wavelength)
         self.assertEqual(len(window.project.runs), 1)
         self.assertEqual(len(window._undo_stack), 1)
+        self.assertEqual(window._undo_stack[-1][0], "統合先Runへ統合")
+        self.assertNotIn("正本", window._undo_stack[-1][0])
         window.undo()
         self.assertEqual(
             [dataset.run_id for dataset in window.project.datasets],
             original_run_ids,
+        )
+        self.assertEqual(
+            [
+                dataset.measurement.acquisition_datetime
+                for dataset in window.project.datasets
+            ],
+            [target_timestamp, source_timestamp],
         )
         window.redo()
         self.assertEqual(
@@ -7784,7 +7974,7 @@ class GuiTests(unittest.TestCase):
             window.project.datasets[0].run_id,
             window.project.datasets[1].run_id,
         )
-        self.assertEqual(window.project.datasets[1].label, "Authoritative")
+        self.assertEqual(window.project.datasets[1].label, "Target label")
         self.assertEqual(window.project.datasets[1].measurement.column_name, "C4")
         split_id = window.project.datasets[1].run_id
         next_number = window.project.next_run_number
@@ -7797,6 +7987,82 @@ class GuiTests(unittest.TestCase):
         window.redo()
         self.assertEqual(window.project.datasets[1].run_id, split_id)
         self.assertEqual(window.project.next_run_number, next_number)
+        window.project.dirty = False
+        window.close()
+
+    def test_conditions_dialog_routes_run_group_and_ungroup_to_mainwindow(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        first.measurement.acquisition_datetime = "2026-03-04 05:06:07"
+        second.measurement.acquisition_datetime = "2026-04-05 06:07:08"
+        target_timestamp = first.measurement.acquisition_datetime
+        original_ids = [first.run_id, second.run_id]
+
+        def group_from_dialog(dialog):
+            self.assertTrue(dialog.group_runs_button.isEnabled())
+            self.assertTrue(dialog.ungroup_runs_button.isEnabled())
+            dialog.table.item(1, 0).setCheckState(CHECKED)
+            dialog.table.setCurrentCell(0, 1)
+            dialog._group_checked_runs()
+            self.assertEqual(
+                [
+                    dialog.table.item(row, dialog.RUN_ID_COLUMN).text()
+                    for row in range(2)
+                ],
+                [original_ids[0], original_ids[0]],
+            )
+            self.assertEqual(
+                [
+                    dialog.table.item(row, dialog.TIMESTAMP_COLUMN).text()
+                    for row in range(2)
+                ],
+                [target_timestamp, target_timestamp],
+            )
+            return False
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ), patch("hplc_app.gui.dialog_exec", side_effect=group_from_dialog):
+            window.edit_batch_metadata()
+
+        self.assertEqual(
+            window.project.datasets[0].run_id,
+            window.project.datasets[1].run_id,
+        )
+        self.assertEqual(
+            window.project.datasets[0].measurement.acquisition_datetime,
+            target_timestamp,
+        )
+        self.assertEqual(
+            window.project.datasets[1].measurement.acquisition_datetime,
+            target_timestamp,
+        )
+        self.assertEqual(len(window._undo_stack), 1)
+
+        def ungroup_from_dialog(dialog):
+            dialog._set_all_checks(False)
+            dialog.table.item(1, 0).setCheckState(CHECKED)
+            dialog.table.setCurrentCell(1, 1)
+            dialog._ungroup_checked_runs()
+            self.assertNotEqual(
+                dialog.table.item(0, dialog.RUN_ID_COLUMN).text(),
+                dialog.table.item(1, dialog.RUN_ID_COLUMN).text(),
+            )
+            return False
+
+        with patch.object(
+            QtWidgets.QMessageBox,
+            "question",
+            return_value=QtWidgets.QMessageBox.Yes,
+        ), patch("hplc_app.gui.dialog_exec", side_effect=ungroup_from_dialog):
+            window.edit_batch_metadata()
+        self.assertNotEqual(
+            window.project.datasets[0].run_id,
+            window.project.datasets[1].run_id,
+        )
+        self.assertEqual(len(window._undo_stack), 2)
         window.project.dirty = False
         window.close()
 

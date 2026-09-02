@@ -169,8 +169,8 @@ def benchmark(
     inputs=(),
     recursive=False,
 ):
-    if QT_API != 6 or not pyqtgraph_scene_available():
-        raise RuntimeError("The integrated benchmark requires Qt 6 and PyQtGraph")
+    if not pyqtgraph_scene_available():
+        raise RuntimeError("The integrated benchmark requires PyQtGraph")
 
     application = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     original_format = QtCore.QSettings.defaultFormat()
@@ -236,6 +236,10 @@ def benchmark(
             if window is not None:
                 window.project.dirty = False
                 window.close()
+                # PySide2 defers destruction of the replaced native scene.
+                # Drain close events before QApplication teardown so a
+                # successful Qt 5 benchmark exits cleanly as well as Qt 6.
+                application.processEvents()
             QtCore.QSettings.setDefaultFormat(original_format)
             if original_config is None:
                 os.environ.pop("HPLC_ANALYZER_CONFIG_DIR", None)

@@ -27,8 +27,8 @@ hiddenimports = [
     "matplotlib.backends.backend_pdf",
 ]
 # The screen preview loads PyQtGraph through importlib, so PyInstaller cannot see
-# it.  Bundle it only when the optional Windows 11 pin is installed; the shared
-# Windows 7 build never installs it and stays unchanged.
+# it. Bundle the platform-pinned version whenever it is installed: 0.13.7 on
+# Windows 11 or the Python 3.8 / NumPy 1.20-compatible 0.13.3 on Windows 7.
 if importlib.util.find_spec("pyqtgraph") is not None:
     hiddenimports += [
         "pyqtgraph",

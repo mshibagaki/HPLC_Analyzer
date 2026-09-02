@@ -33,6 +33,7 @@ EXPECTED_RELATIVE_FILES = (
     "win7_offline/wheels/pyinstaller-5.13.2-py3-none-win32.whl",
     "win7_offline/wheels/pyinstaller_hooks_contrib-2023.6-py2.py3-none-any.whl",
     "win7_offline/wheels/pyparsing-3.1.4-py3-none-any.whl",
+    "win7_offline/wheels/pyqtgraph-0.13.3-py3-none-any.whl",
     "win7_offline/wheels/python_dateutil-2.9.0.post0-py2.py3-none-any.whl",
     "win7_offline/wheels/pywin32_ctypes-0.2.2-py3-none-any.whl",
     "win7_offline/wheels/setuptools-68.2.2-py3-none-any.whl",

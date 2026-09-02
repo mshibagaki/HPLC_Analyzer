@@ -8,11 +8,11 @@
 
 提供されたASCII実データに加え、`rawdata`内の6組の`.gcd` / `.TXT`で、GCD直接読込の取得日時、全強度点、時間軸、ベンダーピーク表の主要値がASCII出力と一致することを検証しています。
 
-v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セット（Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2 5.15.2.1、Qt 5.15.2、Matplotlib 3.7.5、PyInstaller 5.13.2）を固定しました。各native依存を別プロセスで順番にimportし、どれか1つでも異常終了した場合はPyInstallerへ進みません。Windows 7では画面表示だけをピーク保持型のmin/max envelopeで間引く軽量描画を標準にし、解析・CSV・PNG・SVG・PDF・A4レポートは常に元データを使います。Windows 11 64-bit版は高品質描画と専用の新しい依存セットを維持し、両版の`.hplcproj`とプリセット形式は共通です。
+v1.2.4では、Windows 7 SP1 32-bit / Core 2実機で確認したlegacy依存セット（Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2 5.15.2.1、Qt 5.15.2、Matplotlib 3.7.5、PyInstaller 5.13.2）を固定しました。現在の開発版は、この数値・Qt・ビルド依存を変えず、Python 3.8 / NumPy 1.20対応のPyQtGraph 0.13.3だけをWindows 7用に追加しています。各依存を別プロセスで順番にimportし、どれか1つでも異常終了した場合はPyInstallerへ進みません。Windows 7ではMatplotlibを初期画面とし、任意でPyQtGraphへ切り替えられます。どちらも画面表示だけをピーク保持型のmin/max envelopeで間引き、解析・CSV・PNG・SVG・PDF・A4レポートは常に元データを使います。Windows 11 64-bit版は高品質描画と専用の新しい依存セットを維持し、両版の`.hplcproj`とプリセット形式は共通です。
 
-## 実験的なPyQtGraph表示（開発版）
+## PyQtGraph画面描画（開発版）
 
-Windows 11向けのQt 6環境では、グラフ上部の「PyQtGraph表示（実験的・今回のみ）」で試験表示に切り替えられます。標準は引き続きMatplotlibで、この選択は保存されません。
+Windows 11 / Qt 6ではPyQtGraphが画面描画の既定です。Windows 7 / Qt 5ではMatplotlibが既定で、グラフ上部の「PyQtGraph画面描画」を明示的に選んだ場合だけPyQtGraph 0.13.3へ切り替わります。選択はOSごとのアプリ設定として再起動後も保持され、`.hplcproj`には入りません。
 
 - 通常表示・概要＋詳細・Y1/Y2の上下2画面、ホイールズーム、ツールバーのパン／戻る／進む／ホーム、軸リセットに対応します。表示範囲と履歴は従来画面と共有します。2画面では時間軸を共有し、自動ズームとパンは操作した段の縦軸だけを変更します。ズーム方向を明示指定した場合は従来画面と同じ動作です。
 - 上下2画面のB%表示は、両方に表示する／両方とも非表示の共通切り替えです。ONでは選択中のクロマトグラムの同じグラジエントと濃度目盛りを両段に表示します。選択対象が非表示またはグラジエント未登録なら両段とも表示しません。通常のMatplotlib描画・図保存でも同じ動作です。
@@ -29,7 +29,7 @@ Windows 11向けのQt 6環境では、グラフ上部の「PyQtGraph表示（実
 - ツールバーのサブプロット／図の詳細設定は、試験表示中も既存の「軸・ラベル設定」を開きます。軸文字列、X目盛間隔、軸・目盛・凡例・保持時間ラベルのフォント／サイズ／色をプロジェクトへ保存し、Undo／Redoできます。キャンセル時は変更しません。
 - 保存された軸タイトルのフォント／サイズ／色、目盛ラベルのフォント／サイズ／色、X軸の手動主副目盛間隔、凡例のフォント／サイズ／色と6種類の位置を試験表示にも適用します。「グラフ右外」の凡例は専用の右列へ配置します。
 - 表示画面のコピー・印刷は表示中の描画を使用します。PNG/SVG/PDFの図保存・解析レポートは従来のMatplotlib経路を維持します。
-- PyQtGraph未導入・初期化／描画エラー時も従来画面へ戻ります。Win7では選択できず、依存追加もしません。
+- PyQtGraph未導入・import失敗・初期化／描画エラー時は、現在のProjectと表示範囲を失わずMatplotlibへ戻り、理由を画面に表示します。
 
 これは移行途中の試験表示です。試験表示中の通常再描画では、Matplotlib側は軸と表示範囲の骨格だけを保持し、非表示のデータ線・B%線・積分表示・縦線・注釈・概要線・凡例は構築しません。PNG/SVG/PDF保存時だけ高品質Matplotlib図を一時的に再構築し、試験表示を閉じた場合や描画エラー時は完全なMatplotlib画面へ戻します。PyQtGraphのデータ線は元配列を変更せず、画面専用のピーク保持min/max envelopeへ減らします。系列IDと軸構成が同じ再描画ではdetail/overviewアイテムを再利用し、B%・積分表示・縦線・フラクション・注釈も内容が同じなら保持します。内容変更時は非系列アイテムだけを入れ替え、系列の追加・削除・軸変更時は全体を安全に再構築します。実機でのDPI・日本語フォント・ポインター・印刷を含む最終確認は引き続き必要です。
 
@@ -160,20 +160,20 @@ Windows 7互換性は、Windows 11でテストが通ることだけでは確認�
 - グラフ部分と操作・ピーク表部分の境界をドラッグして表示高さを変更
 - 描画品質を「高品質／軽量」から選択。Windows 7は軽量、Windows 11は高品質が既定
 - 画面用Figure/Canvasはscreen surface interface経由で生成し、解析・Project保存・A4レポート描画から分離
-- Windows 11 / Qt 6の画面描画はPyQtGraphが既定。チェックボックスでMatplotlibへ切り替えでき、選択はアプリ設定として再起動後も保持
+- Windows 11 / Qt 6の画面描画はPyQtGraphが既定。Windows 7 / Qt 5はMatplotlibが既定でPyQtGraphを任意選択でき、どちらも選択をアプリ設定として再起動後まで保持
 - 軽量描画は画面だけをpixel幅に応じてmin/max間引きし、非表示データを描画対象から除外
 - パン／連続ズーム中は再描画を抑制し、操作終了時に現在の表示範囲を正式再描画
 
-Windows 11ビルドは`requirements-win11-pyqtgraph.txt`を通常のビルド手順で導入し、Qt 6ではPyQtGraphを画面描画の既定にします。表示trace、Y1/Y2割当、凡例、B%系列、peak overlay、vertical marker、fraction region、free textはbackend-neutral sceneとして構成され、pointer入力、hit-target、軸別pan、home/back/forward履歴、overviewの全体・詳細窓と表示範囲はbackend-neutral `ScreenViewState`が正本です。PyQtGraphが未導入、Qt 6初期化または描画に失敗した場合は、理由を画面へ表示してMatplotlibへ自動復帰します。画面描画の選択はプロジェクトではなくアプリ設定へ保存されます。
+Windows 11ビルドは`requirements-win11-pyqtgraph.txt`からPyQtGraph 0.13.7を導入し、Qt 6ではPyQtGraphを画面描画の既定にします。Windows 7は`requirements-win7.txt`とオフラインwheelhouseからPyQtGraph 0.13.3を導入しますが、物理Core 2受け入れが終わるまではMatplotlibを既定に保ちます。表示trace、Y1/Y2割当、凡例、B%系列、peak overlay、vertical marker、fraction region、free textはbackend-neutral sceneとして構成され、pointer入力、hit-target、軸別pan、home/back/forward履歴、overviewの全体・詳細窓と表示範囲はbackend-neutral `ScreenViewState`が正本です。PyQtGraphが未導入、import・初期化または描画に失敗した場合は、理由を画面へ表示してMatplotlibへ自動復帰します。画面描画の選択はプロジェクトではなくアプリ設定へ保存されます。
 
 Matplotlibは次の責務のため削除しません。
 
 - PNG / SVG / PDFの図出力、現在画面のクリップボードコピーと印刷に使う高品質Figureの再構築
 - `report.py`の独立したFigureによるA4解析レポートとレポート印刷
-- PyQtGraph未導入・初期化／描画失敗時のWindows 11フォールバック画面
-- PySide2 / Qt 5固定のWindows 7画面描画（PyQtGraphはWindows 7依存へ追加しない）
+- PyQtGraph未導入・import／初期化／描画失敗時の両Windows版フォールバック画面
+- Windows 7の初期画面と、物理Core 2受け入れ中の比較対象
 
-Matplotlib画面へ切り替えた場合も同じsceneと`ScreenViewState`を使用します。Windows 7の固定依存、offline build、軽量描画設定は変更しません。
+Matplotlib画面へ切り替えた場合も同じsceneと`ScreenViewState`を使用します。Windows 7の既存固定依存、offline build、軽量描画設定は変更せず、0.13.3のuniversal wheelだけを追加しています。
 
 ```text
 python scripts\benchmark_screen_renderers.py --traces 8 --points 100000 --repeats 3 --output renderer-benchmark.json
@@ -184,7 +184,7 @@ python scripts\benchmark_integrated_screen.py --input path\to\run1.gcd path\to\e
 python scripts\probe_pyqtgraph_parity.py
 ```
 
-`build_windows11.bat`は通常requirementsに続けて`requirements-win11-pyqtgraph.txt`を導入し、`scripts/verify_windows11_x64.py --packages`が固定版の同梱を検証します。この追加requirementsはWindows 7 offline buildには含めません。consumerはproduction sceneのstatic要素、Qt snapshot、navigationと編集eventを扱い、失敗時は保存済みの選択を破棄せずMatplotlibへ戻ります。
+`build_windows11.bat`は通常requirementsに続けて`requirements-win11-pyqtgraph.txt`を導入し、`scripts/verify_windows11_x64.py --packages`が0.13.7の同梱を検証します。Windows 7 offline buildは`requirements-win7.txt`の0.13.3固定とwheelのMETADATA・SHA-256を検証し、PyInstaller前の独立import probeおよび通常版／Debug版の起動smoke testを実行します。consumerはproduction sceneのstatic要素、Qt snapshot、navigationと編集eventを扱い、失敗時は保存済みの選択を破棄せずMatplotlibへ戻ります。
 
 結果JSONには環境、workload、各回の描画時間、中央値、元配列SHA-256を記録します。統合benchmarkは実際の`MainWindow._plot()`を両経路で測り、試験表示中のMatplotlib線数とnative scene要素数も記録します。`--input`にはGCD/TXTファイルまたはディレクトリを複数指定でき、productionの探索・parserを使用します。読込不能なsidecar TXTは黙って混ぜず、ファイル名と理由を`skipped_inputs`へ残します。元ファイルや生成JSONは変更・自動追跡しません。採用には、代表workloadで明確な速度改善があり、ズーム・二軸・gradient・annotation・snapshotを再現でき、Win7 offline buildまたは明示的なplatform別fallbackを維持できることを要求します。
 
@@ -431,13 +431,13 @@ Windows 7版セットアップは必要なアプリファイルとVC++ランタ�
 
 ## Windows 7 SP1 32-bit実機で完全オフラインビルドする
 
-Windows 7版は、Windows 11上では生成しません。v1.2.4一式をUSBでWindows 7 SP1 32-bit実機へ移し、その実機上でビルドします。Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2/Qt 5.15.2.1 x86、Matplotlib 3.7.5、PyInstaller 5.13.2、Inno Setup 6.7.3、VC++ 14.29 x86を同梱済みで、Windows 7 PCのインターネット接続は不要です。NumPy 1.24.4 win32は対象Core 2 6300で`0xc000001d`（Illegal Instruction）となるため使用しません。Pillow 10.4.0もNumPy 1.20.3との組み合わせで`numpy.typing.NDArray`を要求するため使用しません。
+Windows 7版は、Windows 11上では生成しません。v1.2.4一式をUSBでWindows 7 SP1 32-bit実機へ移し、その実機上でビルドします。Python 3.8.10 x86、NumPy 1.20.3、Pillow 9.5.0、PySide2/Qt 5.15.2.1 x86、Matplotlib 3.7.5、PyQtGraph 0.13.3、PyInstaller 5.13.2、Inno Setup 6.7.3、VC++ 14.29 x86を同梱済みで、Windows 7 PCのインターネット接続は不要です。NumPy 1.24.4 win32は対象Core 2 6300で`0xc000001d`（Illegal Instruction）となるため使用しません。Pillow 10.4.0もNumPy 1.20.3との組み合わせで`numpy.typing.NDArray`を要求するため使用しません。
 
 1. ZIPをWindows 7 PCのローカルディスク上に展開します。推奨先は`C:\HPLC_Build\HPLC_Analyzer`です。USB、`Program Files`、ネットワーク共有から直接ビルドしないでください。
 2. `build_windows7_offline.bat`をダブルクリックします。従来名の`build_windows7.bat`も同じ処理を呼びます。
 3. PythonやVC++を導入する前に、`REQUIRED_WHEELS.txt`に固定した全wheelの存在と、同梱資材すべてのSHA-256を検証します。続けてWindows 7 SP1 build 7601、32-bit、KB2533623相当のDLLローダーAPIを検証します。
 4. 同梱Pythonへ正規化済み絶対パスを渡します。wheel内METADATAをPython 3.8 win32条件で再帰解析し、Matplotlibの条件付き依存を含む完全な依存閉包を確認してから、固定wheelを`.venv-win7-x86`へ`--no-index`で導入します。同一版のPythonが既存の場合は、版と32-bitを検証してそのインタープリターを利用します。ネットワーク取得は行いません。
-5. NumPy、Pillow、shiboken2、PySide2、QtCore、QtGui、QtWidgets、Matplotlib、本体GUI、GUIスモークテスト、PyInstallerを1項目ずつ別プロセスで確認します。異常終了時はテスト名、終了コード、Python版／bitness、対象パッケージ版とEvent ID 1000確認コマンドを表示し、PyInstallerを開始しません。
+5. NumPy、Pillow、shiboken2、PySide2、QtCore、QtGui、QtWidgets、PyQtGraph 0.13.3のwidget初期化、Matplotlib、本体GUI、GUIスモークテスト、PyInstallerを1項目ずつ別プロセスで確認します。異常終了時はテスト名、終了コード、Python版／bitness、対象パッケージ版とEvent ID 1000確認コマンドを表示し、PyInstallerを開始しません。
 6. 全テスト、通常版／Debug版のx86形式、両EXEの`--startup-smoke-test`をWindows 7上で実行します。
 7. 両EXEの起動確認後だけ、同梱Inno SetupでセットアップEXEを生成し、コンテナを検証します。
 

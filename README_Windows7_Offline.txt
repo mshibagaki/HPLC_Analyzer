@@ -1,13 +1,13 @@
 ﻿HPLC Analyzer 1.2.4 - Windows 7 SP1 32-bit 完全オフラインビルド
 
 このフォルダーには、Windows 7実機でビルドするために必要なPython、wheel、
-PySide2/Qt、NumPy、Pillow、Matplotlib、PyInstaller、Inno Setup、VC++ランタイムが
+PySide2/Qt、NumPy、Pillow、Matplotlib、PyQtGraph、PyInstaller、Inno Setup、VC++ランタイムが
 すべて含まれています。Windows 7 PCをインターネットへ接続する必要はありません。
 
 重要な固定依存（勝手に更新しないでください）
 
 Python 3.8.10 x86 / NumPy 1.20.3 / Pillow 9.5.0
-PySide2 5.15.2.1 / Qt 5.15.2 / Matplotlib 3.7.5 / PyInstaller 5.13.2
+PySide2 5.15.2.1 / Qt 5.15.2 / Matplotlib 3.7.5 / PyQtGraph 0.13.3 / PyInstaller 5.13.2
 importlib-resources 6.4.5 / zipp 3.20.2
 
 NumPy 1.24.4 win32は対象Core 2 6300実機でimport時に0xc000001d
@@ -29,7 +29,8 @@ NumPy 1.24.4 win32は対象Core 2 6300実機でimport時に0xc000001d
 
 - PythonやVC++を導入する前に、REQUIRED_WHEELS.txtの全wheelが存在するか確認します。
 - 全wheelとインストーラーのSHA-256をMANIFEST.sha256と照合します。
-- Python 3.8で必要となるimportlib-resources 6.4.5とzipp 3.20.2を同梱しています。
+- Python 3.8で必要となるimportlib-resources 6.4.5とzipp 3.20.2、および
+  Python 3.8 / NumPy 1.20対応のPyQtGraph 0.13.3 universal wheelを同梱しています。
 - Python導入後、pipを実行する前にwheel内METADATAを読み、Python 3.8 win32条件で
   Matplotlibを含む全依存が固定wheelだけで解決できるか再帰検証します。
 - pipは必ず --no-index --find-links だけで実行され、ネット接続を行いません。
@@ -43,6 +44,7 @@ shiboken2 OK 5.15.2.1
 PySide2 OK 5.15.2.1
 QtCore OK 5.15.2
 QtWidgets OK PySide2.QtWidgets
+PyQtGraph OK 0.13.3
 Matplotlib OK 3.7.5
 HPLC GUI import OK
 [OK] HPLC Analyzer GUI startup smoke test passed.
@@ -69,6 +71,18 @@ dist\installers\HPLC_Analyzer_Setup_1.2.4_Windows7_x86.exe
 
 通常使用ではSetup EXEを配布・インストールしてください。起動しない場合は
 HPLC_Analyzer_Debug.exeをコマンドプロンプトから実行すると診断表示を確認できます。
+
+画面描画
+
+- Windows 7ではMatplotlibが初期値です。
+- グラフ上部の「PyQtGraph画面描画」を選ぶとPyQtGraph 0.13.3へ切り替わり、
+  選択はアプリ設定として次回起動後も残ります。Projectファイルには入りません。
+- PyQtGraphのimport、初期化、または描画に失敗した場合は、理由を表示して
+  Projectと表示範囲を保ったままMatplotlibへ戻ります。
+- PNG/SVG/PDF、クリップボード、印刷、A4レポート、3D図は引き続き
+  Matplotlib経路です。
+- PyQtGraphをWindows 7の既定へ変更する判断は、物理Core 2実機で長時間操作、
+  両Y軸、概要・詳細、全編集モード、フォールバックを確認した後に行います。
 
 失敗した場合
 

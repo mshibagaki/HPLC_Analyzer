@@ -72,6 +72,16 @@ PROBES = (
         "from PySide2 import QtWidgets; print('QtWidgets OK', QtWidgets.__name__)",
     ),
     (
+        "PyQtGraph",
+        "pyqtgraph",
+        "0.13.3",
+        "import pyqtgraph; assert pyqtgraph.__version__ == '0.13.3'; "
+        "from pyqtgraph.Qt import QtWidgets; "
+        "app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([]); "
+        "widget = pyqtgraph.GraphicsLayoutWidget(show=False); widget.close(); "
+        "print('PyQtGraph OK', pyqtgraph.__version__)",
+    ),
+    (
         "Matplotlib",
         "matplotlib",
         "3.7.5",

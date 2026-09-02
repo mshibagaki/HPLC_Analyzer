@@ -38,3 +38,18 @@ except ImportError:
 
 def dialog_exec(dialog):
     return dialog.exec() if QT_API == 6 else dialog.exec_()
+
+
+def qt_enum(owner, group, member):
+    """Return one scoped Qt 6 enum or its flat Qt 5 equivalent."""
+
+    return getattr(getattr(owner, group, owner), member)
+
+
+EVENT_LEAVE = qt_enum(QtCore.QEvent, "Type", "Leave")
+EVENT_FOCUS_OUT = qt_enum(QtCore.QEvent, "Type", "FocusOut")
+EVENT_RESIZE = qt_enum(QtCore.QEvent, "Type", "Resize")
+EVENT_KEY_PRESS = qt_enum(QtCore.QEvent, "Type", "KeyPress")
+KEY_ESCAPE = qt_enum(QtCore.Qt, "Key", "Key_Escape")
+KEY_DELETE = qt_enum(QtCore.Qt, "Key", "Key_Delete")
+MOUSE_FOCUS_REASON = qt_enum(QtCore.Qt, "FocusReason", "MouseFocusReason")

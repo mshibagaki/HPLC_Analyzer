@@ -290,7 +290,7 @@ class GuiTests(unittest.TestCase):
         return event
 
     def test_mainwindow_experimental_preview_navigation_refresh_and_snapshot(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -490,10 +490,10 @@ class GuiTests(unittest.TestCase):
                 current.project.dirty = False
                 current.close()
 
-    def test_default_renderer_fallback_explains_missing_pyqtgraph_and_qt5(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+    def test_renderer_fallback_explains_missing_and_qt5_can_activate(self):
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
-        self.settings.remove(SCREEN_RENDERER)
+        self.settings.setValue(SCREEN_RENDERER, "pyqtgraph")
         self.settings.sync()
         with patch(
             "hplc_app.screen_preview.PyQtGraphSceneConsumer",
@@ -509,17 +509,16 @@ class GuiTests(unittest.TestCase):
 
             window._screen_preview_notice = ""
             window._screen_renderer_preference = "pyqtgraph"
-            with patch("hplc_app.gui.QT_API", 5):
-                window._activate_preferred_screen_renderer()
-            self.assertIsNone(window._screen_preview)
-            self.assertEqual(window._screen_preview_notice, "qt5")
-            self.assertIn("Windows 7", window.screen_preview_label.text())
+            window._activate_preferred_screen_renderer()
+            self.assertIsNotNone(window._screen_preview)
+            self.assertTrue(window.screen_preview_checkbox.isEnabled())
+            self.assertEqual(window._screen_preview_notice, "active")
         finally:
             window.project.dirty = False
             window.close()
 
     def test_mainwindow_preview_falls_back_for_tools_split_and_failures(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -563,15 +562,14 @@ class GuiTests(unittest.TestCase):
             with patch.object(window._screen_preview.consumer, "snapshot", side_effect=RuntimeError("snapshot")):
                 self.assertFalse(window._current_view_pixmap().isNull())
             self.assertIsNone(window._screen_preview)
-            with patch("hplc_app.gui.QT_API", 5):
-                window.screen_preview_checkbox.setChecked(True)
-            self.assertIsNone(window._screen_preview)
+            window.screen_preview_checkbox.setChecked(True)
+            self.assertIsNotNone(window._screen_preview)
         finally:
             window.project.dirty = False
             window.close()
 
     def test_preview_split_panels_native_navigation_and_markers(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -690,7 +688,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_pointer_coordinates_and_motion_keep_plot_geometry(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -779,7 +777,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_split_layout_switch_refresh_and_failure_cleanup(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -836,7 +834,7 @@ class GuiTests(unittest.TestCase):
     def test_split_gradient_visibility_shared_by_both_renderers(self):
         from hplc_app.project_io import load_project, save_project
         preview_modes = [False]
-        if QT_API == 6 and pyqtgraph_scene_available():
+        if pyqtgraph_scene_available():
             preview_modes.append(True)
         for use_preview in preview_modes:
             with self.subTest(preview=use_preview):
@@ -963,7 +961,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_vertical_markers_use_native_events_and_shared_history(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         from hplc_app.project_io import load_project, save_project
         window = self.make_window()
@@ -1066,7 +1064,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_vertical_marker_label_follows_drag_and_undo(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -1132,7 +1130,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_pointer_boundaries_focus_and_failure_cleanup(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -3310,7 +3308,7 @@ class GuiTests(unittest.TestCase):
         window.close()
 
     def test_preview_rectangle_zoom_modes_history_and_cancellation(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -3378,7 +3376,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_text_label_drag_hit_testing_and_persistence(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         from hplc_app.project_io import load_project, save_project
         window = self.make_window()
@@ -3478,7 +3476,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_text_label_create_edit_delete_and_cancel(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -3590,7 +3588,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_trace_move_matches_existing_callback_and_persistence(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         from hplc_app.project_io import load_project, save_project
         window = self.make_window()
@@ -3689,7 +3687,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_trace_move_supports_second_axis_in_single_view(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -3795,7 +3793,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_trace_move_reset_restores_exact_display_and_raw_digest(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -3880,7 +3878,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_trace_move_cancellation_and_target_guards(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -3966,7 +3964,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_trace_move_recalculation_failure_is_atomic_in_both_renderers(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -4005,7 +4003,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_peak_split_matches_existing_calculation(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         from hplc_app.analysis import split_peak_region
         from hplc_app.project_io import load_project, save_project
@@ -4127,7 +4125,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_peak_split_target_and_input_guards(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -4208,7 +4206,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_peak_split_invalid_and_recalculation_failure_are_atomic(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -4258,7 +4256,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_peak_range_edit_matches_existing_calculation(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         from hplc_app.project_io import load_project, save_project
         window = self.make_window()
@@ -4360,7 +4358,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_peak_range_target_and_cancellation_guards(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -4450,7 +4448,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_peak_range_invalid_range_rolls_back(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -4484,7 +4482,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_manual_integration_matches_existing_calculation(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         from hplc_app.analysis import integrate_peak
         from hplc_app.project_io import load_project, save_project
@@ -4581,7 +4579,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_manual_integration_target_and_cancellation_guards(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -4676,7 +4674,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_manual_integration_rejects_insufficient_points(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -4827,7 +4825,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_peak_selection_restyles_without_scene_rebuild(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -5132,7 +5130,7 @@ class GuiTests(unittest.TestCase):
         )
 
     def test_preview_selection_range_uses_shared_non_mutating_contract(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -5168,7 +5166,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_click_selects_the_same_overlapping_integration_area(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -5361,7 +5359,7 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(shortcut.isEnabled())
         editor.deleteLater()
 
-        if QT_API == 6 and pyqtgraph_scene_available():
+        if pyqtgraph_scene_available():
             # The same keys must work while the native renderer is on screen.
             window.screen_preview_checkbox.setChecked(True)
             self.app.processEvents()
@@ -5408,7 +5406,7 @@ class GuiTests(unittest.TestCase):
                     any(line.get_visible() for line in window.axes.get_ygridlines())
                 )
 
-        if not (QT_API == 6 and pyqtgraph_scene_available()):
+        if not pyqtgraph_scene_available():
             window.project.dirty = False
             window.close()
             return
@@ -5434,7 +5432,7 @@ class GuiTests(unittest.TestCase):
         window.close()
 
     def test_native_display_toggles_do_not_rebuild_scene_or_mouse_owner(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -5497,7 +5495,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_native_split_divider_drags_and_retains_ratio_during_view(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -5566,46 +5564,56 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_native_second_axis_title_stays_clear_of_the_gradient_axis(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
-        window.project.method.show_gradient_b = True
-        window.project.method.y_axis_2_label = "吸光度 214 nm (mAU)"
-        window.show()
-        self.app.processEvents()
-        window.screen_preview_checkbox.setChecked(True)
-        self.app.processEvents()
-        preview = window._screen_preview
-        self.assertIsNotNone(preview)
+        try:
+            window.project.method.show_gradient_b = True
+            window.project.method.y_axis_2_label = "吸光度 214 nm (mAU)"
+            window.show()
+            self.app.processEvents()
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            preview = window._screen_preview
+            self.assertIsNotNone(preview)
 
-        def title_gap(host, gradient_axis):
-            """Scene distance from the Y2 title's right edge to the B% axis."""
-            axis = host.getAxis("right")
-            label = axis.label
-            label_right = axis.mapRectFromItem(label, label.boundingRect()).right()
-            title_edge = axis.mapToScene(
-                QtCore.QPointF(label_right, 0.0)
-            ).x()
-            gradient_edge = gradient_axis.mapToScene(QtCore.QPointF(0.0, 0.0)).x()
-            return gradient_edge - title_edge
+            def title_gap(host, gradient_axis):
+                """Scene distance from the Y2 title's right edge to the B% axis."""
+                axis = host.getAxis("right")
+                label = axis.label
+                label_right = axis.mapRectFromItem(
+                    label, label.boundingRect()
+                ).right()
+                title_edge = axis.mapToScene(
+                    QtCore.QPointF(label_right, 0.0)
+                ).x()
+                gradient_edge = gradient_axis.mapToScene(
+                    QtCore.QPointF(0.0, 0.0)
+                ).x()
+                return gradient_edge - title_edge
 
-        for view_mode in ("single", "split_y_axes"):
-            with self.subTest(view_mode=view_mode):
-                window.project.method.view_mode = view_mode
-                window._plot()
-                self.app.processEvents()
-                consumer = window._screen_preview.consumer
-                for _view, gradient_axis, host in consumer.gradient_layers:
-                    self.assertTrue(gradient_axis.isVisible())
-                    # A right AxisItem draws its rotated title past its own edge,
-                    # so without the reserved column spacing this is negative.
-                    self.assertGreater(title_gap(host, gradient_axis), 0.0)
-                    self.assertEqual(
-                        host.layout.columnSpacing(2),
-                        consumer.GRADIENT_AXIS_COLUMN_SPACING,
-                    )
-        window.project.dirty = False
-        window.close()
+            for view_mode in ("single", "split_y_axes"):
+                with self.subTest(view_mode=view_mode):
+                    window.project.method.view_mode = view_mode
+                    window._plot()
+                    self.app.processEvents()
+                    consumer = window._screen_preview.consumer
+                    for _view, gradient_axis, host in consumer.gradient_layers:
+                        self.assertTrue(gradient_axis.isVisible())
+                        # A right AxisItem draws its rotated title past its own
+                        # edge, so without reserved spacing this is negative.
+                        self.assertGreater(title_gap(host, gradient_axis), 0.0)
+                        self.assertEqual(
+                            host.layout.columnSpacing(2),
+                            consumer.GRADIENT_AXIS_COLUMN_SPACING,
+                        )
+        finally:
+            window.project.dirty = False
+            window.close()
+            # PySide2 defers destruction of the replaced single-view scene;
+            # drain it before QApplication teardown so stale wrappers do not
+            # make the 32-bit test process exit non-zero after a passed test.
+            self.app.processEvents()
 
     def test_full_x_and_full_y_buttons_reset_only_requested_axes(self):
         window = self.make_window()
@@ -5677,7 +5685,7 @@ class GuiTests(unittest.TestCase):
         window.close()
 
     def test_preview_full_y_uses_scene_bounds_and_preserves_x_and_raw_data(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -7151,7 +7159,6 @@ class GuiTests(unittest.TestCase):
         table = window.dataset_table
         table.selectRow(0)
         model = table.model()
-        mime = model.mimeData([model.index(0, 0)])
         target_rect = table.visualItemRect(table.item(1, 0))
         move_action = (
             QtCore.Qt.DropAction.MoveAction if QT_API == 6 else QtCore.Qt.MoveAction
@@ -7171,6 +7178,10 @@ class GuiTests(unittest.TestCase):
         )
 
         def drag_event(point):
+            # PySide2 transfers ownership of QMimeData to QDragMoveEvent and may
+            # destroy it after the event is handled.  Use a fresh instance for
+            # every event so this test exercises the same behavior on Qt 5/6.
+            mime = model.mimeData([model.index(0, 0)])
             return QtGui.QDragMoveEvent(
                 point, move_action, mime, left_button, no_modifier
             )
@@ -7912,7 +7923,7 @@ class GuiTests(unittest.TestCase):
         window.close()
 
     def test_preview_toolbar_configuration_reuses_persisted_axis_dialog(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -7975,7 +7986,7 @@ class GuiTests(unittest.TestCase):
             window.close()
 
     def test_preview_matches_persisted_legend_axis_and_tick_styles(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:
@@ -8292,7 +8303,7 @@ class GuiTests(unittest.TestCase):
         window.close()
 
     def test_native_preview_distinguishes_fitted_peak_in_curve_and_legend(self):
-        if QT_API != 6 or not pyqtgraph_scene_available():
+        if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
         try:

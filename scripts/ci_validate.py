@@ -37,6 +37,7 @@ CRITICAL_PINS = {
         "matplotlib": "3.7.5",
         "pyside2": "5.15.2.1",
         "shiboken2": "5.15.2.1",
+        "pyqtgraph": "0.13.3",
         "pyinstaller": "5.13.2",
         "pillow": "9.5.0",
         "importlib-resources": "6.4.5",

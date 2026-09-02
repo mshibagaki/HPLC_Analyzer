@@ -191,6 +191,7 @@ from hplc_app.settings_store import (
     SAVE_DIRECTORY,
     SETTING_SPECS,
     UI_LANGUAGE,
+    default_screen_renderer,
 )
 from scripts.windows7_import_preflight import EVENT_LOG_COMMAND, PROBES
 from scripts.inspect_gcd import _safe_dump_name
@@ -1046,12 +1047,23 @@ class AnalysisTests(unittest.TestCase):
             self.assertFalse(pyqtgraph_scene_available())
             with self.assertRaises(OptionalRendererUnavailable):
                 PyQtGraphSceneConsumer()
+        with patch(
+            "hplc_app.pyqtgraph_scene.importlib.import_module",
+            side_effect=RuntimeError("incompatible optional renderer"),
+        ):
+            self.assertFalse(pyqtgraph_scene_available())
         optional = (ROOT / "requirements-win11-pyqtgraph.txt").read_text(
             encoding="utf-8"
         )
         normal = (ROOT / "requirements-win11.txt").read_text(encoding="utf-8")
+        legacy = (ROOT / "requirements-win7.txt").read_text(encoding="utf-8")
         self.assertIn("pyqtgraph==0.13.7", optional)
         self.assertNotIn("pyqtgraph", normal.casefold())
+        self.assertIn("pyqtgraph==0.13.3", legacy)
+        self.assertEqual(default_screen_renderer(6), "pyqtgraph")
+        self.assertEqual(default_screen_renderer(5), "matplotlib")
+        spec = (ROOT / "HPLC_Analyzer.spec").read_text(encoding="utf-8")
+        self.assertIn('"pyqtgraph.Qt.QtWidgets"', spec)
 
     def test_renderer_benchmark_suite_schema_and_validation(self):
         with self.assertRaises(ValueError):
@@ -3497,6 +3509,7 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("numpy==1.20.3", pinned)
         self.assertIn("Pillow==9.5.0", pinned)
         self.assertIn("PyInstaller==5.13.2", pinned)
+        self.assertIn("pyqtgraph==0.13.3", pinned)
         self.assertIn("importlib-resources==6.4.5", pinned)
         self.assertIn("zipp==3.20.2", pinned)
         self.assertIn('EXPECTED_PYTHON = (3, 8, 10)', verifier)
@@ -3525,6 +3538,7 @@ class ProjectTests(unittest.TestCase):
                 "QtCore",
                 "QtGui",
                 "QtWidgets",
+                "PyQtGraph",
                 "Matplotlib",
                 "HPLC GUI import",
                 "HPLC Analyzer GUI smoke test",
@@ -3629,6 +3643,7 @@ class ProjectTests(unittest.TestCase):
         self.assertIn("zipp-3.20.2-py3-none-any.whl", required)
         self.assertIn("numpy-1.20.3-cp38-cp38-win32.whl", required)
         self.assertIn("Pillow-9.5.0-cp38-cp38-win32.whl", required)
+        self.assertIn("pyqtgraph-0.13.3-py3-none-any.whl", required)
         self.assertNotIn("numpy-1.24.4", required)
         self.assertNotIn("pillow-10.4.0", required.lower())
         self.assertLess(
@@ -3687,6 +3702,17 @@ class ProjectTests(unittest.TestCase):
                 ).read_bytes()
             ).hexdigest(),
             "6608ff3bf781eee0cd14d0901a2b9cc3d3834516532e3bd673a0a204dc8615fc",
+        )
+        self.assertEqual(
+            __import__("hashlib").sha256(
+                (
+                    ROOT
+                    / "win7_offline"
+                    / "wheels"
+                    / "pyqtgraph-0.13.3-py3-none-any.whl"
+                ).read_bytes()
+            ).hexdigest(),
+            "fdcc04ac4b32a7bedf1bf3cf74cbb93ab3ba5687791712bbfa8d0712377d2f2b",
         )
     def test_frozen_startup_smoke_test_exercises_the_main_window(self):
         app_source = (ROOT / "app.py").read_text(encoding="utf-8")
@@ -4391,7 +4417,7 @@ class ApplicationSettingsTests(unittest.TestCase):
         )
         self.assertEqual(store.get(IMPORT_DIRECTORY), "")
         self.assertEqual(store.get(RENDERING_QUALITY), default_render_quality())
-        self.assertEqual(store.get(SCREEN_RENDERER), "pyqtgraph")
+        self.assertEqual(store.get(SCREEN_RENDERER), default_screen_renderer())
         self.assertEqual(store.get(FIGURE_FORMAT), "png")
         self.assertEqual(store.get(LEGACY_CONDITION_PRESETS), {})
         self.assertEqual(store.get(LEGACY_GRADIENT_PRESETS), {})

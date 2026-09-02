@@ -97,6 +97,17 @@ def _screen_renderer(value: Any, fallback: str) -> str:
     return normalized if normalized in ("pyqtgraph", "matplotlib") else fallback
 
 
+def default_screen_renderer(qt_api=None) -> str:
+    """Keep Qt 6 native by default while Qt 5 remains an explicit opt-in."""
+
+    if qt_api is None:
+        try:
+            from .qt_compat import QT_API as qt_api
+        except ImportError:
+            return "matplotlib"
+    return "pyqtgraph" if int(qt_api) == 6 else "matplotlib"
+
+
 def _boolean(value: Any, fallback: bool) -> bool:
     if isinstance(value, bool):
         return value
@@ -179,7 +190,7 @@ SETTING_SPECS: Dict[str, SettingSpec] = {
         encode=str,
     ),
     SCREEN_RENDERER: SettingSpec(
-        default=_constant("pyqtgraph"),
+        default=default_screen_renderer,
         decode=_screen_renderer,
         encode=str,
     ),

@@ -22,8 +22,17 @@ NumPy 1.24.4 win32は対象Core 2 6300実機でimport時に0xc000001d
    推奨します。Program Files内、USB上、ネットワーク共有上ではビルドしません。
 4. build_windows7_offline.bat をダブルクリックします。
 5. VC++ランタイムの導入で管理者確認が出た場合は許可します。
-6. バッチが、資材のSHA-256、Windows 7 SP1 32-bit、Python/Qt、全テスト、
+6. バッチが、資材のSHA-256、Windows 7 SP1 32-bit、Python/Qt、GUI以外のテスト、
    生成EXEのx86形式、通常版とDebug版の実起動を順番に検証します。
+
+GUIテストを実行しない理由
+
+Qtは、テストが閉じたウィンドウを破棄せず保持し続けます。212件のGUIテストを
+この32bitプロセスで通すと、2GBのユーザーアドレス空間を途中で使い切り、
+PyInstallerへ進む前にビルドが止まります。GUIテスト全数はGitHub CIが変更ごとに
+実行しているため、この実機では実機でしか確認できないものを検証します。
+GUI自体は、依存を1つずつ確認するimport preflightのGUI起動スモークテストと、
+生成した通常版・Debug版EXEの起動スモークテストで、この実機でも動作を確認します。
 
 依存wheelの事前検証
 

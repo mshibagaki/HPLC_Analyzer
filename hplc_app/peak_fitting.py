@@ -365,6 +365,31 @@ def _search_grid(x, y, centers, sigmas, taus, best=None):
     return best
 
 
+def _emg_true_amplitude(x, amplitude: float, center: float, sigma: float, tau: float) -> float:
+    """Rescale a least-squares EMG amplitude fit on ``x`` to the model's true peak height.
+
+    ``emg_profile`` normalizes by the maximum value within whatever samples it
+    is given, so the raw least-squares amplitude found while fitting only
+    ``x`` describes the profile's height at the edge of ``x`` -- not its true
+    peak -- whenever ``x`` does not reach that peak. This happens by
+    construction in the saturated-peak correction, which excludes the clipped
+    top from ``x``, and to a smaller degree in an ordinary fit whenever the
+    coarse search grid does not land a sample exactly on the discretized
+    apex.
+
+    Evaluating the profile once on ``x`` together with ``_model_grid`` -- the
+    same wide grid ``fitted_apex_min``/``fitted_area_uv_min`` already use to
+    locate and integrate the true peak -- and reading the ratio back from
+    that single normalized array avoids a second, un-normalized profile
+    implementation and keeps ``amplitude_uv`` consistent with those helpers.
+    """
+
+    combined = np.concatenate([x, _model_grid(center, sigma, tau)])
+    profile = emg_profile(combined, center, sigma, tau)
+    peak_within_x = float(np.max(profile[: len(x)]))
+    return amplitude / peak_within_x if peak_within_x > 0 else amplitude
+
+
 def _fit_model(x, y, model: str) -> PeakFitResult:
     span = float(x[-1] - x[0])
     step = max(float(np.median(np.diff(x))), span / 1000.0, 1.0e-9)
@@ -403,6 +428,13 @@ def _fit_model(x, y, model: str) -> PeakFitResult:
         tau_ratio = tau_ratio ** 0.25
     score, center, sigma, tau, profile = best
     amplitude, rmse, r_squared, aic = score
+    if tau is not None:
+        # amplitude_uv means the height of the model curve at its own true
+        # apex -- not at whichever sample in x happened to be tallest -- so
+        # every consumer (area/apex/FWHM helpers, screen and report display)
+        # can multiply it by a profile normalized on a range that includes
+        # that apex and get the correct absolute height back.
+        amplitude = _emg_true_amplitude(x, amplitude, center, sigma, tau)
     parameters = {"amplitude_uv": amplitude, "center_min": center, "sigma_min": sigma}
     if tau is not None:
         parameters["tau_min"] = float(tau)

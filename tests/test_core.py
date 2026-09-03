@@ -73,6 +73,8 @@ from hplc_app.parser import (
 )
 from hplc_app.peak_fitting import (
     PeakFitResult,
+    _emg_true_amplitude,
+    _model_grid,
     detect_saturated_span,
     emg_profile,
     evaluate_fit_profile,
@@ -1552,6 +1554,156 @@ class AnalysisTests(unittest.TestCase):
         np.testing.assert_array_equal(dataset.intensity_uv, raw_signal)
         self.assertEqual(dataset.peaks[0].raw_area_uv_min, measured_area)
         self.assertEqual(dataset.peaks[0].area_percent, 100.0)
+
+    def test_emg_amplitude_correction_is_exact_given_the_true_shape(self):
+        """Isolate the amplitude fix from the grid search's own shape noise.
+
+        ``_emg_true_amplitude`` rescales a least-squares amplitude fit on a
+        range that excludes the model's true apex back to that apex's real
+        height. Given the exact (center, sigma, tau) -- as opposed to values
+        the coarse grid search only approximates -- this rescale is an exact
+        algebraic identity, not an approximation, and runs in well under a
+        second because it makes one profile evaluation, not a search. Any
+        residual error in the end-to-end saturated-fit tests below therefore
+        comes from shape recovery, not from this correction.
+        """
+
+        center, sigma, tau = 4.0, 0.25, 0.35
+        true_amplitude = 100000.0
+        # A range that skips a neighborhood of the true apex, the same way
+        # excluding the clipped samples does during the real correction.
+        x = np.concatenate(
+            [
+                np.linspace(2.0, center - 0.3, 400),
+                np.linspace(center + 0.3, 8.0, 400),
+            ]
+        )
+        # The physically true signal, normalized over a range that reaches
+        # the real apex -- built with the same trick the fix itself uses, so
+        # "true_amplitude" means the model's real peak height.
+        combined = np.concatenate([x, _model_grid(center, sigma, tau)])
+        g_true_at_x = emg_profile(combined, center, sigma, tau)[: len(x)]
+        y = true_amplitude * g_true_at_x
+
+        # What _score_profile actually fits against: emg_profile(x, ...),
+        # self-normalized to x's own (apex-missing) maximum.
+        profile_on_x = emg_profile(x, center, sigma, tau)
+        naive_amplitude = float(
+            np.dot(y, profile_on_x) / np.dot(profile_on_x, profile_on_x)
+        )
+        # Confirms the bug this fixes: the naive fit meaningfully
+        # underestimates once the apex is excluded from x.
+        self.assertLess(naive_amplitude, true_amplitude * 0.98)
+
+        started = time.time()
+        corrected = _emg_true_amplitude(x, naive_amplitude, center, sigma, tau)
+        self.assertLess(time.time() - started, 1.0)
+        self.assertAlmostEqual(corrected, true_amplitude, delta=1.0e-6)
+
+    def test_saturated_emg_correction_recovers_the_true_apex_height(self):
+        """Issue #238: emg_profile normalizes by the max within whatever ``x``
+        it is given, so a least-squares amplitude fit on the samples the
+        saturated-peak correction deliberately excludes near the apex used to
+        describe the height at the edge of that exclusion, not the model's
+        true peak. The reconstructed height collapsed onto the clipping
+        ceiling itself. This pins the fix (a one-time post-fit amplitude
+        rescale onto a range that contains the true apex) with a realistic,
+        densely sampled EMG peak at several clipping depths.
+        """
+
+        clock = time.time  # captured before "time" below shadows the module
+        time_axis = np.linspace(0.0, 12.0, 2401)
+        true_amplitude, center, sigma, tau = 100000.0, 4.0, 0.25, 0.35
+        clean = true_amplitude * emg_profile(time_axis, center, sigma, tau)
+        reference = PeakFitResult(
+            "emg",
+            {
+                "amplitude_uv": true_amplitude,
+                "center_min": center,
+                "sigma_min": sigma,
+                "tau_min": tau,
+            },
+            center, 0.0, 1.0, 0.0, 100,
+        )
+        true_area = fitted_area_uv_min(reference)
+        # The EMG's right tail shifts its true apex off the "center_min" shape
+        # parameter; retention_time_min tracks that true apex, not center_min.
+        true_apex = fitted_apex_min("emg", reference.parameters)
+        region = PeakRegion(start_min=0.0, end_min=12.0, baseline_mode="linear")
+
+        # Height and area recovery, at four clipping depths as required. The
+        # amplitude correction is algebraically exact given the fitted shape;
+        # the residual error below this margin comes from sigma/tau being
+        # harder to disentangle once the most informative apex samples are
+        # excluded, not from the correction itself -- so this is a generous
+        # margin around measured behavior, not the correction's own precision.
+        started = clock()
+        for clip_ratio in (0.90, 0.70, 0.50, 0.35):
+            with self.subTest(clip_ratio=clip_ratio):
+                ceiling = true_amplitude * clip_ratio
+                dataset = Dataset(
+                    time_min=time_axis.copy(),
+                    intensity_uv=np.minimum(clean, ceiling).copy(),
+                )
+                raw_signal = dataset.intensity_uv.copy()
+                dataset.peaks = [PeakRegion(start_min=0.0, end_min=12.0)]
+                recalculate_dataset_peaks(dataset)
+                parent = dataset.peaks[0]
+                measured_area = parent.raw_area_uv_min
+
+                result, span = fit_saturated_peak(dataset, region, "emg")
+                self.assertEqual(result.model, "emg")
+                self.assertGreater(result.r_squared, 0.98)
+                self.assertAlmostEqual(
+                    result.retention_time_min, true_apex, delta=0.05
+                )
+
+                height = result.parameters["amplitude_uv"]
+                self.assertAlmostEqual(height / true_amplitude, 1.0, delta=0.07)
+                area = fitted_area_uv_min(result)
+                self.assertAlmostEqual(area / true_area, 1.0, delta=0.04)
+
+                # amplitude_uv means the model curve's own height: evaluating
+                # the fitted curve at its own apex reproduces it, on the same
+                # kind of range (containing the true apex) the display paths
+                # and fitted_apex_min/fitted_fwhm_min already use.
+                apex_time = fitted_apex_min(result.model, result.parameters)
+                apex_value = float(
+                    evaluate_fit_profile(np.array([apex_time]), result)[0]
+                )
+                self.assertAlmostEqual(apex_value / height, 1.0, delta=1.0e-6)
+
+                fitted = fitted_peak_from_result(parent, result, dataset, span)
+                self.assertTrue(is_saturation_corrected(fitted))
+                self.assertAlmostEqual(fitted.raw_height_uv, height, places=9)
+                self.assertAlmostEqual(fitted.raw_area_uv_min, area, places=9)
+
+                # The measurement and the original integration are untouched.
+                np.testing.assert_array_equal(dataset.intensity_uv, raw_signal)
+                self.assertEqual(dataset.peaks[0].raw_area_uv_min, measured_area)
+                self.assertEqual(dataset.peaks[0].area_percent, 100.0)
+
+        # An ordinary (unsaturated) EMG fit already reaches the true apex
+        # through its samples, so the same correction should leave it close
+        # to unchanged -- report-quality accuracy, not the saturated case's
+        # reconstruction problem.
+        normal_dataset = Dataset(time_min=time_axis.copy(), intensity_uv=clean.copy())
+        normal_result = fit_peak(normal_dataset, region, "emg")
+        self.assertAlmostEqual(
+            normal_result.parameters["amplitude_uv"] / true_amplitude,
+            1.0,
+            delta=0.02,
+        )
+        self.assertAlmostEqual(
+            fitted_area_uv_min(normal_result) / true_area, 1.0, delta=0.01
+        )
+        elapsed = clock() - started
+        # A generous ceiling: five EMG fits over a 2,401-point trace. This
+        # exists to catch a return of the "2 minutes to complete" regression
+        # the workflow document warns against (re-normalizing on a dense grid
+        # inside the search loop instead of once after it converges), not to
+        # assert this is fast in any absolute sense.
+        self.assertLess(elapsed, 90.0)
 
     def test_saturation_detection_ignores_a_merely_rounded_apex(self):
         time = np.linspace(4.0, 6.0, 1201)

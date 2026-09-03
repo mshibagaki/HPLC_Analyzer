@@ -56,6 +56,11 @@ class CiValidationTests(unittest.TestCase):
         self.assertNotIn("actions/cache", workflow)
         self.assertNotIn("upload-artifact", workflow)
         self.assertIn("--offline-assets auto", workflow)
+        # Both shipped builds carry PyQtGraph, so CI has to install it too.
+        # Without the pin, the native-renderer tests silently skip and CI
+        # validates a configuration nothing ships.
+        self.assertIn("requirements-win11.txt", workflow)
+        self.assertIn("requirements-win11-pyqtgraph.txt", workflow)
         self.assertNotIn("HPLC_Analyzer_MVP_1.2.4", workflow)
         action_refs = re.findall(r"uses:\s*[^@\s]+@([^\s#]+)", workflow)
         self.assertTrue(action_refs)

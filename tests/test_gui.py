@@ -283,25 +283,26 @@ class GuiTests(unittest.TestCase):
         an unsaved-changes dialog that would block an offscreen run.
         """
 
-        widgets = QtWidgets.QApplication.topLevelWidgets()
-        # Let queued draws run while their canvases still exist, then stop
-        # Matplotlib from re-arming one. Its idle draw is a timer bound to the
-        # canvas, and destroying the canvas does not cancel it.
-        cls._drain_events()
-        for widget in widgets:
-            cls._cancel_pending_draws(widget)
-        MainWindow._open_windows.clear()
-        for widget in widgets:
-            widget.deleteLater()
         deferred = (
             QtCore.QEvent.Type.DeferredDelete
             if QT_API == 6
             else QtCore.QEvent.DeferredDelete
         )
-        QtWidgets.QApplication.sendPostedEvents(None, deferred)
-        # Anything still queued for the widgets just destroyed is drained here,
-        # in the teardown that destroyed them, rather than in the next test.
+        # Let queued work run while the widgets that own it still exist, and
+        # complete any deletion a test already scheduled for a child widget:
+        # destroying a parent that still holds a pending DeferredDelete for one
+        # of its children ends the process.
         cls._drain_events()
+        QtWidgets.QApplication.sendPostedEvents(None, deferred)
+        widgets = QtWidgets.QApplication.topLevelWidgets()
+        # Matplotlib's idle draw is a timer bound to the canvas, and destroying
+        # the canvas does not cancel it.
+        for widget in widgets:
+            cls._cancel_pending_draws(widget)
+        MainWindow._open_windows.clear()
+        for widget in widgets:
+            widget.deleteLater()
+        QtWidgets.QApplication.sendPostedEvents(None, deferred)
         gc.collect()
 
     @staticmethod

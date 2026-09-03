@@ -2412,6 +2412,34 @@ class ProjectTests(unittest.TestCase):
             ["Legacy z"],
         )
 
+    def test_windows7_build_runs_every_test_module_its_process_can_hold(self):
+        """The Windows 7 build runs the non-GUI modules, and says why.
+
+        Qt keeps every window a GUI test leaves behind, so running that module
+        in the build's single 32-bit process exhausts its address space before
+        PyInstaller (Issue #244). The remaining modules do run there, and a new
+        one has to be added to the batch rather than quietly left out.
+        """
+
+        batch = (ROOT / "build_windows7_offline.bat").read_text(encoding="utf-8")
+        modules = sorted(path.stem for path in (ROOT / "tests").glob("test_*.py"))
+        self.assertIn("test_gui", modules)
+        for module in modules:
+            with self.subTest(module=module):
+                if module == "test_gui":
+                    self.assertNotIn("tests.test_gui", batch)
+                    continue
+                self.assertIn("tests." + module, batch)
+        # Whole-suite discovery would pull the GUI module back in.
+        self.assertNotIn("discover -s tests", batch)
+        # The exclusion is deliberate and explained where it is made.
+        self.assertIn("Issue #244", batch)
+        # What only this machine can prove still runs: the isolated import
+        # preflight and the startup smoke test of both frozen executables.
+        self.assertIn("windows7_import_preflight.py", batch)
+        self.assertIn("HPLC_Analyzer.exe --startup-smoke-test", batch)
+        self.assertIn("HPLC_Analyzer_Debug.exe --startup-smoke-test", batch)
+
     def test_offline_bundle_ships_every_contract_file_the_build_tests_read(self):
         """The Windows 7 offline build runs this suite before PyInstaller.
 

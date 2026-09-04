@@ -1,6 +1,6 @@
 # Codex 指示書 — Windows 11 実機フィードバック対応
 
-Updated: 2026-09-02（フ #238 delivery）rev.8
+Updated: 2026-09-04（ハ #236 実装完了、引き継ぎ中）rev.9
 
 この文書は**今回の作業の発注書**です。規約は持ちません。規約は `AGENTS.md`、
 バッチの詳細は `WIN11_FEEDBACK_WORKFLOW.md` にあります。

@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-05 (Issue #242 delivery)
+Updated: 2026-09-05 (Issues #249-#252 planning after Issue #242 delivery)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -40,6 +40,18 @@ The following are useful extensions, but are not gaps in the original requested 
 Windows 11 field use on `c5fe4c6` found three defects in rows listed above as implemented. Their root causes are recorded in `WIN11_FEEDBACK_WORKFLOW.md` section 9. Issues #238, #236 and #237 are fixed; their outcomes are recorded in the Peak fitting, Selection and display, and Integration selection feedback rows above. No confirmed source defect from that field-feedback set remains in this section.
 
 Issues #239, #240, #241 and #242 in the same batch are delivered. Issue #241 also closes the missing input floor behind a reported crash: manual axis tick spacing now starts at 0.1 min, rejects more than 5,000 combined ticks before apply, and has a renderer-side automatic fallback for unsafe legacy values or a later-expanded view. The persisted spacing fields remain in minutes. Issue #242 changes only Matplotlib figure presentation and session-only 3D options; it does not change project data or scientific results.
+
+Windows 11 field use on `8ecd0bf` found further defects in rows listed above as implemented, grouped into three issues. Their root causes are recorded in `WIN11_FEEDBACK_WORKFLOW.md` section 12 and each is confirmed.
+
+| Issue | Affected row | What is actually wrong |
+|---|---|---|
+| #249 | Selection and display | A zoom drag is cancelled the moment the pointer leaves the plot, because the handler re-tests the hit region on every motion event instead of holding the gesture until release — the same defect already fixed twice for panning. The overview panel of the overview-plus-detail view accepts only a click that recentres, so a range cannot be dragged there, and its highlight marks the X range while leaving Y at full height in both renderers |
+| #250 | Selection and display | Every scene rebuild paints one frame at full range before the saved view is restored, because the renderer auto-ranges all views and then calls `processEvents()` before the view state is applied. Switching to or from the split view destroys and rebuilds the preview, so the Matplotlib canvas is shown in between. A finished selection drag hides its band before the callback runs, so the selected range is retained but no longer visible |
+| #252 | Output and reports | Report content is driven entirely by `ReportOptions`, which is not connected to the screen's own display toggles, so clearing "show integration areas and baselines" still produces them in the report. The first page reserves about 0.62 inch at the left of an A4 sheet, which is not enough for the Y-axis title when printed. Peak areas are reported in mAU·sec through a `%.4g` format, so small values appear in scientific notation, and only the microgram amount is listed although both amounts are computed and already exported to CSV |
+
+Issue #251 in the same batch is a defaults change rather than a defect: new projects should open in the overview-plus-detail view, and default trace colours should follow the acquisition channel rather than only the 214 nm and 280 nm wavelength families.
+
+Two planning decisions in that batch reverse or constrain earlier ones. The 2026-09-02 decision to merge the toolbar's pan and zoom into one icon was withdrawn on 2026-09-03; zoom returns as an independent function while the one-to-one correspondence between mouse modes and toolbar icons still stands. And #252 removes the report table's type column, which is currently the only place in that table where a fitted row is marked as estimated, so the estimate marking has to survive in another column for the Issue #218 requirement to hold.
 
 ## Project compatibility notes for Issues #181 and #221
 

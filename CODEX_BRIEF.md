@@ -74,7 +74,7 @@ git log --oneline -1 origin/main
 `_handle_annotation_event` と `handle_event` 内のクリック選択フォールバック)。
 いずれも「クリック位置が既存の注釈・マーカーそのものなら `toolbar.mode` の判定を素通りさせる」
 という同じ形の修正が要りました。**この `toolbar.mode`(または `str(owner.toolbar.mode)`)を
-条件に使っている箇所が他にもないか、`grep -n "toolbar.mode" hplc_app/*.py` で一度确認してから
+条件に使っている箇所が他にもないか、`grep -n "toolbar.mode" hplc_app/*.py` で一度確認してから
 ヒ(#237)に着手することを強く勧めます。** ヒは `pyqtgraph_scene.py` の積分ハイライト再描画が
 主題ですが、同じファイル・同じイベント経路を触るため無関係ではありません。
 

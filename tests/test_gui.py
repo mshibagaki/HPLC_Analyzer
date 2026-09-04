@@ -56,6 +56,7 @@ from hplc_app.gui import (
     DATASET_SELECTED_COLUMN,
     DATASET_SOURCE_COLUMN,
     DATASET_TIMESTAMP_COLUMN,
+    DATASET_VISIBLE_COLUMN,
     DATASET_WAVELENGTH_COLUMN,
     DATASET_X_SHIFT_COLUMN,
     PEAK_COLUMN_COUNT,
@@ -8484,7 +8485,7 @@ class GuiTests(unittest.TestCase):
         click_selection_checkbox(1)
         self.assertEqual(window._selected_dataset_rows(), [0, 1])
         click_selection_checkbox(0)
-        self.assertEqual(window._selected_dataset_rows(), [1])
+        self.assertEqual(window._selected_dataset_rows(), [])
 
         selection = window.dataset_table.selectionModel()
         model = window.dataset_table.model()
@@ -8520,6 +8521,75 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(window.project.dirty)
         window.close()
 
+    def test_selected_visibility_checkbox_updates_all_rows_as_one_undo_step(self):
+        window = self.make_window()
+        window.show()
+        window.dataset_table.selectAll()
+        self.app.processEvents()
+        self.assertEqual(window._selected_dataset_rows(), [0, 1])
+        self.assertTrue(all(dataset.visible for dataset in window.project.datasets))
+
+        item = window.dataset_table.item(0, DATASET_VISIBLE_COLUMN)
+        rect = window.dataset_table.visualItemRect(item)
+        left_button = (
+            QtCore.Qt.MouseButton.LeftButton
+            if QT_API == 6
+            else QtCore.Qt.LeftButton
+        )
+        QtTest.QTest.mouseClick(
+            window.dataset_table.viewport(),
+            left_button,
+            pos=QtCore.QPoint(rect.left() + 10, rect.center().y()),
+        )
+        self.app.processEvents()
+
+        self.assertFalse(any(dataset.visible for dataset in window.project.datasets))
+        self.assertEqual(len(window._undo_stack), 1)
+        window.undo()
+        self.assertTrue(all(dataset.visible for dataset in window.project.datasets))
+        window.redo()
+        self.assertFalse(any(dataset.visible for dataset in window.project.datasets))
+        window.project.dirty = False
+        window.close()
+
+    def test_selected_selection_checkbox_clears_all_rows_without_project_edit(self):
+        window = self.make_window()
+        window.show()
+        window.dataset_table.selectAll()
+        self.app.processEvents()
+        visibility = [dataset.visible for dataset in window.project.datasets]
+
+        item = window.dataset_table.item(0, DATASET_SELECTED_COLUMN)
+        rect = window.dataset_table.visualItemRect(item)
+        left_button = (
+            QtCore.Qt.MouseButton.LeftButton
+            if QT_API == 6
+            else QtCore.Qt.LeftButton
+        )
+        QtTest.QTest.mouseClick(
+            window.dataset_table.viewport(),
+            left_button,
+            pos=QtCore.QPoint(rect.left() + 10, rect.center().y()),
+        )
+        self.app.processEvents()
+
+        self.assertEqual(window._selected_dataset_rows(), [])
+        self.assertEqual(
+            [
+                window.dataset_table.item(
+                    row, DATASET_SELECTED_COLUMN
+                ).checkState()
+                for row in range(window.dataset_table.rowCount())
+            ],
+            [UNCHECKED, UNCHECKED],
+        )
+        self.assertEqual(
+            [dataset.visible for dataset in window.project.datasets], visibility
+        )
+        self.assertEqual(window._undo_stack, [])
+        self.assertFalse(window.project.dirty)
+        window.close()
+
     def test_dataset_buttons_are_grouped_in_the_requested_analysis_order(self):
         window = self.make_window()
         self.assertEqual(window.dataset_data_group.title(), "データ")
@@ -8528,10 +8598,6 @@ class GuiTests(unittest.TestCase):
         data_order = (
             window.import_button,
             window.remove_button,
-            window.metadata_button,
-            window.gradient_button,
-            window.group_run_button,
-            window.ungroup_run_button,
         )
         for index, button in enumerate(data_order):
             self.assertIs(
@@ -8543,6 +8609,8 @@ class GuiTests(unittest.TestCase):
         analysis_order = (
             window.batch_metadata_button,
             window.color_button,
+            window.group_run_button,
+            window.ungroup_run_button,
         )
         for index, button in enumerate(analysis_order):
             self.assertIs(
@@ -8551,19 +8619,45 @@ class GuiTests(unittest.TestCase):
                 ).widget(),
                 button,
             )
+        self.assertIs(
+            window.spectrum_display_group.layout().itemAtPosition(0, 0).widget(),
+            window.show_all_button,
+        )
+        self.assertIs(
+            window.spectrum_display_group.layout().itemAtPosition(0, 1).widget(),
+            window.hide_all_button,
+        )
         self.assertEqual(
-            [button.text() for button in analysis_order],
+            [button.text() for button in analysis_order[:2]],
             [
                 "測定・試料条件の入力",
                 "表示設定",
             ],
         )
+        self.assertFalse(hasattr(window, "metadata_button"))
+        self.assertFalse(hasattr(window, "gradient_button"))
+        conditions = BatchMetadataDialog(
+            window.project, window.project.datasets[0].id, "ja"
+        )
+        self.assertGreaterEqual(
+            conditions.operation_group.layout().indexOf(
+                conditions.edit_details_button
+            ),
+            0,
+        )
+        self.assertGreaterEqual(
+            conditions.operation_group.layout().indexOf(
+                conditions.edit_gradient_button
+            ),
+            0,
+        )
+        conditions.close()
         window.set_language("en")
         self.assertEqual(window.dataset_data_group.title(), "Data")
         self.assertEqual(window.dataset_analysis_group.title(), "Analysis")
         self.assertEqual(window.spectrum_display_group.title(), "Spectrum display")
         self.assertEqual(
-            [button.text() for button in analysis_order],
+            [button.text() for button in analysis_order[:2]],
             ["Measurement / sample conditions input", "Display settings"],
         )
         window.project.dirty = False
@@ -8596,6 +8690,60 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(changes[first.id]["color"], "#123456")
         self.assertNotIn(second.id, changes)
         dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_display_settings_target_lists_all_traces_and_applies_one_undo_step(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        first.color = "#112233"
+        first.line_style = "dashed"
+        second.color = ""
+        second.line_style = "dotted"
+        window._refresh_all(0)
+
+        def configure(dialog):
+            self.assertEqual(
+                [
+                    dialog.target_combo.itemData(index)
+                    for index in range(dialog.target_combo.count())
+                ],
+                [first.id, second.id],
+            )
+            dialog.single_color = "#abcdef"
+            dialog.line_style_combo.setCurrentIndex(
+                dialog.line_style_combo.findData("dash_dot")
+            )
+            dialog.target_combo.setCurrentIndex(1)
+            self.assertIs(dialog.dataset, second)
+            self.assertEqual(dialog.single_color, "")
+            self.assertEqual(
+                dialog.single_color_button.text(),
+                dialog.resolved_colors[second.id],
+            )
+            self.assertEqual(
+                dialog.line_style_combo.currentData(), "dotted"
+            )
+            dialog.single_color = "#123456"
+            dialog.line_style_combo.setCurrentIndex(
+                dialog.line_style_combo.findData("solid")
+            )
+            return True
+
+        with patch("hplc_app.gui.dialog_exec", side_effect=configure):
+            window.change_color()
+
+        self.assertEqual(first.color, "#112233")
+        self.assertEqual(first.line_style, "dashed")
+        self.assertEqual(second.color, "#123456")
+        self.assertEqual(second.line_style, "solid")
+        self.assertEqual(len(window._undo_stack), 1)
+        window.undo()
+        self.assertEqual(second.color, "")
+        self.assertEqual(second.line_style, "dotted")
+        window.redo()
+        self.assertEqual(second.color, "#123456")
+        self.assertEqual(second.line_style, "solid")
         window.project.dirty = False
         window.close()
 

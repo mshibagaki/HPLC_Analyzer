@@ -842,10 +842,18 @@ class DisplaySettingsDialog(QtWidgets.QDialog):
         resolved_colors,
         language="ja",
         parent=None,
+        available_datasets=None,
     ):
         super().__init__(parent)
         self.dataset = dataset
         self.selected_datasets = list(selected_datasets)
+        self.available_datasets = list(
+            available_datasets
+            if available_datasets is not None
+            else self.selected_datasets
+        )
+        if not any(item.id == dataset.id for item in self.available_datasets):
+            self.available_datasets.append(dataset)
         self.resolved_colors = dict(resolved_colors)
         self.language = language
         self.single_color = dataset.color
@@ -854,10 +862,17 @@ class DisplaySettingsDialog(QtWidgets.QDialog):
         root = QtWidgets.QVBoxLayout(self)
 
         form = QtWidgets.QFormLayout()
-        target = dataset.label or dataset.original_filename
+        self.target_combo = QtWidgets.QComboBox()
+        for item in self.available_datasets:
+            self.target_combo.addItem(
+                item.label or item.original_filename, item.id
+            )
+        self.target_combo.setCurrentIndex(
+            max(0, self.target_combo.findData(dataset.id))
+        )
         form.addRow(
             "対象トレース" if language == "ja" else "Target trace",
-            QtWidgets.QLabel(target),
+            self.target_combo,
         )
         self.line_style_combo = QtWidgets.QComboBox()
         line_style_labels = {
@@ -956,9 +971,30 @@ class DisplaySettingsDialog(QtWidgets.QDialog):
 
         self.single_color_button.clicked.connect(self._pick_single_color)
         self.color_mode_combo.currentIndexChanged.connect(self._update_controls)
+        self.target_combo.currentIndexChanged.connect(self._load_target)
         self.colormap_combo.currentIndexChanged.connect(self._refresh_preview)
         self.density_slider.valueChanged.connect(self._refresh_preview)
         self._update_controls()
+
+    def _load_target(self, *_args):
+        dataset_id = self.target_combo.currentData()
+        target = next(
+            (
+                item
+                for item in self.available_datasets
+                if item.id == dataset_id
+            ),
+            None,
+        )
+        if target is None:
+            return
+        self.dataset = target
+        self.single_color = target.color
+        self.line_style_combo.setCurrentIndex(
+            max(0, self.line_style_combo.findData(target.line_style))
+        )
+        self._update_single_color_button()
+        self._refresh_preview()
 
     def _display_single_color(self):
         return self.single_color or self.resolved_colors.get(

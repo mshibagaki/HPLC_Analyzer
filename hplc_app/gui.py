@@ -614,6 +614,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dataset_header_update_guard = False
         self._dataset_selection_sync_guard = False
         self._dataset_checkbox_press = False
+        self._dataset_checkbox_target_rows = []
         self._span_selector = None
         self._span_selector_mode = None
         self._view_state = None
@@ -1360,9 +1361,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self.dataset_table, 1)
         self.import_button = QtWidgets.QPushButton()
         self.remove_button = QtWidgets.QPushButton()
-        self.metadata_button = QtWidgets.QPushButton()
         self.batch_metadata_button = QtWidgets.QPushButton()
-        self.gradient_button = QtWidgets.QPushButton()
         self.color_button = QtWidgets.QPushButton()
         self.show_all_button = QtWidgets.QPushButton()
         self.hide_all_button = QtWidgets.QPushButton()
@@ -1376,10 +1375,6 @@ class MainWindow(QtWidgets.QMainWindow):
         data_buttons = (
             self.import_button,
             self.remove_button,
-            self.metadata_button,
-            self.gradient_button,
-            self.group_run_button,
-            self.ungroup_run_button,
         )
         for index, button in enumerate(data_buttons):
             self.dataset_data_layout.addWidget(button, index // 2, index % 2)
@@ -1392,6 +1387,8 @@ class MainWindow(QtWidgets.QMainWindow):
         analysis_buttons = (
             self.batch_metadata_button,
             self.color_button,
+            self.group_run_button,
+            self.ungroup_run_button,
         )
         for index, button in enumerate(analysis_buttons):
             self.dataset_analysis_layout.addWidget(button, index // 2, index % 2)
@@ -1408,9 +1405,7 @@ class MainWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self.spectrum_display_group)
         self.import_button.clicked.connect(self.import_ascii)
         self.remove_button.clicked.connect(self.remove_dataset)
-        self.metadata_button.clicked.connect(self.edit_metadata)
         self.batch_metadata_button.clicked.connect(self.edit_batch_metadata)
-        self.gradient_button.clicked.connect(self.edit_gradient)
         self.color_button.clicked.connect(self.change_color)
         self.show_all_button.clicked.connect(lambda: self.set_all_datasets_visible(True))
         self.hide_all_button.clicked.connect(lambda: self.set_all_datasets_visible(False))
@@ -1921,10 +1916,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 if hasattr(position, "toPoint"):
                     position = position.toPoint()
                 index = self.dataset_table.indexAt(position)
+                checkbox_columns = (
+                    DATASET_SELECTED_COLUMN,
+                    DATASET_VISIBLE_COLUMN,
+                )
+                selected_rows = self._selected_dataset_rows()
+                self._dataset_checkbox_target_rows = (
+                    selected_rows
+                    if (
+                        index.isValid()
+                        and index.column() in checkbox_columns
+                        and index.row() in selected_rows
+                        and len(selected_rows) > 1
+                    )
+                    else []
+                )
                 self._dataset_checkbox_press = bool(
                     index.isValid() and index.column() == DATASET_SELECTED_COLUMN
                 )
-                if self._dataset_checkbox_press:
+                if index.isValid() and index.column() in checkbox_columns:
                     QtCore.QTimer.singleShot(0, self._finish_dataset_checkbox_press)
             if event.type() == wheel_type and event.modifiers() & shift_modifier:
                 delta = event.angleDelta().y() or event.angleDelta().x()
@@ -2377,9 +2387,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.import_button.setText(t("add"))
         self.remove_button.setText(t("remove"))
-        self.metadata_button.setText(t("metadata"))
         self.batch_metadata_button.setText(t("batch_input"))
-        self.gradient_button.setText(t("gradient"))
         self.color_button.setText(t("spectrum"))
         self.show_all_button.setText(t("show_all"))
         self.hide_all_button.setText(t("hide_all"))
@@ -2787,7 +2795,23 @@ class MainWindow(QtWidgets.QMainWindow):
         row, column = item.row(), item.column()
         if row < 0 or row >= len(self.project.datasets):
             return
+        selected_rows = self._selected_dataset_rows()
+        target_rows = list(self._dataset_checkbox_target_rows)
+        self._dataset_checkbox_target_rows = []
+        if not target_rows and row in selected_rows and len(selected_rows) > 1:
+            target_rows = selected_rows
         if column == DATASET_SELECTED_COLUMN:
+            if target_rows:
+                self._dataset_selection_sync_guard = True
+                try:
+                    for target_row in target_rows:
+                        target = self.dataset_table.item(
+                            target_row, DATASET_SELECTED_COLUMN
+                        )
+                        if target is not None:
+                            target.setCheckState(item.checkState())
+                finally:
+                    self._dataset_selection_sync_guard = False
             self._dataset_checkbox_press = False
             self._apply_dataset_checkbox_selection(row)
             return
@@ -2797,7 +2821,21 @@ class MainWindow(QtWidgets.QMainWindow):
         shared_run_changed = False
         try:
             if column == DATASET_VISIBLE_COLUMN:
-                dataset.visible = item.checkState() == CHECKED
+                visible = item.checkState() == CHECKED
+                visibility_rows = target_rows or [row]
+                self._updating_table = True
+                try:
+                    for target_row in visibility_rows:
+                        self.project.datasets[target_row].visible = visible
+                        target = self.dataset_table.item(
+                            target_row, DATASET_VISIBLE_COLUMN
+                        )
+                        if target is not None:
+                            target.setCheckState(
+                                CHECKED if visible else UNCHECKED
+                            )
+                finally:
+                    self._updating_table = False
             elif column == DATASET_RUN_ID_COLUMN:
                 changed = self.project.rename_run(
                     self.project.run_for(dataset), item.text()
@@ -2923,8 +2961,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _finish_dataset_checkbox_press(self):
         if not self._dataset_checkbox_press:
+            self._dataset_checkbox_target_rows = []
             return
         self._dataset_checkbox_press = False
+        self._dataset_checkbox_target_rows = []
         self._dataset_selection_changed()
 
     def _dataset_selection_changed(self):
@@ -6733,6 +6773,7 @@ class MainWindow(QtWidgets.QMainWindow):
             resolved_colors,
             self._application_language,
             self,
+            available_datasets=self.project.datasets,
         )
         if not dialog_exec(dialog):
             return

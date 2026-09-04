@@ -57,7 +57,14 @@ from .plot3d import (
     build_3d_chromatogram_figure,
     gradient_colors,
 )
-from .rendering import HIGH_QUALITY, LIGHTWEIGHT, normalize_render_quality
+from .rendering import (
+    HIGH_QUALITY,
+    LIGHTWEIGHT,
+    MAX_MANUAL_X_TICK_COUNT,
+    MIN_MANUAL_X_TICK_SPACING_MIN,
+    manual_x_tick_count,
+    normalize_render_quality,
+)
 from .screen_scene import (
     MAX_FRACTION_BOUNDARY_LINES,
     fraction_boundary_count,
@@ -4469,11 +4476,20 @@ class LegendComposerDialog(QtWidgets.QDialog):
 class AxisLabelsDialog(QtWidgets.QDialog):
     """Axis text, tick spacing and label styles kept outside the main window."""
 
-    def __init__(self, method: AnalysisMethod, language: str = "ja", parent=None):
+    def __init__(
+        self,
+        method: AnalysisMethod,
+        language: str = "ja",
+        parent=None,
+        x_span_min=None,
+    ):
         super().__init__(parent)
         self.language = language
+        self.x_span_min = x_span_min
         self.setWindowTitle(
-            "軸・ラベル設定" if language == "ja" else "Axes and label styles"
+            "軸・ラベル・書式設定"
+            if language == "ja"
+            else "Axes, labels and formatting"
         )
         self.resize(720, 660)
         root = QtWidgets.QVBoxLayout(self)
@@ -4519,16 +4535,37 @@ class AxisLabelsDialog(QtWidgets.QDialog):
         self.x_major_tick = QtWidgets.QDoubleSpinBox()
         self.x_minor_tick = QtWidgets.QDoubleSpinBox()
         for widget in (self.x_major_tick, self.x_minor_tick):
-            widget.setRange(0.000001, 1000000.0)
-            widget.setDecimals(6)
-        self.x_major_tick.setValue(max(float(method.x_major_tick_min), 0.000001))
-        self.x_minor_tick.setValue(max(float(method.x_minor_tick_min), 0.000001))
+            widget.setRange(MIN_MANUAL_X_TICK_SPACING_MIN, 1000000.0)
+            widget.setDecimals(1)
+        self.x_major_tick.setValue(
+            max(float(method.x_major_tick_min), MIN_MANUAL_X_TICK_SPACING_MIN)
+        )
+        self.x_minor_tick.setValue(
+            max(float(method.x_minor_tick_min), MIN_MANUAL_X_TICK_SPACING_MIN)
+        )
         ticks_form.addRow("モード" if language == "ja" else "Mode", self.tick_mode_combo)
         ticks_form.addRow("主目盛間隔 (min)" if language == "ja" else "Major spacing (min)", self.x_major_tick)
         ticks_form.addRow("副目盛間隔 (min)" if language == "ja" else "Minor spacing (min)", self.x_minor_tick)
         self.tick_mode_combo.currentIndexChanged.connect(self._sync_tick_mode)
         self._sync_tick_mode()
         root.addWidget(ticks_group)
+
+        format_group = QtWidgets.QGroupBox(
+            "線の書式" if language == "ja" else "Line formatting"
+        )
+        format_form = QtWidgets.QFormLayout(format_group)
+        self.line_width = QtWidgets.QDoubleSpinBox()
+        self.line_width.setRange(0.1, 10.0)
+        self.line_width.setDecimals(1)
+        self.line_width.setSingleStep(0.1)
+        self.line_width.setValue(float(method.line_width))
+        format_form.addRow(
+            "クロマトグラム線幅"
+            if language == "ja"
+            else "Chromatogram line width",
+            self.line_width,
+        )
+        root.addWidget(format_group)
 
         styles_group = QtWidgets.QGroupBox(
             "フォント・サイズ・色" if language == "ja" else "Font, size and color"
@@ -4634,6 +4671,29 @@ class AxisLabelsDialog(QtWidgets.QDialog):
                 else "Minor spacing must be smaller than major spacing.",
             )
             return
+        if (
+            self.tick_mode_combo.currentData() == "manual"
+            and self.x_span_min is not None
+        ):
+            count = manual_x_tick_count(
+                self.x_span_min,
+                self.x_major_tick.value(),
+                self.x_minor_tick.value(),
+            )
+            if count > MAX_MANUAL_X_TICK_COUNT:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "Too many ticks",
+                    (
+                        "現在の表示範囲では主目盛と副目盛が合計{count:,}本になります。"
+                        "最大{limit:,}本までです。表示範囲を狭めるか、間隔を長くしてください。"
+                        if self.language == "ja"
+                        else "The current view would contain {count:,} major and minor "
+                        "ticks in total. The maximum is {limit:,}. Narrow the view or "
+                        "increase the spacing."
+                    ).format(count=count, limit=MAX_MANUAL_X_TICK_COUNT),
+                )
+                return
         self.accept()
 
     def apply_to_method(self, method: AnalysisMethod):
@@ -4644,6 +4704,7 @@ class AxisLabelsDialog(QtWidgets.QDialog):
         method.x_tick_mode = self.tick_mode_combo.currentData() or "auto"
         method.x_major_tick_min = self.x_major_tick.value()
         method.x_minor_tick_min = self.x_minor_tick.value()
+        method.line_width = self.line_width.value()
         method.axis_label_font_family = self.axis_font_combo.currentFont().family()
         method.axis_label_font_size = self.axis_font_size.value()
         method.axis_label_color = self.axis_color_button.color_name

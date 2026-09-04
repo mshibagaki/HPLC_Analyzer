@@ -30,6 +30,51 @@ MATPLOTLIB_LINE_STYLES = {
     "dotted": ":",
     "dash_dot": "-.",
 }
+MIN_MANUAL_X_TICK_SPACING_MIN = 0.1
+MAX_MANUAL_X_TICK_COUNT = 5000
+
+
+def manual_x_tick_count(x_span_min, major_spacing_min, minor_spacing_min) -> int:
+    """Return a conservative count for both manual X-axis tick levels."""
+
+    try:
+        span = abs(float(x_span_min))
+        major = float(major_spacing_min)
+        minor = float(minor_spacing_min)
+    except (TypeError, ValueError, OverflowError):
+        return MAX_MANUAL_X_TICK_COUNT + 1
+    if (
+        not all(math.isfinite(value) for value in (span, major, minor))
+        or major < MIN_MANUAL_X_TICK_SPACING_MIN
+        or minor < MIN_MANUAL_X_TICK_SPACING_MIN
+        or minor >= major
+    ):
+        return MAX_MANUAL_X_TICK_COUNT + 1
+    major_intervals = span / major
+    minor_intervals = span / minor
+    if (
+        not math.isfinite(major_intervals)
+        or not math.isfinite(minor_intervals)
+    ):
+        return MAX_MANUAL_X_TICK_COUNT + 1
+    return (
+        int(math.ceil(major_intervals))
+        + int(math.ceil(minor_intervals))
+        + 4
+    )
+
+
+def safe_manual_x_tick_spacing(
+    x_span_min, major_spacing_min, minor_spacing_min
+) -> Optional[Tuple[float, float]]:
+    """Return validated manual spacing, or None to request automatic ticks."""
+
+    count = manual_x_tick_count(
+        x_span_min, major_spacing_min, minor_spacing_min
+    )
+    if count > MAX_MANUAL_X_TICK_COUNT:
+        return None
+    return float(major_spacing_min), float(minor_spacing_min)
 
 
 def matplotlib_line_style(value: object) -> str:

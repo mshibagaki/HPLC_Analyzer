@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import Mock, PropertyMock, patch
 
 import numpy as np
+from matplotlib.ticker import MultipleLocator
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -9090,6 +9091,16 @@ class GuiTests(unittest.TestCase):
     def test_axis_label_dialog_applies_text_tick_and_retention_styles(self):
         window = self.make_window()
         dialog = AxisLabelsDialog(window.project.method, "ja")
+        self.assertEqual(dialog.windowTitle(), "軸・ラベル・書式設定")
+        self.assertEqual(window.axis_labels_button.text(), "軸・ラベル・書式設定…")
+        self.assertEqual(
+            window.toolbar._actions["configure_subplots"].toolTip(),
+            "軸・ラベル・書式設定…",
+        )
+        self.assertAlmostEqual(dialog.x_major_tick.minimum(), 0.1)
+        self.assertAlmostEqual(dialog.x_minor_tick.minimum(), 0.1)
+        self.assertEqual(dialog.x_major_tick.decimals(), 1)
+        self.assertEqual(dialog.x_minor_tick.decimals(), 1)
         dialog.x_label.setText("Time after injection (min)")
         dialog.tick_mode_combo.setCurrentIndex(
             dialog.tick_mode_combo.findData("manual")
@@ -9099,6 +9110,7 @@ class GuiTests(unittest.TestCase):
         dialog.axis_font_size.setValue(13.0)
         dialog.tick_font_size.setValue(8.0)
         dialog.retention_font_size.setValue(11.0)
+        dialog.line_width.setValue(2.4)
         dialog.axis_color_button.color_name = "#123456"
         dialog.tick_color_button.color_name = "#654321"
         dialog.retention_color_button.color_name = "#000000"
@@ -9110,11 +9122,110 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.axes.xaxis.label.get_color(), "#123456")
         self.assertTrue(window.axes.texts)
         self.assertTrue(all(text.get_color() == "#000000" for text in window.axes.texts))
+        self.assertAlmostEqual(window.project.method.line_width, 2.4)
+        self.assertTrue(
+            any(abs(line.get_linewidth() - 2.4) < 1.0e-9 for line in window.axes.lines)
+        )
         major = window.axes.xaxis.get_major_locator().tick_values(0.0, 10.0)
         minor = window.axes.xaxis.get_minor_locator().tick_values(0.0, 10.0)
         self.assertAlmostEqual(major[1] - major[0], 2.0, places=8)
         self.assertAlmostEqual(minor[1] - minor[0], 0.5, places=8)
         dialog.reject()
+        window.project.dirty = False
+        window.close()
+
+    def test_axis_format_settings_warn_before_excessive_tick_count(self):
+        window = self.make_window()
+        dialog = AxisLabelsDialog(
+            window.project.method,
+            "ja",
+            x_span_min=1000.0,
+        )
+        dialog.tick_mode_combo.setCurrentIndex(
+            dialog.tick_mode_combo.findData("manual")
+        )
+        dialog.x_major_tick.setValue(0.2)
+        dialog.x_minor_tick.setValue(0.1)
+        with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+            dialog._accept()
+        warning.assert_called_once()
+        self.assertIn("5,000", warning.call_args.args[2])
+        self.assertIn("15,004", warning.call_args.args[2])
+        self.assertEqual(dialog.result(), 0)
+        dialog.reject()
+        english = AxisLabelsDialog(window.project.method, "en")
+        self.assertEqual(english.windowTitle(), "Axes, labels and formatting")
+        english.reject()
+        window.set_language("en")
+        self.assertEqual(
+            window.axis_labels_button.text(), "Axes, labels and formatting…"
+        )
+        self.assertEqual(
+            window.toolbar._actions["configure_subplots"].toolTip(),
+            "Axes, labels and formatting…",
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_unsafe_persisted_tick_spacing_falls_back_without_mutating_method(self):
+        window = self.make_window()
+        method = window.project.method
+        window.axes.set_xlim(0.0, 1000.0)
+        method.x_tick_mode = "manual"
+        method.x_major_tick_min = 0.05
+        method.x_minor_tick_min = 0.01
+        with patch("hplc_app.gui.MultipleLocator", wraps=MultipleLocator) as locator:
+            window._set_dynamic_x_ticks()
+        spacings = [call.args[0] for call in locator.call_args_list]
+        self.assertNotIn(0.05, spacings)
+        self.assertNotIn(0.01, spacings)
+        self.assertEqual(method.x_major_tick_min, 0.05)
+        self.assertEqual(method.x_minor_tick_min, 0.01)
+
+        method.x_major_tick_min = 0.2
+        method.x_minor_tick_min = 0.1
+        with patch("hplc_app.gui.MultipleLocator", wraps=MultipleLocator) as locator:
+            window._set_dynamic_x_ticks()
+        widened_spacings = [call.args[0] for call in locator.call_args_list]
+        self.assertNotIn(0.2, widened_spacings)
+        self.assertNotIn(0.1, widened_spacings)
+        self.assertEqual(method.x_major_tick_min, 0.2)
+        self.assertEqual(method.x_minor_tick_min, 0.1)
+
+        if pyqtgraph_scene_available():
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            bottom = preview.consumer.primary.getAxis("bottom")
+            with patch.object(bottom, "setTickSpacing") as set_spacing:
+                preview.refresh()
+            set_spacing.assert_called_once_with()
+        window.project.dirty = False
+        window.close()
+
+    def test_axis_format_line_width_is_one_undo_step_with_renamed_history(self):
+        window = self.make_window()
+        original = window.project.method.line_width
+
+        class AcceptedDialog:
+            def apply_to_method(self, method):
+                method.line_width = 2.7
+
+        with patch("hplc_app.gui.AxisLabelsDialog", return_value=AcceptedDialog()), patch(
+            "hplc_app.gui.dialog_exec", return_value=True
+        ):
+            window.edit_axis_labels()
+        self.assertAlmostEqual(window.project.method.line_width, 2.7)
+        self.assertEqual(window._undo_stack[-1][0], "軸・ラベル・書式設定")
+        self.assertTrue(
+            all(
+                abs(trace.line_width - 2.7) < 1.0e-9
+                for trace in window._screen_scene.traces
+            )
+        )
+        window.undo()
+        self.assertAlmostEqual(window.project.method.line_width, original)
+        window.redo()
+        self.assertAlmostEqual(window.project.method.line_width, 2.7)
         window.project.dirty = False
         window.close()
 

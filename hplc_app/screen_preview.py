@@ -23,6 +23,7 @@ from .qt_compat import (
 )
 from .screen_events import ScreenPointerEvent
 from .screen_navigation import compose_overview_state
+from .rendering import safe_manual_x_tick_spacing
 
 
 class ExperimentalScreenPreview:
@@ -149,15 +150,21 @@ class ExperimentalScreenPreview:
             x_axes = [primary.getAxis("bottom")]
             if lower is not None:
                 x_axes.append(lower.getAxis("bottom"))
+            state = owner._screen_view_state()
             if owner.project.method.x_tick_mode == "manual":
-                for axis in x_axes:
-                    axis.setTickSpacing(
-                        owner.project.method.x_major_tick_min,
-                        owner.project.method.x_minor_tick_min,
-                    )
+                spacing = safe_manual_x_tick_spacing(
+                    abs(state.x[1] - state.x[0]),
+                    owner.project.method.x_major_tick_min,
+                    owner.project.method.x_minor_tick_min,
+                )
             else:
+                spacing = None
+            if spacing is None:
                 for axis in x_axes:
                     axis.setTickSpacing()
+            else:
+                for axis in x_axes:
+                    axis.setTickSpacing(*spacing)
             axes = [primary.getAxis("bottom"), primary.getAxis("left")]
             axes.extend(layer[1] for layer in self.consumer.gradient_layers)
             if lower is None:
@@ -188,7 +195,6 @@ class ExperimentalScreenPreview:
                     right.setStyle(showValues=False)
                     right.setPen(None)
                     right.setWidth(0)
-            state = owner._screen_view_state()
             self.consumer.apply_view_state(state, compose_overview_state(
                 owner.project.method.view_mode == "overview_detail",
                 owner._full_x_bounds(), state.x,

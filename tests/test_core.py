@@ -3510,6 +3510,7 @@ class ProjectTests(unittest.TestCase):
         project.method.x_tick_mode = "manual"
         project.method.x_major_tick_min = 2.0
         project.method.x_minor_tick_min = 0.5
+        project.method.line_width = 2.4
         project.method.axis_label_font_family = "Arial"
         project.method.axis_label_font_size = 12.0
         project.method.axis_label_color = "#123456"
@@ -3546,10 +3547,17 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.method.x_tick_mode, "manual")
             self.assertEqual(loaded.method.x_major_tick_min, 2.0)
             self.assertEqual(loaded.method.x_minor_tick_min, 0.5)
+            self.assertEqual(loaded.method.line_width, 2.4)
             self.assertEqual(loaded.method.axis_label_font_family, "Arial")
             self.assertEqual(loaded.method.axis_label_color, "#123456")
             self.assertEqual(loaded.method.retention_label_font_size, 11.5)
             self.assertEqual(loaded.method.retention_label_color, "#000000")
+            loaded.method.x_major_tick_min = 0.05
+            loaded.method.x_minor_tick_min = 0.01
+            save_project(path, loaded)
+            legacy_spacing = load_project(path)
+            self.assertEqual(legacy_spacing.method.x_major_tick_min, 0.05)
+            self.assertEqual(legacy_spacing.method.x_minor_tick_min, 0.01)
             self.assertEqual(loaded.method.auto_peak_snr_threshold, 8.0)
             loaded_meta = loaded.datasets[0].measurement
             self.assertEqual(loaded_meta.analyte_id, "analyte-ll37")
@@ -4394,6 +4402,7 @@ class ProjectTests(unittest.TestCase):
         )
         dataset.fitted_peaks = [fitted_peak]
         project = Project(title="Report test", datasets=[dataset])
+        project.method.line_width = 2.4
         figures = analysis_report_figures(project, [dataset], "en")
         plot_axis = next(
             axis
@@ -4407,6 +4416,7 @@ class ProjectTests(unittest.TestCase):
             if line.get_label() == project.legend_label_for(dataset)
         )
         self.assertEqual(trace_line.get_linestyle(), ":")
+        self.assertAlmostEqual(trace_line.get_linewidth(), 2.4)
         self.assertIn(retention_label, [text.get_text() for text in plot_axis.texts])
         boundary_lines = [
             line

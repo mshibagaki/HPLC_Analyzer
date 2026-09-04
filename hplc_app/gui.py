@@ -34,6 +34,7 @@ from .dialogs import (
     FractionRangeDialog,
     GradientDialog,
     IntegrationListDialog,
+    LeftElideDelegate,
     LegendComposerDialog,
     LabDatabaseDialog,
     MetadataDialog,
@@ -420,22 +421,6 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
         else:
             self.canvas.draw_idle()
         self.push_current()
-
-
-class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
-    """Keep the end of long paths visible when the source column is narrow."""
-
-    def paint(self, painter, option, index):
-        styled = QtWidgets.QStyleOptionViewItem(option)
-        self.initStyleOption(styled, index)
-        mode = QtCore.Qt.TextElideMode.ElideLeft if QT_API == 6 else QtCore.Qt.ElideLeft
-        styled.text = styled.fontMetrics.elidedText(styled.text, mode, styled.rect.width())
-        if QT_API == 6:
-            control = QtWidgets.QStyle.ControlElement.CE_ItemViewItem
-        else:
-            control = QtWidgets.QStyle.CE_ItemViewItem
-        style = styled.widget.style() if styled.widget is not None else QtWidgets.QApplication.style()
-        style.drawControl(control, styled, painter, styled.widget)
 
 
 class ColorCellDelegate(QtWidgets.QStyledItemDelegate):

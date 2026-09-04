@@ -968,7 +968,7 @@ def emg_profile(x, center, sigma, tau):
 **同じデリゲートを 2 つ書かないでください。** 幅も、内容に合わせるか利用者が
 広げられるようにするかを決めてください。
 
-### 9.7 Run ID セルは明示的に読み取り専用（確定）
+### 9.7 Run ID セルが明示的に読み取り専用だった（原因確定）
 
 ```python
             run_id = QtWidgets.QTableWidgetItem(dataset.run_id)
@@ -1586,22 +1586,42 @@ pan ツールの説明文が元々「左ボタンでパン、右ボタンでズ�
   - その下に、条件プリセット・グラジエントプリセットをこの順で配置
 
 受け入れ条件
-- [ ] 元ファイル列で、末尾（ファイル名側）が読める形になっている
-- [ ] 列幅を変えても省略のされ方が破綻しない
-- [ ] Run ID セルをダブルクリックすると編集できる
-- [ ] 空の Run ID と、既存の Run ID との重複が拒否される
-- [ ] 改名が Run 全体に効き、同じ Run の他の行の表示も更新される
-- [ ] 改名が Undo / Redo の 1 ステップとして扱われる
-- [ ] 「コピーする条件」ダイアログの既定チェックが AU/V・流量・カラムの 3 つだけに
+- [x] 元ファイル列で、末尾（ファイル名側）が読める形になっている
+- [x] 列幅を変えても省略のされ方が破綻しない
+- [x] Run ID セルをダブルクリックすると編集できる
+- [x] 空の Run ID と、既存の Run ID との重複が拒否される
+- [x] 改名が Run 全体に効き、同じ Run の他の行の表示も更新される
+- [x] 改名が Undo / Redo の 1 ステップとして扱われる
+- [x] 「コピーする条件」ダイアログの既定チェックが AU/V・流量・カラムの 3 つだけに
       なっている
-- [ ] 既定以外のチェックを変える操作が従来どおりできる
-- [ ] Shift / Ctrl で行をまとめて選択でき、「選択」列のチェックがそれに追従する
-- [ ] 「全データを選択」「同じグループを選択」「選択解除」が退行していない
-- [ ] 上部が「選択」「操作」「プリセット」の順に並び、各欄のボタンが指定の順序で
+- [x] 既定以外のチェックを変える操作が従来どおりできる
+- [x] Shift / Ctrl で行をまとめて選択でき、「選択」列のチェックがそれに追従する
+- [x] 「全データを選択」「同じグループを選択」「選択解除」が退行していない
+- [x] 上部が「選択」「操作」「プリセット」の順に並び、各欄のボタンが指定の順序で
       並んでいる
-- [ ] 並べ替えでどのボタンも失われていない
-- [ ] Run 統合・分離、詳細設定、グラジエント、コピー、ペーストの動作が退行していない
-- [ ] `REQUIREMENTS_STATUS.md` を更新する
+- [x] 並べ替えでどのボタンも失われていない
+- [x] Run 統合・分離、詳細設定、グラジエント、コピー、ペーストの動作が退行していない
+- [x] `REQUIREMENTS_STATUS.md` を更新する
+
+実装・実測（2026-09-04）:
+- `LeftElideDelegate` を `dialogs.py` へ移してホーム表と条件表で共有し、現在の列幅を
+  使う左省略と完全パスのツールチップを
+  `test_batch_dialog_source_path_elides_left_at_resized_widths` で固定した。
+- Run ID は同一 Run の全行へ表上で同期するが、OK までは Project を変更しない。
+  OK 時は `Project.rename_run` を一時 ID 経由で検証用コピーに適用してから実体へ適用するため、
+  空・重複を原子的に拒否し、Run 全体の改名と MainWindow の 1 ステップ Undo / Redo を保つ。
+  `test_batch_dialog_run_id_edit_is_staged_shared_and_one_undo_step` と
+  `test_batch_dialog_run_id_rejects_empty_and_duplicate_atomically` で確認した。
+- コピー既定、Shift / Ctrl 選択とチェック欄の同期、3 群の順序と全ボタン保持は
+  `test_condition_copy_defaults_to_auv_flow_and_column_only` と
+  `test_batch_dialog_selection_sync_and_control_group_order` で固定した。既存の batch 関連
+  19 テスト、条件コピー 4 テスト、Run 統合・分離 2 テストも通過した。
+- Windows 11 / Python 3.11.9 x64 / PySide6 6.8.3 で全 380 テストが
+  627.260 秒で成功した。Python 3.8.10 x86 の変更 Python 3 ファイルの構文確認、
+  現行環境の `compileall`、`ci_validate.py --offline-assets auto`（Level 2 source contracts と
+  Windows 7 オフライン manifest / wheelhouse）も成功した。スキーマ、依存 pin、科学計算、
+  生データ、オフラインビルド入力は変更していない。実機での列幅変更時の読みやすさ、
+  Shift / Ctrl 操作感、3 群の見た目は物理 Windows 11 確認として未確認のまま残す。
 
 対象ファイル: `hplc_app/dialogs.py`, `hplc_app/gui.py`, `tests/test_gui.py`
 

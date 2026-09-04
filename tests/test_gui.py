@@ -64,6 +64,7 @@ from hplc_app.gui import (
     MOUSE_MODE_IDS,
     MainWindow,
 )
+from hplc_app.i18n import Translator
 from hplc_app.models import (
     Dataset,
     FractionRegion,
@@ -6530,6 +6531,226 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_condition_copy_defaults_to_auv_flow_and_column_only(self):
+        options = [
+            (field, ja, en, default_checked)
+            for field, _column, ja, en, default_checked
+            in BatchMetadataDialog.COPY_FIELDS
+        ]
+        dialog = ConditionCopyDialog(options, "en")
+        self.assertEqual(
+            set(dialog.selected_fields()),
+            {"aux_range_au_per_v", "flow_rate_ml_min", "column_name"},
+        )
+        dialog.field_checks["label"].setChecked(True)
+        dialog.field_checks["flow_rate_ml_min"].setChecked(False)
+        self.assertEqual(
+            set(dialog.selected_fields()),
+            {"label", "aux_range_au_per_v", "column_name"},
+        )
+        dialog.close()
+
+    def test_batch_dialog_source_path_elides_left_at_resized_widths(self):
+        window = self.make_window()
+        source_path = (
+            r"G:\laboratory\projects\2026\September\run-001\sample-one.txt"
+        )
+        window.project.datasets[0].original_path = source_path
+        dialog = BatchMetadataDialog(
+            window.project, window.project.datasets[0].id, "en"
+        )
+        source_item = dialog.table.item(0, dialog.SOURCE_COLUMN)
+        delegate = dialog.table.itemDelegateForColumn(dialog.SOURCE_COLUMN)
+        home_delegate = window.dataset_table.itemDelegateForColumn(
+            DATASET_SOURCE_COLUMN
+        )
+        self.assertEqual(type(delegate).__module__, "hplc_app.dialogs")
+        self.assertIs(type(home_delegate), type(delegate))
+        self.assertEqual(source_item.toolTip(), source_path)
+
+        displayed = []
+        for width in (90, 180):
+            option = QtWidgets.QStyleOptionViewItem()
+            option.rect = QtCore.QRect(0, 0, width, 24)
+            option.widget = dialog.table
+            text = delegate.display_option(
+                option, dialog.table.model().index(0, dialog.SOURCE_COLUMN)
+            ).text
+            displayed.append(text)
+            self.assertNotEqual(text, source_path)
+            self.assertTrue(source_path.endswith(text.lstrip(".…")))
+        self.assertNotEqual(displayed[0], displayed[1])
+        dialog.close()
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_dialog_run_id_edit_is_staged_shared_and_one_undo_step(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        original_id = first.run_id
+        shared_run = window.project.run_for(first)
+        second.bind_run(shared_run)
+        window.project.runs = [shared_run]
+        window.project.rebuild_run_index(create_missing=False)
+
+        def accept_rename(dialog):
+            item = dialog.table.item(0, dialog.RUN_ID_COLUMN)
+            self.assertTrue(bool(item.flags() & ITEM_IS_EDITABLE))
+            with patch.object(dialog.table, "editItem") as edit_item, \
+                    patch.object(dialog, "_edit_selected_details") as details:
+                dialog._cell_double_clicked(0, dialog.RUN_ID_COLUMN)
+            edit_item.assert_called_once_with(item)
+            details.assert_not_called()
+
+            item.setText("run-renamed")
+            self.app.processEvents()
+            self.assertEqual(
+                [
+                    dialog.table.item(row, dialog.RUN_ID_COLUMN).text()
+                    for row in range(2)
+                ],
+                ["run-renamed", "run-renamed"],
+            )
+            self.assertEqual(
+                [dataset.run_id for dataset in window.project.datasets],
+                [original_id, original_id],
+            )
+            dialog._accept()
+            return dialog.result()
+
+        with patch("hplc_app.gui.dialog_exec", side_effect=accept_rename):
+            window.edit_batch_metadata()
+
+        self.assertEqual(
+            [dataset.run_id for dataset in window.project.datasets],
+            ["run-renamed", "run-renamed"],
+        )
+        self.assertEqual(len(window._undo_stack), 1)
+        window.undo()
+        self.assertEqual(
+            [dataset.run_id for dataset in window.project.datasets],
+            [original_id, original_id],
+        )
+        window.redo()
+        self.assertEqual(
+            [dataset.run_id for dataset in window.project.datasets],
+            ["run-renamed", "run-renamed"],
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_batch_dialog_run_id_rejects_empty_and_duplicate_atomically(self):
+        window = self.make_window()
+        original_ids = [dataset.run_id for dataset in window.project.datasets]
+        for candidate, key in (
+            (original_ids[1], "run_id_duplicate"),
+            ("  ", "run_id_empty"),
+        ):
+            with self.subTest(candidate=candidate):
+                dialog = BatchMetadataDialog(
+                    window.project, window.project.datasets[0].id, "en"
+                )
+                dialog.table.item(0, dialog.RUN_ID_COLUMN).setText(candidate)
+                with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                    dialog._accept()
+                warning.assert_called_once()
+                self.assertIn(
+                    Translator("en")(key), warning.call_args.args[2]
+                )
+                self.assertNotEqual(
+                    dialog.result(), QtWidgets.QDialog.Accepted
+                )
+                self.assertEqual(
+                    [dataset.run_id for dataset in window.project.datasets],
+                    original_ids,
+                )
+                dialog.reject()
+        self.assertEqual(window._undo_stack, [])
+        self.assertFalse(window.project.dirty)
+        window.close()
+
+    def test_batch_dialog_selection_sync_and_control_group_order(self):
+        window = self.make_window()
+        dialog = BatchMetadataDialog(
+            window.project, window.project.datasets[0].id, "en"
+        )
+        selection = dialog.table.selectionModel()
+        model = dialog.table.model()
+        select = (
+            QtCore.QItemSelectionModel.SelectionFlag.Select
+            if QT_API == 6
+            else QtCore.QItemSelectionModel.Select
+        )
+        selection.clearSelection()
+        selection.select(model.index(0, 4), select)
+        selection.select(model.index(1, 4), select)
+        self.app.processEvents()
+        self.assertEqual(
+            [
+                dialog.table.item(row, 0).checkState()
+                for row in range(dialog.table.rowCount())
+            ],
+            [CHECKED, CHECKED],
+        )
+
+        selection.clearSelection()
+        selection.select(model.index(1, 4), select)
+        self.app.processEvents()
+        self.assertEqual(
+            [dialog.table.item(row, 0).checkState() for row in range(2)],
+            [UNCHECKED, CHECKED],
+        )
+        dialog._set_all_checks(True)
+        self.assertEqual(dialog._checked_rows(), [0, 1])
+        dialog._check_same_group()
+        self.assertEqual(dialog._checked_rows(), [1])
+        dialog._set_all_checks(False)
+        self.assertEqual(dialog._checked_rows(), [])
+
+        root = dialog.layout()
+        self.assertEqual(
+            [root.itemAt(index).widget() for index in range(3)],
+            [dialog.selection_group, dialog.operation_group, dialog.preset_group],
+        )
+        self.assertEqual(
+            [
+                dialog.selection_group.layout().itemAt(index).widget()
+                for index in range(3)
+            ],
+            [
+                dialog.check_all_button,
+                dialog.check_group_button,
+                dialog.clear_checks_button,
+            ],
+        )
+        self.assertEqual(
+            [
+                dialog.operation_group.layout().itemAt(index).widget()
+                for index in range(6)
+            ],
+            [
+                dialog.group_runs_button,
+                dialog.ungroup_runs_button,
+                dialog.edit_details_button,
+                dialog.edit_gradient_button,
+                dialog.copy_conditions_button,
+                dialog.paste_conditions_button,
+            ],
+        )
+        preset_layout = dialog.preset_group.layout()
+        self.assertGreaterEqual(
+            preset_layout.itemAt(0).layout().indexOf(dialog.preset_combo), 0
+        )
+        self.assertGreaterEqual(
+            preset_layout.itemAt(1).layout().indexOf(
+                dialog.gradient_preset_combo
+            ),
+            0,
+        )
+        dialog.close()
+        window.project.dirty = False
+        window.close()
+
     def test_condition_copy_requires_one_source_and_handles_empty_session(self):
         window = self.make_window()
         dialog = BatchMetadataDialog(
@@ -6569,7 +6790,11 @@ class GuiTests(unittest.TestCase):
                 self.assertIsInstance(copy_dialog, ConditionCopyDialog)
                 self.assertEqual(
                     set(copy_dialog.field_checks),
-                    {field for field, _column, _ja, _en in dialog.COPY_FIELDS},
+                    {
+                        field
+                        for field, _column, _ja, _en, _default
+                        in dialog.COPY_FIELDS
+                    },
                 )
                 for check in copy_dialog.field_checks.values():
                     check.setChecked(False)
@@ -6611,7 +6836,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(second.measurement.aux_range_au_per_v, second_aux)
         self.assertEqual(second.label, second_label)
         self.assertEqual(second.y_axis, second_before.y_axis)
-        for field, _column, _ja, _en in BatchMetadataDialog.COPY_FIELDS:
+        for field, _column, _ja, _en, _default in BatchMetadataDialog.COPY_FIELDS:
             if field in {
                 "label", "group", "y_axis", "wavelength_nm", "gradient"
             }:
@@ -7971,7 +8196,7 @@ class GuiTests(unittest.TestCase):
             ],
         )
         self.assertNotEqual(first.run_id, second.run_id)
-        self.assertFalse(
+        self.assertTrue(
             bool(dialog.table.item(0, dialog.RUN_ID_COLUMN).flags() & ITEM_IS_EDITABLE)
         )
         self.assertNotIn(dialog.RUN_ID_COLUMN, dialog.EDITABLE_COLUMNS)
@@ -8558,8 +8783,8 @@ class GuiTests(unittest.TestCase):
         def group_from_dialog(dialog):
             self.assertTrue(dialog.group_runs_button.isEnabled())
             self.assertTrue(dialog.ungroup_runs_button.isEnabled())
-            dialog.table.item(1, 0).setCheckState(CHECKED)
             dialog.table.setCurrentCell(0, 1)
+            dialog.table.item(1, 0).setCheckState(CHECKED)
             dialog._group_checked_runs()
             self.assertEqual(
                 [

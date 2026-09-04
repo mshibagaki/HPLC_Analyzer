@@ -1474,15 +1474,30 @@ pan ツールの説明文が元々「左ボタンでパン、右ボタンでズ�
 - 「範囲を数値入力・編集」を「フラクション範囲を数値入力・編集」に変更
 
 受け入れ条件
-- [ ] PyQtGraph で積分リストの選択を変えると、積分範囲の背景の塗りもその場で
-      切り替わる
-- [ ] 選択の切り替えでシーンが作り直されない（**再構築回数をテストで固定する**）
-- [ ] 主表と別ウィンドウの積分リストのどちらから選んでも同じ結果になる
-- [ ] 選択を外したときに、塗りが非選択の見え方に戻る
-- [ ] Matplotlib 描画のハイライトが退行していない
-- [ ] 「すべてのピークを選択」に変わっている（日本語・英語の両方）
-- [ ] 「フラクション範囲を数値入力・編集…」に変わっている（日本語・英語の両方）
-- [ ] `REQUIREMENTS_STATUS.md` を更新する
+- [x] PyQtGraph で積分リストの選択を変えると、積分範囲の背景の塗りもその場で
+      切り替わる（`LinearRegionItem.setBrush()` の直後に item 自身の `update()` を呼ぶ。
+      `test_preview_peak_selection_restyles_without_scene_rebuild` で brush と repaint を固定）
+- [x] 選択の切り替えでシーンが作り直されない（同テストで `consumer.render` と
+      `MainWindow._plot` が主表・別ウィンドウ・選択解除のすべてで 0 回、view も不変）
+- [x] 主表と別ウィンドウの積分リストのどちらから選んでも同じ結果になる（同テスト）
+- [x] 選択を外したときに、塗りが非選択の見え方に戻る（同テストで両 region の
+      alpha が 0.08、選択色でないことと repaint 3 回目を確認）
+- [x] Matplotlib 描画のハイライトが退行していない
+      （`test_selected_integration_is_highlighted_and_overlays_can_be_hidden` と
+      `test_lightweight_overview_is_coarser_and_peak_selection_reuses_patch`）
+- [x] 「すべてのピークを選択」に変わっている（日本語・英語の両方。
+      `test_fraction_mouse_mode_and_inline_interval_are_not_exposed`）
+- [x] 「フラクション範囲を数値入力・編集…」に変わっている（日本語・英語の両方。同テスト）
+- [x] `REQUIREMENTS_STATUS.md` を更新する
+
+実測（Windows 11 x64 / Python 3.11.9 / PySide6 6.8.3 / PyQtGraph 0.13.7）
+- フルテストスイート: 375 件成功（611.874 秒）
+- `scripts/probe_pyqtgraph_parity.py`: 全 11 機能 `supported`
+- `scripts/benchmark_integrated_screen.py`: native 0.132 秒 / legacy 0.136 秒、
+  native が約 1.03 倍高速、raw 配列 SHA-256 不変
+- Python 3.8.10 x86: 変更 3 ファイルの構文チェック OK
+- `scripts/ci_validate.py --offline-assets auto`: Level 2 source contracts と
+  Windows 7 offline manifest / wheelhouse を含めて OK
 
 対象ファイル: `hplc_app/pyqtgraph_scene.py`, `hplc_app/i18n.py`,
 `tests/test_gui.py`

@@ -575,6 +575,7 @@ class PyQtGraphSceneConsumer:
             region = overlay.get("region")
             if region is not None:
                 region.setBrush(self._brush(color, 0.24 if selected else 0.08))
+                region.update()
                 for line in region.lines:
                     line.setPen(
                         self._pen(

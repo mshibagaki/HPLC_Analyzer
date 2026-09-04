@@ -4994,6 +4994,25 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(hasattr(window, "fraction_button"))
             self.assertFalse(hasattr(window, "fraction_interval_spin"))
             self.assertTrue(window.fraction_numeric_button.isVisibleTo(window))
+            expected_labels = {
+                "ja": (
+                    "すべてのピークを選択",
+                    "フラクション範囲を数値入力・編集…",
+                ),
+                "en": (
+                    "Select all peaks",
+                    "Add / edit fraction range numerically…",
+                ),
+            }
+            for language, expected in expected_labels.items():
+                with self.subTest(language=language):
+                    window.set_language(language)
+                    self.assertEqual(
+                        window.select_all_peaks_button.text(), expected[0]
+                    )
+                    self.assertEqual(
+                        window.fraction_numeric_button.text(), expected[1]
+                    )
         finally:
             window.project.dirty = False
             window.close()
@@ -5137,13 +5156,22 @@ class GuiTests(unittest.TestCase):
                 for peak_id, items in consumer.peak_overlay_items.items()
             }
             before_view = consumer.capture_view_state()
+            first_region = consumer.peak_overlay_items[first.id]["region"]
+            second_region = consumer.peak_overlay_items[second.id]["region"]
 
             with patch.object(consumer, "render", wraps=consumer.render) as render, \
-                    patch.object(window, "_plot", wraps=window._plot) as plot:
+                    patch.object(window, "_plot", wraps=window._plot) as plot, \
+                    patch.object(
+                        first_region, "update", wraps=first_region.update
+                    ) as first_update, patch.object(
+                        second_region, "update", wraps=second_region.update
+                    ) as second_update:
                 window.peak_table.selectRow(1)
                 self.app.processEvents()
                 self.assertEqual(render.call_count, 0)
                 self.assertEqual(plot.call_count, 0)
+                self.assertEqual(first_update.call_count, 1)
+                self.assertEqual(second_update.call_count, 1)
                 self.assertEqual(consumer.capture_view_state(), before_view)
                 for peak_id, previous in overlay_items.items():
                     current = consumer.peak_overlay_items[peak_id]
@@ -5166,6 +5194,8 @@ class GuiTests(unittest.TestCase):
                 self.assertEqual(window._selected_peak_ids(), [first.id])
                 self.assertEqual(render.call_count, 0)
                 self.assertEqual(plot.call_count, 0)
+                self.assertEqual(first_update.call_count, 2)
+                self.assertEqual(second_update.call_count, 2)
                 self.assertEqual(consumer.capture_view_state(), before_view)
                 self.assertEqual(
                     consumer.peak_overlay_items[first.id]["region"]
@@ -5177,6 +5207,19 @@ class GuiTests(unittest.TestCase):
                     .brush.color().name(),
                     "#f59e0b",
                 )
+
+                detached.table.clearSelection()
+                self.app.processEvents()
+                self.assertEqual(window._selected_peak_ids(), [])
+                self.assertEqual(render.call_count, 0)
+                self.assertEqual(plot.call_count, 0)
+                self.assertEqual(first_update.call_count, 3)
+                self.assertEqual(second_update.call_count, 3)
+                self.assertEqual(consumer.capture_view_state(), before_view)
+                for peak_id in (first.id, second.id):
+                    brush = consumer.peak_overlay_items[peak_id]["region"].brush
+                    self.assertNotEqual(brush.color().name(), "#f59e0b")
+                    self.assertAlmostEqual(brush.color().alphaF(), 0.08, places=2)
             self.assertTrue(np.array_equal(dataset.time_min, raw_before[0]))
             self.assertTrue(np.array_equal(dataset.intensity_uv, raw_before[1]))
 

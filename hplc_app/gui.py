@@ -116,6 +116,7 @@ from .rendering import (
     default_trace_color,
     matplotlib_line_style,
     normalize_render_quality,
+    safe_manual_x_tick_spacing,
     screen_series,
 )
 from .settings_store import (
@@ -3514,11 +3515,18 @@ class MainWindow(QtWidgets.QMainWindow):
         left, right = self.axes.get_xlim()
         span = max(abs(right - left), 1.0e-9)
         if self.project.method.x_tick_mode == "manual":
-            major_tick = max(float(self.project.method.x_major_tick_min), 1.0e-9)
-            minor_tick = max(float(self.project.method.x_minor_tick_min), 1.0e-9)
+            spacing = safe_manual_x_tick_spacing(
+                span,
+                self.project.method.x_major_tick_min,
+                self.project.method.x_minor_tick_min,
+            )
         else:
+            spacing = None
+        if spacing is None:
             major_tick = self._nice_tick_step(span / 18.0)
             minor_tick = major_tick / 5.0
+        else:
+            major_tick, minor_tick = spacing
         self.axes.xaxis.set_major_locator(MultipleLocator(major_tick))
         self.axes.xaxis.set_minor_locator(MultipleLocator(minor_tick))
         self.axes.tick_params(axis="x", which="minor", length=3, labelbottom=False)
@@ -6801,13 +6809,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def edit_axis_labels(self):
         before = self._capture_analysis_state()
-        dialog = AxisLabelsDialog(self.project.method, self._application_language, self)
+        x_limits = self._screen_view_state().x
+        dialog = AxisLabelsDialog(
+            self.project.method,
+            self._application_language,
+            self,
+            x_span_min=abs(x_limits[1] - x_limits[0]),
+        )
         if not dialog_exec(dialog):
             return
         dialog.apply_to_method(self.project.method)
         self._push_undo_snapshot(
             before,
-            self._history_label("軸・ラベル設定", "Axes and label styles"),
+            self._history_label(
+                "軸・ラベル・書式設定", "Axes, labels and formatting"
+            ),
         )
         self.project.dirty = True
         self._plot()

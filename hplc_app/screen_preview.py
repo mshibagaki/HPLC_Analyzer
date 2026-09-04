@@ -301,53 +301,77 @@ class ExperimentalScreenPreview:
 
     def _handle_zoom_event(self, name, event):
         owner = self.owner
-        if not owner.toolbar._actions["zoom"].isChecked():
-            if self._zoom_drag is not None:
-                self.cancel_zoom_drag()
+        drag = self._zoom_drag
+        if drag is None:
+            zoom_checked = owner.toolbar._actions["zoom"].isChecked()
+            # Issue #236/9.17: Zoom no longer has its own visible toolbar
+            # icon (it merged into "normal", alongside Pan). A right-button
+            # drag while normal mode's pan is active reaches the same
+            # rubber-band zoom instead, matching Matplotlib's own pan tool
+            # ("left button pans, right button zooms") and the retained
+            # (hidden) zoom QAction's existing meaning elsewhere.
+            right_drag_available = (
+                owner._mouse_mode == "normal"
+                and owner.toolbar._actions["pan"].isChecked()
+            )
+            if not (zoom_checked or right_drag_available):
+                return False
+            in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
+            role = event.axis_role if event.axis_role in ("y1", "y2") else "y1"
+            values = event.data_for(role)
+            valid = (in_plot and all(value is not None and isfinite(value) for value in values)
+                     and event.canvas_x is not None and event.canvas_y is not None)
+            expected_button = 1 if zoom_checked else 3
+            if (name == "button_press_event" and event.button == expected_button
+                    and valid and not event.double_click):
+                configured = owner.project.method.zoom_axis
+                mode = "both" if configured == "auto" else configured
+                self._zoom_drag = {
+                    "start": values, "role": role, "mode": mode,
+                    "pixel": (event.canvas_x, event.canvas_y),
+                    "button": expected_button,
+                }
+                self.consumer.set_zoom_rectangle(values, values, role, mode)
+                return True
+            if zoom_checked:
+                return name == "button_press_event" and in_plot
+            # right_drag_available (pan active, normal mode): only the
+            # matched button (3) is ours. A left-button press here is a
+            # native pan-drag start and must fall through untouched -- this
+            # handler previously returned False outright whenever zoom was
+            # unchecked (before 9.17 added the right-drag path), and it must
+            # keep doing so for every button that is not the one it owns.
             return False
         in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
         role = event.axis_role if event.axis_role in ("y1", "y2") else "y1"
         values = event.data_for(role)
         valid = (in_plot and all(value is not None and isfinite(value) for value in values)
                  and event.canvas_x is not None and event.canvas_y is not None)
-        drag = self._zoom_drag
-        if drag is not None:
-            if name == "scroll_event":
-                return True
-            if not valid or role != drag["role"] or event.button != 1:
-                self.cancel_zoom_drag()
-                return True
-            if name == "motion_notify_event":
-                self.consumer.set_zoom_rectangle(drag["start"], values, role, drag["mode"])
-            elif name == "button_release_event":
-                self.cancel_zoom_drag()
-                dx = abs(event.canvas_x - drag["pixel"][0])
-                dy = abs(event.canvas_y - drag["pixel"][1])
-                mode = drag["mode"]
-                if ((mode == "x" and dx < 3) or (mode == "y" and dy < 3)
-                        or (mode == "both" and (dx < 3 or dy < 3))):
-                    return True
-                state = self.consumer.capture_view_state()
-                changes = {}
-                if mode in ("x", "both"):
-                    changes["x"] = tuple(sorted((drag["start"][0], values[0])))
-                if mode in ("y", "both"):
-                    changes[role] = tuple(sorted((drag["start"][1], values[1])))
-                self.navigation._record_and_apply(replace(state, **changes))
-                owner._apply_view_state(self.consumer.capture_view_state())
-                owner.toolbar.set_history_buttons()
+        if name == "scroll_event":
             return True
-        if (name == "button_press_event" and event.button == 1 and valid
-                and not event.double_click):
-            configured = owner.project.method.zoom_axis
-            mode = "both" if configured == "auto" else configured
-            self._zoom_drag = {
-                "start": values, "role": role, "mode": mode,
-                "pixel": (event.canvas_x, event.canvas_y),
-            }
-            self.consumer.set_zoom_rectangle(values, values, role, mode)
+        if not valid or role != drag["role"] or event.button != drag["button"]:
+            self.cancel_zoom_drag()
             return True
-        return name == "button_press_event" and in_plot
+        if name == "motion_notify_event":
+            self.consumer.set_zoom_rectangle(drag["start"], values, role, drag["mode"])
+        elif name == "button_release_event":
+            self.cancel_zoom_drag()
+            dx = abs(event.canvas_x - drag["pixel"][0])
+            dy = abs(event.canvas_y - drag["pixel"][1])
+            mode = drag["mode"]
+            if ((mode == "x" and dx < 3) or (mode == "y" and dy < 3)
+                    or (mode == "both" and (dx < 3 or dy < 3))):
+                return True
+            state = self.consumer.capture_view_state()
+            changes = {}
+            if mode in ("x", "both"):
+                changes["x"] = tuple(sorted((drag["start"][0], values[0])))
+            if mode in ("y", "both"):
+                changes[role] = tuple(sorted((drag["start"][1], values[1])))
+            self.navigation._record_and_apply(replace(state, **changes))
+            owner._apply_view_state(self.consumer.capture_view_state())
+            owner.toolbar.set_history_buttons()
+        return True
 
     def cancel_move_drag(self):
         target = self._move_target
@@ -407,7 +431,16 @@ class ExperimentalScreenPreview:
                 self._annotation_target = None
                 owner._on_canvas_release(event)
             return True
-        if not editing or str(owner.toolbar.mode):
+        if not editing:
+            return False
+        # Issue #236/9.1: "normal" mode now defaults to pan being active, so
+        # owner.toolbar.mode is no longer empty while idle in it (it used to
+        # be, which is what this gate originally relied on to mean "no other
+        # tool owns this click"). A click that lands squarely on an existing
+        # annotation (hit_kind == "annotation") must still open it for
+        # editing regardless -- only bail out to let a real pan/zoom drag
+        # start when the click is not on an annotation.
+        if str(owner.toolbar.mode) and event.hit_kind != "annotation":
             return False
         in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
         if (name == "button_press_event" and event.button == 1 and in_plot):
@@ -628,17 +661,25 @@ class ExperimentalScreenPreview:
                            and event.hit_region in ("plot", "plot_y1", "plot_y2")
                            else None)
                 self.consumer.set_pointer_cursor(x_value, event.axis_role)
-            if (name == "button_press_event" and event.button == 1
-                    and not str(owner.toolbar.mode)):
-                if event.hit_region in ("plot", "plot_y1", "plot_y2") and (
-                    owner.pointer_action.isChecked()
-                    or event.hit_kind in ("vertical_marker", "annotation")
-                ):
-                    self.consumer.widget.setFocus(MOUSE_FOCUS_REASON)
-                    owner._on_canvas_press(event)
-                    return True
-                if owner._selected_vertical_marker_id:
-                    owner._select_vertical_marker(None)
+            if name == "button_press_event" and event.button == 1:
+                # Issue #236/9.1: "normal" mode now defaults to pan being
+                # active, so owner.toolbar.mode is no longer empty while idle
+                # in it. A click on an existing marker or annotation must
+                # still select/edit it regardless -- only a click elsewhere
+                # (which starts a real pan drag) still needs mode to be
+                # empty, exactly as before.
+                on_item = event.hit_region in ("plot", "plot_y1", "plot_y2") and (
+                    event.hit_kind in ("vertical_marker", "annotation")
+                )
+                if not (str(owner.toolbar.mode) and not on_item):
+                    if event.hit_region in ("plot", "plot_y1", "plot_y2") and (
+                        owner.pointer_action.isChecked() or on_item
+                    ):
+                        self.consumer.widget.setFocus(MOUSE_FOCUS_REASON)
+                        owner._on_canvas_press(event)
+                        return True
+                    if owner._selected_vertical_marker_id:
+                        owner._select_vertical_marker(None)
             if name == "scroll_event":
                 if self.navigation._pan is None:
                     owner._on_scroll(event)

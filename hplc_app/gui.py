@@ -355,15 +355,24 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
             owner._reset_view()
 
     def configure_subplots(self):
+        # Issue #236 (workflow doc 9.16): open the application's own axis
+        # dialog regardless of which renderer is active, rather than only
+        # when PyQtGraph is on screen. The Matplotlib-only "Customize" action
+        # (edit_parameters below) duplicated this dialog under PyQtGraph and
+        # is removed from the toolbar; this is now the one path to it, on
+        # both renderers.
         owner = self._axis_pan_owner
-        if owner is not None and getattr(owner, "_screen_preview", None) is not None:
+        if owner is not None:
             owner.edit_axis_labels()
             return
         return super().configure_subplots()
 
     def edit_parameters(self):
+        # Kept only so a stray reference to the retained-but-hidden Customize
+        # QAction (see MainWindow._install_mode_toolbar_actions) still opens
+        # something sensible instead of failing.
         owner = self._axis_pan_owner
-        if owner is not None and getattr(owner, "_screen_preview", None) is not None:
+        if owner is not None:
             owner.edit_axis_labels()
             return
         return super().edit_parameters()
@@ -1171,6 +1180,84 @@ class MainWindow(QtWidgets.QMainWindow):
             self._plot()
 
     @staticmethod
+    def _mode_glyph_icon(kind: str):
+        """Compact 24x24 icon for a mouse mode that has no toolbar icon yet.
+
+        Drawn with QPainter, matching _vertical_pointer_icon's approach, so no
+        external asset is added (kept offline-build-safe for Windows 7).
+        """
+        pixmap = QtGui.QPixmap(24, 24)
+        transparent = (
+            QtCore.Qt.GlobalColor.transparent if QT_API == 6 else QtCore.Qt.transparent
+        )
+        pixmap.fill(transparent)
+        painter = QtGui.QPainter(pixmap)
+        antialiasing = (
+            QtGui.QPainter.RenderHint.Antialiasing
+            if QT_API == 6
+            else QtGui.QPainter.Antialiasing
+        )
+        painter.setRenderHint(antialiasing, True)
+        ink = QtGui.QColor("#111827")
+        accent = QtGui.QColor("#2563eb")
+        dash_pen = QtGui.QPen(ink, 1.4)
+        dash_style = (
+            QtCore.Qt.PenStyle.DashLine if QT_API == 6 else QtCore.Qt.DashLine
+        )
+        baseline = QtGui.QPainterPath()
+        baseline.moveTo(3, 19)
+        baseline.lineTo(21, 19)
+        peak = QtGui.QPainterPath()
+        peak.moveTo(6, 19)
+        peak.lineTo(12, 5)
+        peak.lineTo(18, 19)
+        if kind == "select":
+            painter.setPen(ink)
+            painter.drawPath(baseline)
+            dash_pen.setStyle(dash_style)
+            painter.setPen(dash_pen)
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(37, 99, 235, 40)))
+            painter.drawRect(4, 5, 16, 11)
+        elif kind == "integrate":
+            painter.setPen(ink)
+            painter.drawPath(baseline)
+            painter.setPen(QtGui.QPen(accent, 1.4))
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(37, 99, 235, 60)))
+            painter.drawPath(peak)
+        elif kind == "edit_peak":
+            painter.setPen(ink)
+            painter.drawPath(baseline)
+            painter.setPen(QtGui.QPen(accent, 1.6))
+            painter.drawPath(peak)
+            painter.setPen(QtGui.QPen(ink, 1.4))
+            painter.drawLine(17, 4, 21, 8)
+            painter.drawLine(20, 5, 21, 8)
+            painter.drawLine(20, 5, 17, 7)
+        elif kind == "split_peak":
+            painter.setPen(ink)
+            painter.drawPath(baseline)
+            painter.setPen(QtGui.QPen(accent, 1.4))
+            painter.drawPath(peak)
+            dash_pen.setStyle(dash_style)
+            painter.setPen(dash_pen)
+            painter.drawLine(12, 4, 12, 19)
+        elif kind == "move_trace":
+            painter.setPen(QtGui.QPen(accent, 1.6))
+            painter.drawLine(3, 15, 21, 9)
+            arrow = QtGui.QPainterPath()
+            arrow.moveTo(17, 4)
+            arrow.lineTo(21, 4)
+            arrow.lineTo(21, 8)
+            painter.setBrush(QtCore.Qt.NoBrush if QT_API != 6 else QtCore.Qt.BrushStyle.NoBrush)
+            painter.drawLine(21, 4, 17, 4)
+            painter.drawLine(21, 4, 21, 8)
+            painter.drawLine(21, 4, 15, 10)
+            painter.setPen(QtGui.QPen(ink, 1.2))
+            painter.drawLine(3, 20, 21, 20)
+        painter.end()
+        return QtGui.QIcon(pixmap)
+
+    @staticmethod
     def _vertical_pointer_icon():
         """Create a compact line-and-cursor icon without an external asset."""
         pixmap = QtGui.QPixmap(24, 24)
@@ -1466,6 +1553,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._text_beside_icon_style()
         )
         self.pointer_control_button.setIconSize(QtCore.QSize(18, 18))
+        # Row order (Issue #236 / workflow doc 9.18): move_controls (trace
+        # move) moves below the view-reset row. Widget creation and signal
+        # connections are unchanged; only the row numbers below move.
         navigation_controls.addWidget(self.mouse_mode_label, 0, 0)
         navigation_controls.addWidget(self.mouse_mode_combo, 0, 1)
         move_controls = QtWidgets.QHBoxLayout()
@@ -1474,18 +1564,18 @@ class MainWindow(QtWidgets.QMainWindow):
         move_controls.addWidget(self.move_trace_button)
         move_controls.addWidget(self.move_axis_combo)
         move_controls.addWidget(self.reset_trace_position_button)
-        navigation_controls.addLayout(move_controls, 1, 0, 1, 2)
-        navigation_controls.addWidget(self.zoom_axis_label, 2, 0)
-        navigation_controls.addWidget(self.zoom_axis_combo, 2, 1)
-        navigation_controls.addWidget(self.view_mode_label, 3, 0)
-        navigation_controls.addWidget(self.view_mode_combo, 3, 1)
-        navigation_controls.addWidget(self.pointer_control_button, 4, 0, 1, 2)
+        navigation_controls.addWidget(self.zoom_axis_label, 1, 0)
+        navigation_controls.addWidget(self.zoom_axis_combo, 1, 1)
+        navigation_controls.addWidget(self.view_mode_label, 2, 0)
+        navigation_controls.addWidget(self.view_mode_combo, 2, 1)
+        navigation_controls.addWidget(self.pointer_control_button, 3, 0, 1, 2)
         reset_buttons = QtWidgets.QHBoxLayout()
         reset_buttons.setContentsMargins(0, 0, 0, 0)
         reset_buttons.addWidget(self.reset_view_button)
         reset_buttons.addWidget(self.reset_x_view_button)
         reset_buttons.addWidget(self.reset_y_view_button)
-        navigation_controls.addLayout(reset_buttons, 5, 0, 1, 2)
+        navigation_controls.addLayout(reset_buttons, 4, 0, 1, 2)
+        navigation_controls.addLayout(move_controls, 5, 0, 1, 2)
         navigation_controls.setRowStretch(6, 1)
 
         self.integration_group = QtWidgets.QGroupBox()
@@ -1529,6 +1619,11 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.clear_fractions_button, 5, 2)
         integration_controls.addWidget(self.integration_list_button, 6, 0, 1, 3)
         integration_controls.setRowStretch(7, 1)
+
+        # Issue #236 / 9.15: installed here, once every group-panel control
+        # it binds to (move_trace_button, integrate_button, edit_peak_button,
+        # split_peak_button, annotation_action) actually exists.
+        self._install_mode_toolbar_actions()
 
         controls.addWidget(self.display_group, 4)
         controls.addWidget(self.navigation_group, 2)
@@ -1615,6 +1710,166 @@ class MainWindow(QtWidgets.QMainWindow):
             action = toolbar_actions.get(key)
             if action is not None:
                 action.triggered.connect(self._toolbar_navigation_triggered)
+
+    def _bind_mode_control_pair(self, action, control):
+        """Keep a new toolbar QAction and an existing mode control in lockstep.
+
+        Both QAction and (checkable) QPushButton expose a toggled(bool)
+        signal, so one small guarded pair of connections keeps whichever one
+        the user actually clicks in sync with the other, without going
+        through the mouse-mode combo (which stays in sync separately, through
+        each control's own existing toggle handler).
+        """
+        guard = {"active": False}
+
+        def from_action(checked):
+            if guard["active"] or control.isChecked() == checked:
+                return
+            guard["active"] = True
+            try:
+                control.setChecked(checked)
+            finally:
+                guard["active"] = False
+
+        def from_control(checked):
+            if guard["active"] or action.isChecked() == checked:
+                return
+            guard["active"] = True
+            try:
+                action.setChecked(checked)
+            finally:
+                guard["active"] = False
+
+        action.toggled.connect(from_action)
+        control.toggled.connect(from_control)
+
+    def _install_mode_toolbar_actions(self):
+        """Add one toolbar icon per mouse mode (Issue #236 / workflow doc 9.15).
+
+        Pointer already has one. "normal" is represented by the toolbar's own
+        Pan icon (Pan and Zoom merge into one "normal" entry -- 9.17). The
+        remaining six each get a new, small icon inserted next to pointer;
+        five of them mirror an existing checkable control two-way, so the
+        mode combo, this icon and the existing group-panel button (or, for
+        annotation, the existing action shared with the edit menu) always
+        agree, matching whichever the user actually clicked.
+        """
+        t = self.translator
+        toolbar_actions = self.toolbar.actions()
+        insert_before = toolbar_actions[0] if toolbar_actions else None
+
+        def add_icon(action, tooltip_key):
+            action.setToolTip(t(tooltip_key))
+            if insert_before is not None:
+                self.toolbar.insertAction(insert_before, action)
+            else:
+                self.toolbar.addAction(action)
+            return action
+
+        self.select_toolbar_action = self._action(checkable=True)
+        self.select_toolbar_action.setIcon(self._mode_glyph_icon("select"))
+        self.select_toolbar_action.toggled.connect(self._select_toolbar_toggled)
+        add_icon(self.select_toolbar_action, "mouse_mode_select")
+
+        self.integrate_toolbar_action = self._action(checkable=True)
+        self.integrate_toolbar_action.setIcon(self._mode_glyph_icon("integrate"))
+        self._bind_mode_control_pair(
+            self.integrate_toolbar_action, self.integrate_button
+        )
+        add_icon(self.integrate_toolbar_action, "integrate")
+
+        self.edit_peak_toolbar_action = self._action(checkable=True)
+        self.edit_peak_toolbar_action.setIcon(self._mode_glyph_icon("edit_peak"))
+        self._bind_mode_control_pair(
+            self.edit_peak_toolbar_action, self.edit_peak_button
+        )
+        add_icon(self.edit_peak_toolbar_action, "edit_peak")
+
+        self.split_peak_toolbar_action = self._action(checkable=True)
+        self.split_peak_toolbar_action.setIcon(self._mode_glyph_icon("split_peak"))
+        self._bind_mode_control_pair(
+            self.split_peak_toolbar_action, self.split_peak_button
+        )
+        add_icon(self.split_peak_toolbar_action, "split_peak")
+
+        self.move_trace_toolbar_action = self._action(checkable=True)
+        self.move_trace_toolbar_action.setIcon(self._mode_glyph_icon("move_trace"))
+        self._bind_mode_control_pair(
+            self.move_trace_toolbar_action, self.move_trace_button
+        )
+        add_icon(self.move_trace_toolbar_action, "move_trace")
+
+        # annotation_action is a QAction already (shared with the edit menu
+        # and the "表示" panel button), so it is placed in the toolbar
+        # directly rather than bound to a duplicate.
+        if insert_before is not None:
+            self.toolbar.insertAction(insert_before, self.annotation_action)
+        else:
+            self.toolbar.addAction(self.annotation_action)
+
+        if insert_before is not None:
+            self.toolbar.insertSeparator(insert_before)
+        else:
+            self.toolbar.addSeparator()
+
+        self._install_zoom_preservation()
+
+    def _install_zoom_preservation(self):
+        """Keep the Zoom QAction usable without a second visible icon.
+
+        Pan and Zoom merge into the single "normal" icon (Issue #236 / 9.15,
+        9.17): the rubber-band zoom stays reachable through a right-drag in
+        normal mode -- Matplotlib's own pan tool already supports this
+        natively, and screen_preview._handle_zoom_event is taught the same
+        thing below -- so the retained QAction only needs to stop being a
+        second visible toolbar button, not lose its behaviour.
+        `removeAction` only detaches it from the toolbar widget; the QAction
+        stays alive in `toolbar._actions["zoom"]`, which both zoom gatekeepers
+        read directly rather than through the toolbar's own widget list.
+
+        Customize (the arrow icon, `edit_parameters`) is removed outright
+        (Issue #236 / 9.16): Subplots (`configure_subplots`) now always opens
+        the application's own axis dialog on both renderers, so Customize's
+        PyQtGraph behaviour was already a duplicate, and its Matplotlib-only
+        axis-range/curve-color options are covered by that same dialog
+        together with the existing "表示設定" trace-color/line-style dialog.
+        """
+        actions = getattr(self.toolbar, "_actions", {}) or {}
+        zoom_action = actions.get("zoom")
+        if zoom_action is not None:
+            self.toolbar.removeAction(zoom_action)
+        customize_action = actions.get("edit_parameters")
+        if customize_action is not None:
+            self.toolbar.removeAction(customize_action)
+
+    def _select_toolbar_toggled(self, checked: bool):
+        """Route the select toolbar icon through the combo.
+
+        "select" has no existing group-panel control (workflow doc 9.15), and
+        entering/leaving it runs extra logic in _mouse_mode_changed (a
+        dataset check, the span selector) that a simple two-way bind would
+        bypass, so this goes through the combo -- the same path the dropdown
+        itself uses -- instead of duplicating that logic here.
+        """
+        if getattr(self, "_select_toolbar_sync", False):
+            return
+        self._select_toolbar_sync = True
+        try:
+            if checked:
+                index = self.mouse_mode_combo.findData("select")
+                if index >= 0:
+                    self.mouse_mode_combo.setCurrentIndex(index)
+                if self.mouse_mode_combo.currentData() != "select":
+                    # The dataset check in _mouse_mode_changed rejected it.
+                    self.select_toolbar_action.setChecked(False)
+            elif self._mouse_mode == "select":
+                self._set_mouse_mode_display("normal")
+                self._clear_span_selector()
+                self._hide_interaction_cursor()
+                self.statusBar().clearMessage()
+                self._ensure_normal_mode_navigation()
+        finally:
+            self._select_toolbar_sync = False
 
     def _toolbar_navigation_triggered(self, *_args):
         pan_active = self.toolbar._actions["pan"].isChecked()
@@ -2223,6 +2478,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.axis_labels_button.setText(t("axis_labels"))
         self.annotation_action.setText(t("add_text_annotation"))
         self.annotation_action.setToolTip(t("text_annotation_hint"))
+        toolbar_actions = getattr(self.toolbar, "_actions", {}) or {}
+        for key, tooltip_key in (
+            ("home", "toolbar_home_tooltip"),
+            ("back", "toolbar_back_tooltip"),
+            ("forward", "toolbar_forward_tooltip"),
+            ("pan", "toolbar_pan_tooltip"),
+            ("configure_subplots", "toolbar_subplots_tooltip"),
+            ("save_figure", "toolbar_save_tooltip"),
+        ):
+            action = toolbar_actions.get(key)
+            if action is not None:
+                action.setToolTip(t(tooltip_key))
+        for action, tooltip_key in (
+            (getattr(self, "select_toolbar_action", None), "mouse_mode_select"),
+            (getattr(self, "integrate_toolbar_action", None), "integrate"),
+            (getattr(self, "edit_peak_toolbar_action", None), "edit_peak"),
+            (getattr(self, "split_peak_toolbar_action", None), "split_peak"),
+            (getattr(self, "move_trace_toolbar_action", None), "move_trace"),
+        ):
+            if action is not None:
+                action.setToolTip(t(tooltip_key))
         self.auto_detect_button.setText(t("auto_detect"))
         self.fit_peak_button.setText(t("fit_peak"))
         self.saturation_correction_button.setText(t("saturation_correction"))
@@ -4050,6 +4326,27 @@ class MainWindow(QtWidgets.QMainWindow):
         elif "zoom" in mode:
             self.toolbar.zoom()
 
+    def _ensure_normal_mode_navigation(self):
+        """Make "normal" mode behave like the toolbar's own pan tool.
+
+        Selecting "normal" (from the combo, the toolbar icon, or by leaving
+        another mode) used to leave both pan and zoom inactive, so dragging
+        the plot did nothing until the toolbar button was pressed separately.
+        Activating pan here only when neither is already active leaves an
+        active zoom alone, matching the toolbar's own pan/zoom toggle.
+        QAction.setChecked() (which is all toolbar.pan() uses internally to
+        reflect the new mode) does not emit `triggered`, so this cannot
+        re-enter _toolbar_navigation_triggered.
+        """
+
+        actions = getattr(self.toolbar, "_actions", {}) or {}
+        pan_action = actions.get("pan")
+        zoom_action = actions.get("zoom")
+        pan_active = pan_action is not None and pan_action.isChecked()
+        zoom_active = zoom_action is not None and zoom_action.isChecked()
+        if not (pan_active or zoom_active) and pan_action is not None:
+            self.toolbar.pan()
+
     @property
     def selected_time_range(self):
         return self._selected_time_range
@@ -4067,6 +4364,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_mouse_mode_display(mode)
         elif self._mouse_mode == mode:
             self._set_mouse_mode_display("normal")
+            # _set_mouse_mode_display updates the combo with blocked signals
+            # (it only reflects a mode decided elsewhere), so it does not run
+            # _mouse_mode_changed's own "normal" handling. Ending up at
+            # "normal" this way -- leaving edit_peak, for example -- must
+            # still leave pan or zoom active, not neither.
+            self._ensure_normal_mode_navigation()
 
     def _mouse_mode_changed(self, *_args):
         mode = str(self.mouse_mode_combo.currentData() or "normal")
@@ -4083,6 +4386,8 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         selected_control = controls.get(mode)
         if selected_control is not None:
+            if self.select_toolbar_action.isChecked():
+                self.select_toolbar_action.setChecked(False)
             selected_control.setChecked(True)
             return
         for control in controls.values():
@@ -4091,16 +4396,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._clear_span_selector()
         self._hide_interaction_cursor()
         if mode == "normal":
+            if self.select_toolbar_action.isChecked():
+                self.select_toolbar_action.setChecked(False)
             self.statusBar().clearMessage()
+            self._ensure_normal_mode_navigation()
             return
         self._deactivate_toolbar_navigation()
         if mode == "select":
             if self._selected_dataset() is None:
+                if self.select_toolbar_action.isChecked():
+                    self.select_toolbar_action.setChecked(False)
                 QtWidgets.QMessageBox.information(
                     self, APP_NAME, self.translator("no_dataset")
                 )
                 self._set_mouse_mode_display("normal")
                 return
+            if not self.select_toolbar_action.isChecked():
+                self.select_toolbar_action.setChecked(True)
             self.statusBar().showMessage(self.translator("selection_hint"))
             self._install_span_selector("select")
             self._ensure_interaction_cursor()
@@ -4741,7 +5053,16 @@ class MainWindow(QtWidgets.QMainWindow):
             event = event.with_hit_target(*self._matplotlib_hit_target(event))
         if event.button != 1:
             return
-        if str(getattr(self.toolbar, "mode", "")):
+        # Issue #236/9.1: "normal" mode now defaults to pan being active, so
+        # toolbar.mode is no longer empty while idle in it (it used to be,
+        # which is what this gate originally relied on to mean "no native
+        # pan/zoom drag owns this click"). A click on an existing marker or
+        # annotation must still be handled (select, drag, or double-click to
+        # edit) regardless -- only bail out to let a real pan/zoom drag start
+        # for a click that isn't on one of those items.
+        if str(getattr(self.toolbar, "mode", "")) and event.hit_kind not in (
+            "vertical_marker", "annotation"
+        ):
             return
         if self._mouse_mode == "select":
             if event.hit_kind == "integration_peak":

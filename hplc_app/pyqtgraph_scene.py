@@ -412,6 +412,14 @@ class PyQtGraphSceneConsumer:
         ):
             return "overview_y1", "x"
 
+        # The plot area is checked before any axis band. A visible grid makes
+        # PyQtGraph's AxisItem.boundingRect() report the union of its own band
+        # with the whole ViewBox (it draws the grid lines), so checking axis
+        # bands first would resolve every point inside the plot to the
+        # bottom (X-only) axis region and break two-direction panning. A point
+        # genuinely on an axis band is outside the plot's ViewBox regardless
+        # of that inflation, so this reordering does not change single-axis
+        # panning from dragging the axis itself.
         if self.split_y_axes:
             for _view, axis, _host in self.gradient_layers:
                 if axis.isVisible() and self._point_in_rect(
@@ -419,14 +427,18 @@ class PyQtGraphSceneConsumer:
                 ):
                     return "gradient", "gradient"
             for plot, role in ((self.primary, "y1"), (self.secondary_plot, "y2")):
+                if self._point_in_rect(scene_position, plot.vb.sceneBoundingRect()):
+                    return role, "plot_" + role
                 for edge, region in (("bottom", "x"), ("left", role)):
                     axis = plot.getAxis(edge)
                     if self._point_in_rect(scene_position, axis.sceneBoundingRect(), 2.0):
                         return role, region
-                if self._point_in_rect(scene_position, plot.vb.sceneBoundingRect()):
-                    return role, "plot_" + role
             return "outside", ""
 
+        if self._point_in_rect(
+            scene_position, self.primary.vb.sceneBoundingRect()
+        ):
+            return "y1", "plot"
         axis_regions = (
             (self.primary.getAxis("bottom"), "y1", "x"),
             (self.primary.getAxis("left"), "y1", "y1"),
@@ -436,10 +448,6 @@ class PyQtGraphSceneConsumer:
         for axis, role, region in axis_regions:
             if self._point_in_rect(scene_position, axis.sceneBoundingRect(), 2.0):
                 return role, region
-        if self._point_in_rect(
-            scene_position, self.primary.vb.sceneBoundingRect()
-        ):
-            return "y1", "plot"
         return "outside", ""
 
     def pointer_event(

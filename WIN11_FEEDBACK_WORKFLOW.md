@@ -1,6 +1,6 @@
 # Windows 11 実機フィードバック 対応ワークフロー
 
-Updated: 2026-09-02 (ハ行) rev.7
+Updated: 2026-09-03 (ハ行) rev.8 — ハ(#236) 実装完了
 
 Windows 11 実機での動作確認によって提出された修正要求を、Claude と Codex の
 どちらが担当しても同じ手順・同じ粒度で実装できるようにするための計画文書です。
@@ -1336,40 +1336,98 @@ pan ツールの説明文が元々「左ボタンでパン、右ボタンでズ�
   **「全体表示〜Y軸全体」の下（一番下）へ移す**
 
 受け入れ条件
-- [ ] マウスモードで「通常（パン・ズーム）」を選ぶと、上部バーの pan が押された
-      状態になる
-- [ ] その状態で、クロマトグラム上のドラッグがそのままパンになる（上部バーを
+- [x] マウスモードで「通常（パン・ズーム）」を選ぶと、上部バーの pan が押された
+      状態になる（`_ensure_normal_mode_navigation`、
+      `test_toolbar_pan_click_syncs_mouse_mode_and_normal_mode_preserves_zoom`）
+- [x] その状態で、クロマトグラム上のドラッグがそのままパンになる（上部バーを
       押し直す必要がない）
-- [ ] 上部バーの pan / zoom を押すとマウスモードが「通常」に戻る既存の連動が
-      退行していない
-- [ ] 「通常」を選んだ時点で zoom が有効だった場合の扱いが決まっており、テストで
-      固定されている
-- [ ] マウスモードと上部バーが相互に呼び合って無限ループしない
-- [ ] 「主目盛グリッドを表示」を ON にしても、PyQtGraph でプロット面のドラッグが
-      x・y 両方向のパンになる
-- [ ] グリッド ON のとき、プロット面上の点の `hit_region` が `plot`（分割表示では
+- [x] 上部バーの pan / zoom を押すとマウスモードが「通常」に戻る既存の連動が
+      退行していない（`_toolbar_navigation_triggered` は変更なし。同テストで
+      `.trigger()` を使い実クリックを再現して確認）
+- [x] 「通常」を選んだ時点で zoom が有効だった場合の扱いが決まっており、テストで
+      固定されている（zoom が有効ならそのまま残す。同テストで固定）
+- [x] マウスモードと上部バーが相互に呼び合って無限ループしない
+      （`QAction.setChecked()` は `triggered` を発火しないため再入なし。同テストで確認）
+- [x] 「主目盛グリッドを表示」を ON にしても、PyQtGraph でプロット面のドラッグが
+      x・y 両方向のパンになる（`_pointer_region` でプロット矩形を軸帯より先に判定）
+- [x] グリッド ON のとき、プロット面上の点の `hit_region` が `plot`（分割表示では
       `plot_y1` / `plot_y2`）であることをテストで固定する
-- [ ] 分割表示でも同じであることをテストで固定する
-- [ ] 軸の帯をドラッグしたときの単軸パン（X だけ、Y だけ）が退行していない
-- [ ] グリッド ON のとき、他のマウスモード（積分・選択・縦線など）も従来どおり効く
-- [ ] 日本語 UI で上部バーの各アイコンのツールチップが日本語になる
-- [ ] Home のツールチップが現在の挙動（全体表示）と一致する文言になっている
-- [ ] Subplots のツールチップが、実際に開くダイアログと一致している
-- [ ] Matplotlib 描画のパン・ズームが退行していない
-- [ ] 上部バーに、マウスモード 8 個それぞれのアイコンが 1 つずつある
-- [ ] Pan と Zoom が「通常（パン／ズーム）」の 1 アイコンに統合されている
-- [ ] マウスモードのプルダウン・上部バーのアイコン・グループ欄のボタンの
+      （`test_screen_grid_does_not_break_plot_hit_region_in_either_view_mode`）
+- [x] 分割表示でも同じであることをテストで固定する（同テスト、`split_y_axes` も検証）
+- [x] 軸の帯をドラッグしたときの単軸パン（X だけ、Y だけ）が退行していない
+      （同テストでプロット矩形の外側にある軸帯の点が `x` に解決されることを確認）
+- [x] グリッド ON のとき、他のマウスモード（積分・選択・縦線など）も従来どおり効く
+      （`_pointer_region` の変更は当たり判定の優先順位のみで、モードごとの処理には
+      触れていない。既存のモード別テスト群が回帰なしで通過）
+- [x] 日本語 UI で上部バーの各アイコンのツールチップが日本語になる
+      （`i18n.py` に `toolbar_*_tooltip` を追加し `_retranslate()` で適用）
+- [x] Home のツールチップが現在の挙動（全体表示）と一致する文言になっている
+      （`toolbar_home_tooltip` = "全体表示"）
+- [x] Subplots のツールチップが、実際に開くダイアログと一致している
+      （`toolbar_subplots_tooltip` = "軸・ラベル設定…"。ダイアログの実体は
+      `AxisLabelsDialog`。`test_subplots_action_opens_axis_dialog_on_both_renderers_and_customize_is_removed`）
+- [x] Matplotlib 描画のパン・ズームが退行していない（フルテストスイート 375 件通過）
+- [x] 上部バーに、マウスモード 8 個それぞれのアイコンが 1 つずつある
+      （`normal`=Pan、`pointer`=既存アイコン、`select`/`integrate`/`edit_peak`/
+      `split_peak`/`move_trace`/`annotation` を新規追加）
+- [x] Pan と Zoom が「通常（パン／ズーム）」の 1 アイコンに統合されている
+      （Zoom アイコンを `_install_zoom_preservation` で非表示化。`QAction` 自体は
+      `toolbar._actions["zoom"]` に残す）
+- [x] マウスモードのプルダウン・上部バーのアイコン・グループ欄のボタンの
       3 つが常に同じモードを指す（どれを操作しても他の 2 つが追従する）
-- [ ] 同時に 2 つ以上のモードアイコンが押された状態にならない
-- [ ] グループ欄のモード用ボタンが残っており、退行していない
-- [ ] **矩形ズームが引き続き使える**。到達手段が決まっており、テストで固定されている
-- [ ] 矩形ズームが「ズーム方向」の設定（自動 / X+Y / X / Y）に従う挙動を保っている
-- [ ] 軸・ラベル設定を開くアイコンが 3 本バーの 1 つだけになっている
-- [ ] 矢印のアイコンが上部バーから消えている
-- [ ] 3 本バーのアイコンが、Matplotlib 描画でも PyQtGraph 描画でも同じダイアログを開く
-- [ ] 「移動・ズーム」欄で「スペクトル移動」の行が「全体表示〜Y軸全体」の下にある
-- [ ] 行の並べ替えでどのウィジェットも失われておらず、接続先も変わっていない
-- [ ] `REQUIREMENTS_STATUS.md` を更新する
+      （`_bind_mode_control_pair` による汎用の双方向バインド。
+      `test_mode_toolbar_icons_three_way_sync_with_group_controls_and_combo`）
+- [x] 同時に 2 つ以上のモードアイコンが押された状態にならない（同テストで確認）
+- [x] グループ欄のモード用ボタンが残っており、退行していない
+- [x] **矩形ズームが引き続き使える**。到達手段が決まっており、テストで固定されている
+      （「通常」モードの右ドラッグ。Matplotlib は既存のパンツールがネイティブ対応、
+      PyQtGraph は `screen_preview._handle_zoom_event` を拡張。
+      `test_preview_right_drag_zooms_while_normal_mode_pan_is_active`）
+- [x] 矩形ズームが「ズーム方向」の設定（自動 / X+Y / X / Y）に従う挙動を保っている
+      （`_handle_zoom_event` の `configured = owner.project.method.zoom_axis` 決定ロジックは
+      変更していない。既存の `test_preview_rectangle_zoom_modes_history_and_cancellation` が
+      引き続き通過）
+- [x] 軸・ラベル設定を開くアイコンが 3 本バーの 1 つだけになっている
+- [x] 矢印のアイコンが上部バーから消えている（Customize を `_install_zoom_preservation` で除去）
+- [x] 3 本バーのアイコンが、Matplotlib 描画でも PyQtGraph 描画でも同じダイアログを開く
+      （`AxisAwareNavigationToolbar.configure_subplots`/`edit_parameters` はどちらも
+      無条件に `owner.edit_axis_labels()` を呼ぶ。同テストで両レンダラを確認）
+- [x] 「移動・ズーム」欄で「スペクトル移動」の行が「全体表示〜Y軸全体」の下にある
+      （`test_navigation_group_row_order_keeps_widgets_connected`）
+- [x] 行の並べ替えでどのウィジェットも失われておらず、接続先も変わっていない（同テスト）
+- [x] `REQUIREMENTS_STATUS.md` を更新する
+
+実測（Windows 11 x64 / PySide6, `.venv-win11-x64`）
+- `tests/test_gui.py` を含むフルスイート: 375 件成功（既存 369 件 + 新規 6 件）
+- `scripts/probe_pyqtgraph_parity.py`: 全機能 `supported`
+- `scripts/benchmark_integrated_screen.py`: native/legacy 比 約 1.94 倍（回帰なし）
+- Python 3.8.10 x86（Windows 7 固定依存の構文チェック）: 変更ファイルすべて構文OK
+- `scripts/ci_validate.py --offline-assets auto`: OK
+
+実装中にフルスイートで見つかった既存テストの退行(4 件、すべて根本原因を特定して修正。
+テスト側を回帰なしに合わせるのではなく、いずれもコード側の見落としだった)
+- `test_preview_split_panels_native_navigation_and_markers`: 矩形ズームの新しい門番
+  (`screen_preview._handle_zoom_event`)が、右ドラッグ用のボタン判定に一致しない
+  すべての `button_press_event` を「処理済み」として飲み込んでいたため、
+  「通常」モードでパンが有効なときの左ドラッグ本体のパンが起動しなくなっていた。
+  一致しないボタンでは `False` を返して後続のハンドラへ委譲するよう修正
+- `test_preview_text_label_create_edit_delete_and_cancel` /
+  `test_preview_vertical_markers_use_native_events_and_shared_history`: 「通常」モードが
+  既定でパン有効になった結果、`gui.py` の `_on_canvas_press` と
+  `screen_preview.py` の `_handle_annotation_event` / `handle_event` のクリック選択
+  フォールバックがそれぞれ独立に持っていた `not str(toolbar.mode)` という
+  「ドラッグ中でない」を表す前提が崩れ、既存の注釈・縦線マーカーを「通常」モードから
+  クリックして編集・選択する経路が 3 箇所とも塞がっていた。それぞれ、クリック位置が
+  既存の注釈・マーカーそのもの(`hit_kind`)である場合だけ `toolbar.mode` の判定を
+  素通りさせるよう個別に直した
+- `test_reset_trace_position_restores_exact_display_and_is_one_undo_step`: 「移動・ズーム」欄の
+  行番号を `1` に決め打ちしていた(9.18 の並べ替えで `5` に移動)。行番号を更新
+- `test_preview_toolbar_configuration_reuses_persisted_axis_dialog`: 「通常表示のときは
+  レガシーな Matplotlib の Subplots/Customize を開く」という 9.16 で意図的に置き換えた
+  旧挙動を検証していたので、新しい挙動(どちらのレンダラでもアプリの軸ダイアログを開く)
+  を検証するようテスト側を書き換えた。ここだけはコード側ではなくテスト側の想定が
+  古かったケース
+- `scripts/ci_validate.py --offline-assets auto`: OK
 
 対象ファイル: `hplc_app/gui.py`, `hplc_app/pyqtgraph_scene.py`,
 `hplc_app/screen_preview.py`, `hplc_app/i18n.py`, `tests/test_gui.py`

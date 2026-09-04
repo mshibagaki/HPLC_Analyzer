@@ -2678,6 +2678,195 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_toolbar_pan_click_syncs_mouse_mode_and_normal_mode_preserves_zoom(self):
+        window = self.make_window()
+        try:
+            pan_action = window.toolbar._actions["pan"]
+            zoom_action = window.toolbar._actions["zoom"]
+            self.assertEqual(window.mouse_mode_combo.currentData(), "normal")
+
+            # A real click on the native Pan tool (only .trigger(), not a
+            # plain .pan() call, emits `triggered`) must not re-enter itself
+            # and must clear any other active mode control -- 9.1's
+            # loop-safety half.
+            window.dataset_table.selectRow(0)
+            window.integrate_button.setChecked(True)
+            self.assertEqual(window.mouse_mode_combo.currentData(), "integrate")
+            pan_action.trigger()
+            self.assertEqual(window.mouse_mode_combo.currentData(), "normal")
+            self.assertFalse(window.integrate_button.isChecked())
+
+            # Leaving "normal" deactivates both pan and zoom; returning to it
+            # with neither active falls back to pan, matching the toolbar's
+            # own tool (never "neither").
+            integrate_index = window.mouse_mode_combo.findData("integrate")
+            window.mouse_mode_combo.setCurrentIndex(integrate_index)
+            self.assertFalse(pan_action.isChecked())
+            self.assertFalse(zoom_action.isChecked())
+            normal_index = window.mouse_mode_combo.findData("normal")
+            window.mouse_mode_combo.setCurrentIndex(normal_index)
+            self.assertTrue(pan_action.isChecked())
+            self.assertFalse(zoom_action.isChecked())
+
+            # An already-active zoom is preserved, not overridden by pan,
+            # when normal mode is (re-)entered.
+            pan_action.setChecked(False)
+            zoom_action.setChecked(True)
+            window._ensure_normal_mode_navigation()
+            self.assertFalse(pan_action.isChecked())
+            self.assertTrue(zoom_action.isChecked())
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_mode_toolbar_icons_three_way_sync_with_group_controls_and_combo(self):
+        window = self.make_window()
+        try:
+            window.dataset_table.selectRow(0)
+            window.peak_table.selectRow(0)
+            toolbar_actions = window.toolbar.actions()
+            for action in (
+                window.select_toolbar_action,
+                window.integrate_toolbar_action,
+                window.edit_peak_toolbar_action,
+                window.split_peak_toolbar_action,
+                window.move_trace_toolbar_action,
+                window.annotation_action,
+            ):
+                self.assertIn(action, toolbar_actions)
+
+            pairs = (
+                (window.integrate_toolbar_action, window.integrate_button, "integrate"),
+                (window.edit_peak_toolbar_action, window.edit_peak_button, "edit_peak"),
+                (window.split_peak_toolbar_action, window.split_peak_button, "split_peak"),
+                (window.move_trace_toolbar_action, window.move_trace_button, "move_trace"),
+            )
+            for toolbar_action, control, mode in pairs:
+                with self.subTest(mode=mode):
+                    # Group-panel button -> toolbar icon.
+                    control.setChecked(True)
+                    self.assertTrue(toolbar_action.isChecked())
+                    self.assertEqual(window.mouse_mode_combo.currentData(), mode)
+                    control.setChecked(False)
+                    self.assertFalse(toolbar_action.isChecked())
+
+                    # Toolbar icon -> group-panel button.
+                    toolbar_action.setChecked(True)
+                    self.assertTrue(control.isChecked())
+                    self.assertEqual(window.mouse_mode_combo.currentData(), mode)
+                    toolbar_action.setChecked(False)
+                    self.assertFalse(control.isChecked())
+
+                    # Combo -> both.
+                    index = window.mouse_mode_combo.findData(mode)
+                    window.mouse_mode_combo.setCurrentIndex(index)
+                    self.assertTrue(control.isChecked())
+                    self.assertTrue(toolbar_action.isChecked())
+                    normal_index = window.mouse_mode_combo.findData("normal")
+                    window.mouse_mode_combo.setCurrentIndex(normal_index)
+                    self.assertFalse(control.isChecked())
+                    self.assertFalse(toolbar_action.isChecked())
+
+            # "select" has no group-panel control, so it routes through the
+            # combo instead of a duplicate two-way bind (9.15's special case).
+            window.select_toolbar_action.setChecked(True)
+            self.assertEqual(window.mouse_mode_combo.currentData(), "select")
+            window.select_toolbar_action.setChecked(False)
+            self.assertEqual(window.mouse_mode_combo.currentData(), "normal")
+
+            # No two mode icons are ever checked at the same time.
+            window.integrate_toolbar_action.setChecked(True)
+            window.edit_peak_toolbar_action.setChecked(True)
+            checked = [
+                action.isChecked()
+                for action in (
+                    window.select_toolbar_action,
+                    window.integrate_toolbar_action,
+                    window.edit_peak_toolbar_action,
+                    window.split_peak_toolbar_action,
+                    window.move_trace_toolbar_action,
+                )
+            ]
+            self.assertEqual(sum(checked), 1)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_subplots_action_opens_axis_dialog_on_both_renderers_and_customize_is_removed(self):
+        window = self.make_window()
+        try:
+            toolbar_actions = window.toolbar._actions
+            self.assertNotIn(
+                toolbar_actions.get("edit_parameters"), window.toolbar.actions()
+            )
+            self.assertNotIn(
+                toolbar_actions.get("zoom"), window.toolbar.actions()
+            )
+            with patch("hplc_app.gui.AxisLabelsDialog") as dialog_class, patch(
+                "hplc_app.gui.dialog_exec", return_value=False
+            ):
+                toolbar_actions["configure_subplots"].trigger()
+                self.assertEqual(dialog_class.call_count, 1)
+                toolbar_actions["edit_parameters"].trigger()
+                self.assertEqual(dialog_class.call_count, 2)
+
+            if pyqtgraph_scene_available():
+                window.screen_preview_checkbox.setChecked(True)
+                self.app.processEvents()
+                with patch("hplc_app.gui.AxisLabelsDialog") as dialog_class, patch(
+                    "hplc_app.gui.dialog_exec", return_value=False
+                ):
+                    toolbar_actions["configure_subplots"].trigger()
+                    self.assertEqual(dialog_class.call_count, 1)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_navigation_group_row_order_keeps_widgets_connected(self):
+        window = self.make_window()
+        try:
+            layout = window.navigation_group.layout()
+
+            def row_of(widget):
+                for i in range(layout.count()):
+                    item = layout.itemAt(i)
+                    child_layout = item.layout()
+                    matches = item.widget() is widget or (
+                        child_layout is not None
+                        and child_layout.indexOf(widget) != -1
+                    )
+                    if matches:
+                        row, _column, _row_span, _column_span = (
+                            layout.getItemPosition(i)
+                        )
+                        return row
+                return None
+
+            # reset_buttons (row 4) now comes before move_controls (row 5),
+            # which holds move_trace_button (Issue #236 / 9.18).
+            expected_rows = {
+                window.zoom_axis_label: 1,
+                window.view_mode_label: 2,
+                window.pointer_control_button: 3,
+                window.reset_view_button: 4,
+                window.move_trace_button: 5,
+            }
+            for widget, expected in expected_rows.items():
+                self.assertEqual(row_of(widget), expected)
+
+            # Reordering must not have disconnected any of the row's controls.
+            window.zoom_axis_combo.setCurrentIndex(
+                window.zoom_axis_combo.findData("x")
+            )
+            self.assertEqual(window.project.method.zoom_axis, "x")
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("split_y_axes")
+            )
+            self.assertEqual(window.project.method.view_mode, "split_y_axes")
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_cursor_position_selects_x_y1_y2_or_both_for_wheel_zoom(self):
         window = self.make_window()
         window.project.method.zoom_axis = "auto"
@@ -3396,6 +3585,76 @@ class GuiTests(unittest.TestCase):
             self.app.sendEvent(consumer.widget.viewport(), escape)
             self.assertIsNone(preview._zoom_drag)
             self.assertEqual(window._view_history.count, count)
+        finally:
+            if window.toolbar._actions["zoom"].isChecked():
+                window.toolbar._actions["zoom"].trigger()
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_right_drag_zooms_while_normal_mode_pan_is_active(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.zoom_axis_combo.setCurrentIndex(
+                window.zoom_axis_combo.findData("both")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            initial = window._screen_view_state()
+            self.assertEqual(window._mouse_mode, "normal")
+
+            def event(x, y, pixel_x, pixel_y, button):
+                return ScreenPointerEvent(
+                    button=button, axis_role="y1", hit_region="plot",
+                    canvas_x=pixel_x, canvas_y=pixel_y,
+                    data_coordinates=(("y1", x, y),),
+                )
+
+            # Issue #236 / 9.17: with neither pan nor zoom active, a
+            # right-button press must not start a zoom drag -- pan being
+            # active is what makes the right-drag reachable, not merely
+            # being in "normal" mode.
+            self.assertFalse(window.toolbar._actions["pan"].isChecked())
+            self.assertFalse(window.toolbar._actions["zoom"].isChecked())
+            preview.handle_event(
+                "button_press_event", event(10.0, 100.0, 100.0, 100.0, 3)
+            )
+            self.assertIsNone(preview._zoom_drag)
+
+            # Activating pan (the toolbar's own default for "normal") makes
+            # the right-drag reachable, reproducing the rubber-band zoom that
+            # used to require the now-hidden Zoom icon.
+            window._ensure_normal_mode_navigation()
+            self.assertTrue(window.toolbar._actions["pan"].isChecked())
+            before_count = window._view_history.count
+            preview.handle_event(
+                "button_press_event", event(10.0, 100.0, 100.0, 100.0, 3)
+            )
+            preview.handle_event(
+                "motion_notify_event", event(20.0, 500.0, 300.0, 300.0, 3)
+            )
+            self.assertTrue(consumer.zoom_rectangle.isVisible())
+            preview.handle_event(
+                "button_release_event", event(20.0, 500.0, 300.0, 300.0, 3)
+            )
+            state = window._screen_view_state()
+            self.assertEqual(state.x, (10.0, 20.0))
+            self.assertEqual(state.y1, (100.0, 500.0))
+            self.assertEqual(window._view_history.count, before_count)
+            self.assertTrue(window.toolbar._actions["back"].isEnabled())
+            window.toolbar._actions["back"].trigger()
+            self.assertEqual(window._screen_view_state(), initial)
+
+            # A left-button press in the same (pan-active, zoom-unchecked)
+            # state is not the expected button, so it must not start a drag
+            # either -- only button 3 reaches the new path.
+            preview.handle_event(
+                "button_press_event", event(10.0, 100.0, 100.0, 100.0, 1)
+            )
+            self.assertIsNone(preview._zoom_drag)
         finally:
             if window.toolbar._actions["zoom"].isChecked():
                 window.toolbar._actions["zoom"].trigger()
@@ -5458,6 +5717,64 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_screen_grid_does_not_break_plot_hit_region_in_either_view_mode(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            window.project.method.show_major_grid = True
+            for view_mode in ("single", "split_y_axes"):
+                with self.subTest(view_mode=view_mode):
+                    window.project.method.view_mode = view_mode
+                    window._plot()
+                    self.app.processEvents()
+                    consumer = window._screen_preview.consumer
+                    # Issue #236 / 9.2: with the grid on, AxisItem's
+                    # boundingRect() reports the union with the whole
+                    # ViewBox (it draws the grid lines), so a point well
+                    # inside the plot must still resolve to the plot itself,
+                    # not the axis band that used to win.
+                    if view_mode == "split_y_axes":
+                        checks = (
+                            (consumer.primary, "y1", "plot_y1"),
+                            (consumer.secondary_plot, "y2", "plot_y2"),
+                        )
+                    else:
+                        checks = ((consumer.primary, "y1", "plot"),)
+                    for plot, role, region in checks:
+                        center = plot.vb.sceneBoundingRect().center()
+                        self.assertEqual(
+                            consumer._pointer_region(center), (role, region)
+                        )
+                    # A point genuinely below the plot's own ViewBox (on the
+                    # bottom axis's tick-label strip, not merely within its
+                    # grid-inflated bounding rect) still resolves to the
+                    # axis -- single-axis band panning is not regressed by
+                    # checking the plot rect first. In split mode, the
+                    # visible x-tick labels live on the bottom (secondary)
+                    # plot -- the primary plot's own bottom axis is blanked
+                    # (setStyle(showValues=False)) since the axis is shared.
+                    axis_plot = (
+                        consumer.secondary_plot
+                        if view_mode == "split_y_axes"
+                        else consumer.primary
+                    )
+                    plot_rect = axis_plot.vb.sceneBoundingRect()
+                    axis_point = consumer.qt_core.QPointF(
+                        plot_rect.center().x(), plot_rect.bottom() + 15.0
+                    )
+                    self.assertFalse(
+                        consumer._point_in_rect(axis_point, plot_rect)
+                    )
+                    _axis_role, hit_region = consumer._pointer_region(axis_point)
+                    self.assertEqual(hit_region, "x")
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_native_display_toggles_do_not_rebuild_scene_or_mouse_owner(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -5786,7 +6103,8 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         window.show()
         self.app.processEvents()
-        move_row = window.navigation_group.layout().itemAtPosition(1, 0).layout()
+        # Issue #236/9.18: the move/reset row moved below the view-reset row.
+        move_row = window.navigation_group.layout().itemAtPosition(5, 0).layout()
         self.assertGreaterEqual(move_row.indexOf(window.move_trace_button), 0)
         self.assertGreaterEqual(move_row.indexOf(window.reset_trace_position_button), 0)
         for button in (window.move_trace_button, window.reset_trace_position_button):
@@ -8434,15 +8752,41 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(window.project.dirty)
             self.assertIsNotNone(window._screen_preview)
 
+            # Issue #236/9.16: Subplots and the retained-but-hidden Customize
+            # action always open the application's own axis dialog now, on
+            # both renderers -- not only while the PyQtGraph preview is on.
             window.screen_preview_checkbox.setChecked(False)
-            with patch("hplc_app.gui.NavigationToolbar.edit_parameters",
-                       return_value="legacy-edit") as legacy_edit:
-                self.assertEqual(window.toolbar.edit_parameters(), "legacy-edit")
-            with patch("hplc_app.gui.NavigationToolbar.configure_subplots",
-                       return_value="legacy-layout") as legacy_layout:
-                self.assertEqual(window.toolbar.configure_subplots(), "legacy-layout")
-            legacy_edit.assert_called_once_with()
-            legacy_layout.assert_called_once_with()
+            self.assertIsNone(window._screen_preview)
+
+            class MatplotlibEditDialog:
+                def apply_to_method(self, method):
+                    method.x_axis_label = "Matplotlib edit entry"
+
+            with patch(
+                "hplc_app.gui.AxisLabelsDialog", return_value=MatplotlibEditDialog()
+            ), patch("hplc_app.gui.dialog_exec", return_value=True), patch(
+                "hplc_app.gui.NavigationToolbar.edit_parameters"
+            ) as legacy_edit:
+                window.toolbar.edit_parameters()
+            self.assertEqual(
+                window.project.method.x_axis_label, "Matplotlib edit entry"
+            )
+            legacy_edit.assert_not_called()
+
+            class MatplotlibSubplotDialog:
+                def apply_to_method(self, method):
+                    method.x_axis_label = "Matplotlib subplot entry"
+
+            with patch(
+                "hplc_app.gui.AxisLabelsDialog", return_value=MatplotlibSubplotDialog()
+            ), patch("hplc_app.gui.dialog_exec", return_value=True), patch(
+                "hplc_app.gui.NavigationToolbar.configure_subplots"
+            ) as legacy_layout:
+                window.toolbar.configure_subplots()
+            self.assertEqual(
+                window.project.method.x_axis_label, "Matplotlib subplot entry"
+            )
+            legacy_layout.assert_not_called()
         finally:
             window.project.dirty = False
             window.close()

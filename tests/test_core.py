@@ -4411,6 +4411,13 @@ class ProjectTests(unittest.TestCase):
             ),
         )
         dataset.fitted_peaks = [fitted_peak]
+        dataset.peaks[0].raw_area_uv_sec = 123456.4
+        dataset.peaks[0].area_percent = 62.5
+        dataset.peaks[0].amount_nmol = 12.5
+        dataset.peaks[0].amount_ug = 3.75
+        fitted_peak.raw_area_uv_sec = 98765.6
+        fitted_peak.amount_nmol = 4.25
+        fitted_peak.amount_ug = 1.5
         project = Project(title="Report test", datasets=[dataset])
         project.method.line_width = 2.4
         figures = analysis_report_figures(project, [dataset], "en")
@@ -4440,9 +4447,18 @@ class ProjectTests(unittest.TestCase):
             for table in axis.tables
             for cell in table.get_celld().values()
         ]
-        self.assertIn("Area (mAU·sec)", report_cells)
-        self.assertIn("F1", report_cells)
-        self.assertIn("Fit GAUSSIAN -> #1 (estimated)", report_cells)
+        self.assertIn("Area (µV·sec)", report_cells)
+        self.assertNotIn("Area (mAU·sec)", report_cells)
+        self.assertNotIn("Type / parent", report_cells)
+        self.assertNotIn("Method", report_cells)
+        self.assertIn("F1 estimated→#1", report_cells)
+        self.assertIn("123,456", report_cells)
+        self.assertNotIn("1.235e+05", report_cells)
+        self.assertIn("Amount (nmol)", report_cells)
+        self.assertIn("Amount (µg)", report_cells)
+        self.assertIn("12.5", report_cells)
+        self.assertIn("3.75", report_cells)
+        self.assertEqual(dataset.peaks[0].area_percent, 62.5)
         self.assertTrue(
             any(line.get_color() == "#c026d3" for line in plot_axis.lines)
         )
@@ -4481,8 +4497,8 @@ class ProjectTests(unittest.TestCase):
             "RT (min)",
             "Range (min)",
             "%B",
+            "Amount (nmol)",
             "Amount (µg)",
-            "Method",
         ):
             self.assertNotIn(omitted_header, compact_cells)
         for figure in compact:
@@ -4531,6 +4547,11 @@ class ProjectTests(unittest.TestCase):
         x_label_box = plot_axis.xaxis.label.get_window_extent(renderer)
         table_box = table_axis.tables[0].get_window_extent(renderer)
         figure_box = figure.get_window_extent(renderer)
+        y_label_box = plot_axis.yaxis.label.get_window_extent(renderer)
+        self.assertAlmostEqual(figure.subplotpars.left, 0.105)
+        self.assertAlmostEqual(figure.subplotpars.right, 0.895)
+        self.assertGreater(plot_axis.get_position().width, 0.75)
+        self.assertGreaterEqual(y_label_box.x0, figure_box.x0)
         self.assertGreater(x_label_box.y0 - table_box.y1, 4.0)
         self.assertGreaterEqual(table_box.y0, figure_box.y0)
         self.assertIn("Crowded report", [text.get_text() for text in figure.axes[0].texts])
@@ -4582,6 +4603,27 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(len(figures), 3)
         self.assertAlmostEqual(figures[0].subplotpars.top, 0.95)
         self.assertAlmostEqual(figures[0].subplotpars.bottom, 0.055)
+        first_table = next(
+            axis.tables[0] for axis in figures[0].axes if axis.tables
+        )
+        header_columns = sorted(
+            column for row, column in first_table.get_celld() if row == 0
+        )
+        expected_headers = [
+            first_table[(0, column)].get_text().get_text()
+            for column in header_columns
+        ]
+        self.assertNotIn("Type / parent", expected_headers)
+        self.assertNotIn("Method", expected_headers)
+        self.assertIn("Area (µV·sec)", expected_headers)
+        self.assertIn("Amount (nmol)", expected_headers)
+        self.assertAlmostEqual(
+            sum(
+                first_table[(0, column)].get_width()
+                for column in range(len(expected_headers))
+            ),
+            1.0,
+        )
         continuation_numbers = []
         for figure in figures[1:]:
             self.assertAlmostEqual(figure.subplotpars.top, 0.975)
@@ -4591,6 +4633,11 @@ class ProjectTests(unittest.TestCase):
             renderer = canvas.get_renderer()
             axis = figure.axes[0]
             table = axis.tables[0]
+            headers = [
+                table[(0, column)].get_text().get_text()
+                for column in range(len(expected_headers))
+            ]
+            self.assertEqual(headers, expected_headers)
             table_box = table.get_window_extent(renderer)
             axis_box = axis.get_window_extent(renderer)
             footer_box = figure.texts[0].get_window_extent(renderer)

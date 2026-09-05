@@ -412,16 +412,17 @@ class ReportOptionsDialog(QtWidgets.QDialog):
 
     OPTION_LABELS = (
         ("integration_range", "積分範囲", "Integration ranges"),
-        ("baseline", "ベースライン／積分方法", "Baselines / integration method"),
+        ("baseline", "ベースライン", "Baselines"),
         ("retention_time", "保持時間", "Retention times"),
         ("gradient_b", "B %", "B %"),
         ("gradient_conditions", "グラジエント曲線", "Gradient curve"),
         ("quantitation", "定量値", "Quantitation values"),
     )
 
-    def __init__(self, language="ja", parent=None):
+    def __init__(self, language="ja", parent=None, initial_values=None):
         super().__init__(parent)
         self.language = language
+        initial_values = dict(initial_values or {})
         self.setWindowTitle(
             "レポート出力項目" if language == "ja" else "Report contents"
         )
@@ -438,7 +439,7 @@ class ReportOptionsDialog(QtWidgets.QDialog):
             checkbox = QtWidgets.QCheckBox(
                 japanese if language == "ja" else english
             )
-            checkbox.setChecked(True)
+            checkbox.setChecked(bool(initial_values.get(key, True)))
             root.addWidget(checkbox)
             self.checkboxes[key] = checkbox
         buttons = QtWidgets.QDialogButtonBox(

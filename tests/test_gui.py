@@ -11150,16 +11150,51 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(dialog.scope(), "all")
         dialog.close()
 
+        initial_dialog = ReportOptionsDialog(
+            "en",
+            initial_values={
+                "integration_range": False,
+                "baseline": False,
+                "retention_time": False,
+                "gradient_b": True,
+            },
+        )
+        self.assertFalse(initial_dialog.checkboxes["integration_range"].isChecked())
+        self.assertFalse(initial_dialog.checkboxes["baseline"].isChecked())
+        self.assertFalse(initial_dialog.checkboxes["retention_time"].isChecked())
+        self.assertTrue(initial_dialog.checkboxes["gradient_b"].isChecked())
+        self.assertEqual(initial_dialog.checkboxes["baseline"].text(), "Baselines")
+        self.assertTrue(initial_dialog.checkboxes["gradient_conditions"].isChecked())
+        self.assertTrue(initial_dialog.checkboxes["quantitation"].isChecked())
+        initial_dialog.close()
+
+        window.project.method.show_integration_areas = False
+        window.project.method.show_retention_labels = False
+        window.project.method.show_gradient_b = True
         options_dialog = ReportOptionsDialog("en")
         options_dialog.checkboxes["baseline"].setChecked(False)
         values = options_dialog.option_values()
         self.assertFalse(values["baseline"])
         self.assertTrue(values["retention_time"])
-        with patch("hplc_app.gui.ReportOptionsDialog", return_value=options_dialog), patch(
+        with patch(
+            "hplc_app.gui.ReportOptionsDialog", return_value=options_dialog
+        ) as options_factory, patch(
             "hplc_app.gui.dialog_exec", return_value=True
         ):
             options = window._choose_report_options()
+        self.assertEqual(
+            options_factory.call_args.kwargs["initial_values"],
+            {
+                "integration_range": False,
+                "baseline": False,
+                "retention_time": False,
+                "gradient_b": True,
+                "gradient_conditions": True,
+                "quantitation": True,
+            },
+        )
         self.assertFalse(options.baseline)
+        self.assertTrue(options.integration_range)
         self.assertTrue(options.retention_time)
         options_dialog.close()
         window.project.dirty = False

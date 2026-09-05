@@ -7445,7 +7445,19 @@ class MainWindow(QtWidgets.QMainWindow):
         return list(self.project.datasets)
 
     def _choose_report_options(self):
-        dialog = ReportOptionsDialog(self._application_language, self)
+        method = self.project.method
+        dialog = ReportOptionsDialog(
+            self._application_language,
+            self,
+            initial_values={
+                "integration_range": method.show_integration_areas,
+                "baseline": method.show_integration_areas,
+                "retention_time": method.show_retention_labels,
+                "gradient_b": method.show_gradient_b,
+                "gradient_conditions": True,
+                "quantitation": True,
+            },
+        )
         if not dialog_exec(dialog):
             return None
         return ReportOptions(**dialog.option_values())

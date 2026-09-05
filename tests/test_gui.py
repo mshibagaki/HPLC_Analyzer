@@ -822,7 +822,18 @@ class GuiTests(unittest.TestCase):
             for mode in ("split_y_axes", "single", "overview_detail", "split_y_axes"):
                 previous = window._screen_preview.consumer
                 state = window._screen_view_state()
-                window.view_mode_combo.setCurrentIndex(window.view_mode_combo.findData(mode))
+                replacing = previous.split_y_axes != (mode == "split_y_axes")
+                visible_when_closed = []
+                original_close = previous.close
+
+                def close_previous():
+                    visible_when_closed.append(window.plot_stack.currentWidget())
+                    original_close()
+
+                with patch.object(previous, "close", side_effect=close_previous):
+                    window.view_mode_combo.setCurrentIndex(
+                        window.view_mode_combo.findData(mode)
+                    )
                 consumer = window._screen_preview.consumer
                 self.assertIs(window._view_history, history)
                 self.assertIs(window._screen_preview.navigation.history, history)
@@ -831,6 +842,12 @@ class GuiTests(unittest.TestCase):
                 self.assertEqual(consumer.overview.isVisible(), mode == "overview_detail")
                 if previous is not consumer:
                     self.assertTrue(previous._closed)
+                    self.assertTrue(replacing)
+                    self.assertEqual(visible_when_closed, [consumer.widget])
+                    self.assertIsNot(visible_when_closed[0], window.canvas)
+                else:
+                    self.assertFalse(replacing)
+                    self.assertEqual(visible_when_closed, [])
                 self.assertEqual(window.plot_stack.count(), 2)
             count = len(consumer.items)
             window.resize(1300, 950)
@@ -5139,8 +5156,16 @@ class GuiTests(unittest.TestCase):
         dirty = window.project.dirty
         window._on_selection_span_selected(9.0, 3.0)
         self.assertEqual(window.selected_time_range, (3.0, 9.0))
+        self.assertEqual(tuple(window._span_selector.extents), (3.0, 9.0))
+        self.assertTrue(all(
+            artist.get_visible() for artist in window._span_selector.artists
+        ))
         range_signal.assert_called_once_with(3.0, 9.0)
         self.assertEqual(window.project.dirty, dirty)
+        window.mouse_mode_combo.setCurrentIndex(
+            window.mouse_mode_combo.findData("normal")
+        )
+        self.assertIsNone(window.selected_time_range)
         window.project.dirty = False
         window.close()
 
@@ -5457,7 +5482,13 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(
                 window._selected_vertical_marker_ids, {inside_marker.id}
             )
+            self.assertEqual(window.selected_time_range, (4.0, 11.0))
             self.assertTrue(window.delete_selected_plot_items())
+            self.assertIsNone(window.selected_time_range)
+            self.assertTrue(all(
+                not artist.get_visible()
+                for artist in window._span_selector.artists
+            ))
             self.assertEqual(
                 [peak.id for peak in dataset.peaks], [outside_peak.id]
             )
@@ -5574,6 +5605,40 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(len(window._undo_stack), undo_count)
             self.assertFalse(window.project.dirty)
             self.assertIsNone(preview._span_drag)
+            self.assertTrue(preview.consumer.span_selection.isVisible())
+            self.assertEqual(
+                tuple(preview.consumer.span_selection.getRegion()), (2.0, 4.0)
+            )
+
+            preview.handle_event("button_press_event", event(30.0, 120.0))
+            self.assertIsNone(window.selected_time_range)
+            self.assertEqual(
+                tuple(preview.consumer.span_selection.getRegion()), (30.0, 30.0)
+            )
+            preview.handle_event("button_release_event", event(30.0, 120.0))
+            self.assertFalse(preview.consumer.span_selection.isVisible())
+
+            preview.handle_event("button_press_event", event(2.0, 20.0))
+            preview.handle_event("motion_notify_event", event(4.0, 80.0))
+            preview.handle_event("button_release_event", event(4.0, 80.0))
+
+            escape_key = (
+                QtCore.Qt.Key.Key_Escape if QT_API == 6
+                else QtCore.Qt.Key_Escape
+            )
+            QtTest.QTest.keyClick(preview.consumer.widget, escape_key)
+            self.app.processEvents()
+            self.assertIsNone(window.selected_time_range)
+            self.assertFalse(preview.consumer.span_selection.isVisible())
+
+            preview.handle_event("button_press_event", event(3.0, 30.0))
+            preview.handle_event("motion_notify_event", event(5.0, 90.0))
+            preview.handle_event("button_release_event", event(5.0, 90.0))
+            self.assertEqual(window.selected_time_range, (3.0, 5.0))
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("normal")
+            )
+            self.assertIsNone(window.selected_time_range)
             self.assertFalse(preview.consumer.span_selection.isVisible())
         finally:
             window.project.dirty = False
@@ -5899,6 +5964,72 @@ class GuiTests(unittest.TestCase):
                     )
                     _axis_role, hit_region = consumer._pointer_region(axis_point)
                     self.assertEqual(hit_region, "x")
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_native_scene_refresh_never_processes_an_auto_ranged_frame(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            original = window._screen_view_state()
+            narrowed = ScreenViewState(
+                x=(6.0, 14.0),
+                y1=original.y1,
+                y2=original.y2,
+                gradient=original.gradient,
+            )
+            window._apply_view_state(narrowed)
+
+            def verify_refresh(action):
+                render = Mock(wraps=consumer.render)
+                processed_ranges = []
+
+                def record_processed_range():
+                    processed_ranges.append(
+                        tuple(consumer.primary.viewRange()[0])
+                    )
+
+                with patch.object(consumer, "render", render), \
+                        patch.object(consumer.primary, "enableAutoRange") as primary_auto, \
+                        patch.object(consumer.secondary, "enableAutoRange") as secondary_auto, \
+                        patch.object(consumer.overview, "enableAutoRange") as overview_auto, \
+                        patch.object(
+                            consumer.application, "processEvents",
+                            side_effect=record_processed_range,
+                        ):
+                    action()
+                self.assertGreaterEqual(render.call_count, 1)
+                for call in render.call_args_list:
+                    self.assertEqual(call.kwargs["view_state"].x, narrowed.x)
+                    self.assertIsNotNone(call.kwargs["overview_state"])
+                for auto_range in (primary_auto, secondary_auto, overview_auto):
+                    for call in auto_range.call_args_list:
+                        self.assertTrue(call.args or call.kwargs)
+                        self.assertFalse(any(
+                            value is True
+                            for value in call.args + tuple(call.kwargs.values())
+                        ))
+                for processed in processed_ranges:
+                    self.assertAlmostEqual(processed[0], narrowed.x[0])
+                    self.assertAlmostEqual(processed[1], narrowed.x[1])
+                self.assertEqual(window._screen_view_state().x, narrowed.x)
+
+            def hide_second_dataset():
+                window.dataset_table.item(
+                    1, DATASET_VISIBLE_COLUMN
+                ).setCheckState(UNCHECKED)
+
+            verify_refresh(hide_second_dataset)
+            verify_refresh(lambda: window._on_span_selected(2.0, 4.0))
+            verify_refresh(lambda: window._split_selected_peak_at(3.0))
+            verify_refresh(lambda: window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            ))
         finally:
             window.project.dirty = False
             window.close()

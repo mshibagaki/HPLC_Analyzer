@@ -88,11 +88,13 @@ class ExperimentalScreenPreview:
                                  or preview._move_target is not None
                                  or preview._annotation_target is not None
                                  or preview._zoom_drag is not None
+                                 or preview.owner.selected_time_range is not None
                                  or preview.owner.edit_peak_button.isChecked())):
                         preview.cancel_span_drag()
                         preview.cancel_move_drag()
                         preview.cancel_annotation_drag()
                         preview.cancel_zoom_drag()
+                        preview.owner._clear_selected_time_range()
                         if preview.owner.edit_peak_button.isChecked():
                             preview.owner.edit_peak_button.setChecked(False)
                         event.accept()
@@ -118,15 +120,24 @@ class ExperimentalScreenPreview:
         try:
             owner = self.owner
             scene = owner._screen_scene
+            method = owner.project.method
+            state = owner._screen_view_state()
+            overview_state = compose_overview_state(
+                method.view_mode == "overview_detail",
+                owner._full_x_bounds(), state.x,
+            )
             if (scene is not self._scene or (self._span_drag is not None
                     and self._span_drag["view"] != owner._screen_view_state())):
                 self.cancel_span_drag()
             if scene is not self._scene:
-                self.consumer.render(scene)
+                self.consumer.render(
+                    scene,
+                    view_state=state,
+                    overview_state=overview_state,
+                )
                 self._scene = scene
                 if self.navigation is not None:
                     self.navigation.set_pan_enabled(False)
-            method = owner.project.method
             self.consumer.set_display_options(
                 show_integration=method.show_integration_areas,
                 show_retention=method.show_retention_labels,
@@ -150,7 +161,6 @@ class ExperimentalScreenPreview:
             x_axes = [primary.getAxis("bottom")]
             if lower is not None:
                 x_axes.append(lower.getAxis("bottom"))
-            state = owner._screen_view_state()
             if owner.project.method.x_tick_mode == "manual":
                 spacing = safe_manual_x_tick_spacing(
                     abs(state.x[1] - state.x[0]),
@@ -195,10 +205,19 @@ class ExperimentalScreenPreview:
                     right.setStyle(showValues=False)
                     right.setPen(None)
                     right.setWidth(0)
-            self.consumer.apply_view_state(state, compose_overview_state(
-                owner.project.method.view_mode == "overview_detail",
-                owner._full_x_bounds(), state.x,
-            ))
+            if self._span_drag is None:
+                selected = owner._selected_dataset()
+                if owner._mouse_mode == "select" and owner.selected_time_range:
+                    role = (
+                        "y2" if selected is not None and selected.y_axis == 2
+                        else "y1"
+                    )
+                    self.consumer.set_span_selection(
+                        *owner.selected_time_range, role, "select"
+                    )
+                else:
+                    self.consumer.set_span_selection()
+            self.consumer.apply_view_state(state, overview_state)
         finally:
             self._busy = False
 
@@ -575,16 +594,23 @@ class ExperimentalScreenPreview:
                 self.consumer.set_span_selection(drag["start"], x_value, drag["role"], mode)
                 self.consumer.set_pointer_cursor(x_value, drag["role"])
             elif name == "button_release_event":
-                self.cancel_span_drag()
+                if mode == "select":
+                    self._span_drag = None
+                else:
+                    self.cancel_span_drag()
                 if abs(event.canvas_x - drag["pixel"]) >= 3 and x_value != drag["start"]:
                     callback = (owner._on_span_selected if mode == "integrate"
                                 else owner._on_edit_span_selected if mode == "edit"
                                 else owner._on_selection_span_selected)
                     callback(drag["start"], x_value)
+                elif mode == "select":
+                    self.consumer.set_span_selection()
             return True
         if (name == "button_press_event" and event.button == 1 and valid
                 and not event.double_click and owner._selected_dataset() is not None):
             self.consumer.widget.setFocus(MOUSE_FOCUS_REASON)
+            if mode == "select":
+                owner._clear_selected_time_range()
             self._span_drag = {
                 "start": x_value, "pixel": event.canvas_x, "role": event.axis_role,
                 "view": owner._screen_view_state(),

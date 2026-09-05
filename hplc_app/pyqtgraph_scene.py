@@ -738,21 +738,32 @@ class PyQtGraphSceneConsumer:
         return minmax_decimate(trace.x_values, trace.y_values, budget)
 
     def _finish_render(
-        self, scene, counts, *, reused_traces=False, reused_static=False
+        self, scene, counts, *, reused_traces=False, reused_static=False,
+        view_state=None, overview_state=None,
     ):
-        self.primary.enableAutoRange()
-        self.secondary.enableAutoRange()
-        self.overview.enableAutoRange()
-        self.overview_secondary.enableAutoRange()
+        if view_state is None or overview_state is None:
+            self.primary.enableAutoRange()
+            self.secondary.enableAutoRange()
+            self.overview.enableAutoRange()
+            self.overview_secondary.enableAutoRange()
         self.gradient.setYRange(0.0, 100.0, padding=0.0)
         self._sync_auxiliary_views()
-        self.application.processEvents()
+        if view_state is None or overview_state is None:
+            # Standalone consumers still resolve their initial data range before
+            # evidence or a snapshot is requested. The on-screen adapter supplies
+            # the final range and does not pump an intermediate frame.
+            self.application.processEvents()
+        else:
+            self.apply_view_state(
+                view_state, overview_state, process_events=False
+            )
         primary_range = self.primary.viewRange()
         secondary_range = self.secondary.viewRange()
         gradient_range = self.gradient.viewRange()
-        self.overview_state = compose_overview_state(
-            False, primary_range[0], primary_range[0]
-        )
+        if view_state is None or overview_state is None:
+            self.overview_state = compose_overview_state(
+                False, primary_range[0], primary_range[0]
+            )
         self._rendered_scene = scene
         self.last_evidence = {
             "counts": counts,
@@ -821,7 +832,7 @@ class PyQtGraphSceneConsumer:
                 if item in view.addedItems:
                     view.removeItem(item)
 
-    def render(self, scene):
+    def render(self, scene, *, view_state=None, overview_state=None):
         reuse_traces = self._can_reuse_trace_items(scene)
         reuse_static = reuse_traces and self._can_reuse_static_items(scene)
         if reuse_static:
@@ -845,6 +856,8 @@ class PyQtGraphSceneConsumer:
                 counts,
                 reused_traces=True,
                 reused_static=True,
+                view_state=view_state,
+                overview_state=overview_state,
             )
         if reuse_traces:
             detail_traces = tuple(self.trace_items.values())
@@ -1106,6 +1119,8 @@ class PyQtGraphSceneConsumer:
             counts,
             reused_traces=reuse_traces,
             reused_static=False,
+            view_state=view_state,
+            overview_state=overview_state,
         )
 
     @staticmethod
@@ -1116,6 +1131,8 @@ class PyQtGraphSceneConsumer:
         self,
         view_state: ScreenViewState,
         overview_state: ScreenOverviewState,
+        *,
+        process_events=True,
     ):
         """Apply backend-neutral navigation state to the optional renderer."""
         self.overview_state = overview_state
@@ -1142,7 +1159,8 @@ class PyQtGraphSceneConsumer:
 
         self._sync_auxiliary_views()
         self._sync_overview_view()
-        self.application.processEvents()
+        if process_events:
+            self.application.processEvents()
         primary_range = self.primary.viewRange()
         secondary_range = self.secondary.viewRange()
         gradient_range = self.gradient.viewRange()

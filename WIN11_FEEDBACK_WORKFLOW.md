@@ -1783,17 +1783,41 @@ pan ツールの説明文が元々「左ボタンでパン、右ボタンでズ�
   狭くする
 
 受け入れ条件
-- [ ] 3D 表示でグリッドの表示形式を選べる（少なくとも「なし」と
-      「保持時間 x 系列 平面のみ」を含む）
-- [ ] 既定が「保持時間 x 系列 平面のみ」になっている
-- [ ] 選んだ形式がプレビューと書き出した画像の両方に反映される
-- [ ] 私用 API（`_axinfo` など）を使っていない
-- [ ] コ(#185) / #204 で入れた他の 3D 設定と視点リセットが退行していない
-- [ ] レポートの 2 ページ目以降の上下余白が狭くなり、1 ページに入る行数が増えている
-- [ ] 行が重ならず、フッター（日時）が表に食い込まない
-- [ ] ピーク数がページ境界ちょうどのときに空ページや欠落が出ない
-- [ ] レポート 1 ページ目の体裁が変わっていない
-- [ ] `REQUIREMENTS_STATUS.md` を更新する
+- [x] 3D 表示でグリッドの表示形式を選べる（保持時間×系列、保持時間×強度、
+      系列×強度の3平面を独立チェックでき、全解除で「なし」。
+      `test_3d_dialog_selects_grid_planes_and_resets_only_the_view_angles`）
+- [x] 既定が「保持時間 x 系列 平面のみ」になっている
+      （`ThreeDPlotOptions.grid_xy=True`、他2平面は `False`。
+      `test_3d_grid_planes_reach_the_figure_and_its_image_output`）
+- [x] 選んだ形式がプレビューと書き出した画像の両方に反映される
+      （5通りのコレクションIDとPNGバイト差、およびダイアログの即時プレビューを同2テストで確認）
+- [x] 私用 API（`_axinfo` など）を使っていない
+      （公開 `get_*ticks` / `get_*lim` と `Line3DCollection` / `add_collection3d` のみ。
+      ソース契約も同コアテストで確認）
+- [x] コ(#185) / #204 で入れた他の 3D 設定と視点リセットが退行していない
+      （既存 `test_3d_chromatogram_uses_selected_order_existing_styles_and_full_raw_data`、
+      上記GUIテストとフルスイート）
+- [x] レポートの 2 ページ目以降の上下余白が狭くなり、1 ページに入る行数が増えている
+      （上下 0.975 / 0.035、40行から48行へ。
+      `test_a4_report_continuation_fits_48_rows_and_keeps_footer_clear`）
+- [x] 行が重ならず、フッター（日時）が表に食い込まない
+      （48行の各セル境界、表と軸境界、日時との間隔を描画後の実寸で同テストが確認）
+- [x] ピーク数がページ境界ちょうどのときに空ページや欠落が出ない
+      （先頭20行＋48行×2の116件と、さらに1件の117件を同テストで確認）
+- [x] レポート 1 ページ目の体裁が変わっていない
+      （既存 top=0.95 / bottom=0.055 と既存混雑時分離テストを確認）
+- [x] `REQUIREMENTS_STATUS.md` を更新する
+
+実測（2026-09-05）:
+- Windows 11 / Python 3.11.9 x64 / PySide6 6.8.3 / Matplotlib 3.10.1 /
+  NumPy 2.2.3 / PyQtGraph 0.13.7 でフルスイート **387件**が
+  **646.853秒**で成功した。
+- Python 3.8.10 x86 で変更Python 5ファイルの構文チェックに成功した。
+  現行環境の `compileall`、`ci_validate.py --offline-assets auto` の Level 2
+  ソース契約と Windows 7 オフライン manifest / wheelhouse 検証も成功した。
+- スキーマ、依存pin、科学計算、生データ、既存の1ページ目レイアウト、
+  オフラインビルド入力は変更していない。3D平面のネイティブ画面での見やすさと、
+  48行レポートの物理印刷は既存の実機ゲートに残す。
 
 対象ファイル: `hplc_app/plot3d.py`, `hplc_app/dialogs.py`, `hplc_app/report.py`,
 `hplc_app/i18n.py`, `tests/test_core.py`, `tests/test_gui.py`

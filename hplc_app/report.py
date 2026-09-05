@@ -500,10 +500,11 @@ def analysis_report_figures(
         figures.append(figure)
 
         remaining = display_peaks[20:]
-        for offset in range(0, len(remaining), 40):
-            page_peaks = remaining[offset : offset + 40]
+        continuation_rows = 48
+        for offset in range(0, len(remaining), continuation_rows):
+            page_peaks = remaining[offset : offset + continuation_rows]
             continuation = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
-            continuation.subplots_adjust(left=0.06, right=0.94, top=0.93, bottom=0.06)
+            continuation.subplots_adjust(left=0.06, right=0.94, top=0.975, bottom=0.035)
             table_axis = continuation.add_subplot(111)
             table_axis.set_title(
                 "%s — %s"
@@ -513,7 +514,7 @@ def analysis_report_figures(
                 ),
                 fontsize=11,
                 loc="left",
-                pad=12,
+                pad=4,
             )
             _add_peak_table(
                 table_axis,
@@ -523,8 +524,9 @@ def analysis_report_figures(
                 options,
                 number_labels=number_labels,
                 parent_numbers=parent_numbers,
+                fit_axis=True,
             )
-            continuation.text(0.94, 0.025, report_time, fontsize=6, ha="right", color="#6b7280")
+            continuation.text(0.94, 0.012, report_time, fontsize=6, ha="right", color="#6b7280")
             _apply_report_fonts(continuation)
             figures.append(continuation)
 

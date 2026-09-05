@@ -4548,6 +4548,78 @@ class ProjectTests(unittest.TestCase):
         for page in continued:
             page.clear()
 
+    def test_a4_report_continuation_fits_48_rows_and_keeps_footer_clear(self):
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        dataset.label = "Long peak table"
+        dataset.peaks = [
+            PeakRegion(
+                start_min=1.0 + index,
+                end_min=1.5 + index,
+                retention_time_min=1.25 + index,
+                raw_area_uv_sec=1000.0 + index,
+                area_mau_sec=1.0 + index / 100.0,
+                area_percent=1.0,
+                fwhm_min=0.2,
+            )
+            for index in range(116)
+        ]
+        project = Project(title="Continuation layout", datasets=[dataset])
+        figures = analysis_report_figures(project, [dataset], "en")
+
+        # The first page keeps the layout established by Issues #182 and #219.
+        self.assertEqual(len(figures), 3)
+        self.assertAlmostEqual(figures[0].subplotpars.top, 0.95)
+        self.assertAlmostEqual(figures[0].subplotpars.bottom, 0.055)
+        continuation_numbers = []
+        for figure in figures[1:]:
+            self.assertAlmostEqual(figure.subplotpars.top, 0.975)
+            self.assertAlmostEqual(figure.subplotpars.bottom, 0.035)
+            canvas = FigureCanvasAgg(figure)
+            canvas.draw()
+            renderer = canvas.get_renderer()
+            axis = figure.axes[0]
+            table = axis.tables[0]
+            table_box = table.get_window_extent(renderer)
+            axis_box = axis.get_window_extent(renderer)
+            footer_box = figure.texts[0].get_window_extent(renderer)
+            self.assertGreaterEqual(table_box.y0, axis_box.y0 - 0.5)
+            self.assertLessEqual(table_box.y1, axis_box.y1 + 0.5)
+            self.assertGreater(table_box.y0 - footer_box.y1, 2.0)
+            rows = sorted({row for row, _column in table.get_celld() if row > 0})
+            self.assertEqual(len(rows), 48)
+            row_boxes = [table[(row, 0)].get_window_extent(renderer) for row in rows]
+            for upper, lower in zip(row_boxes, row_boxes[1:]):
+                self.assertGreaterEqual(upper.y0, lower.y1 - 0.5)
+            continuation_numbers.extend(
+                int(table[(row, 0)].get_text().get_text()) for row in rows
+            )
+        self.assertEqual(continuation_numbers, list(range(21, 117)))
+        for figure in figures:
+            figure.clear()
+
+        # One item past an exact 48-row boundary creates one non-empty page.
+        dataset.peaks.append(
+            PeakRegion(
+                start_min=117.0,
+                end_min=117.5,
+                retention_time_min=117.25,
+                raw_area_uv_sec=1117.0,
+                area_mau_sec=2.17,
+                area_percent=1.0,
+                fwhm_min=0.2,
+            )
+        )
+        overflow = analysis_report_figures(project, [dataset], "en")
+        self.assertEqual(len(overflow), 4)
+        last_table = overflow[-1].axes[0].tables[0]
+        last_rows = sorted({row for row, _column in last_table.get_celld() if row > 0})
+        self.assertEqual(len(last_rows), 1)
+        self.assertEqual(last_table[(1, 0)].get_text().get_text(), "117")
+        for figure in overflow:
+            figure.clear()
+
     def test_3d_chromatogram_uses_selected_order_existing_styles_and_full_raw_data(self):
         from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
 
@@ -4632,7 +4704,7 @@ class ProjectTests(unittest.TestCase):
                 self.assertGreater(path.stat().st_size, 500)
         figure.clear()
 
-    def test_3d_grid_toggle_reaches_the_figure_and_its_image_output(self):
+    def test_3d_grid_planes_reach_the_figure_and_its_image_output(self):
         from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
 
         first = load_ascii_file(str(SAMPLES / "210601.TXT"))
@@ -4643,13 +4715,27 @@ class ProjectTests(unittest.TestCase):
             for dataset in (first, second)
         ]
 
-        # Grid lines stay off unless they are asked for.
-        self.assertFalse(ThreeDPlotOptions().show_grid)
+        defaults = ThreeDPlotOptions()
+        self.assertTrue(defaults.grid_xy)
+        self.assertFalse(defaults.grid_xz)
+        self.assertFalse(defaults.grid_yz)
         self.assertEqual(ThreeDPlotOptions().elevation_deg, 20.0)
         self.assertEqual(ThreeDPlotOptions().azimuth_deg, -65.0)
 
         rendered = {}
-        for show_grid in (False, True):
+        choices = {
+            "none": (False, False, False, set()),
+            "xy": (True, False, False, {"hplc-grid-xy"}),
+            "xz": (False, True, False, {"hplc-grid-xz"}),
+            "yz": (False, False, True, {"hplc-grid-yz"}),
+            "all": (
+                True,
+                True,
+                True,
+                {"hplc-grid-xy", "hplc-grid-xz", "hplc-grid-yz"},
+            ),
+        }
+        for name, (grid_xy, grid_xz, grid_yz, expected_gids) in choices.items():
             options = ThreeDPlotOptions(
                 z_min=-500.0,
                 z_max=5000.0,
@@ -4657,14 +4743,19 @@ class ProjectTests(unittest.TestCase):
                 aspect_z=3.0,
                 x_tick_interval=2.5,
                 z_tick_interval=250.0,
-                show_grid=show_grid,
+                grid_xy=grid_xy,
+                grid_xz=grid_xz,
+                grid_yz=grid_yz,
             )
             figure = build_3d_chromatogram_figure(
                 [first, second], method, (4.0, 12.0), options
             )
             axis = figure.axes[0]
-            self.assertIs(axis._draw_grid, show_grid)
-            # The panes stay hidden either way; only the grid lines change.
+            self.assertEqual(
+                {collection.get_gid() for collection in axis.collections},
+                expected_gids,
+            )
+            # The panes stay hidden for every plane selection.
             for item in (axis.xaxis, axis.yaxis, axis.zaxis):
                 self.assertFalse(item.pane.get_visible())
             # Existing settings must survive the new option untouched.
@@ -4683,14 +4774,16 @@ class ProjectTests(unittest.TestCase):
             )
             self.assertEqual((axis.elev, axis.azim), (20.0, -65.0))
             with tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / ("grid-%s.png" % show_grid)
+                path = Path(directory) / ("grid-%s.png" % name)
                 figure.savefig(path, dpi=100)
-                rendered[show_grid] = path.read_bytes()
-                self.assertGreater(len(rendered[show_grid]), 500)
+                rendered[name] = path.read_bytes()
+                self.assertGreater(len(rendered[name]), 500)
             figure.clear()
 
-        # The exported image, not only the live preview, follows the choice.
-        self.assertNotEqual(rendered[False], rendered[True])
+        # Exported images, not only the live preview, follow the plane choices.
+        self.assertEqual(len(set(rendered.values())), len(choices))
+        source = (ROOT / "hplc_app" / "plot3d.py").read_text(encoding="utf-8")
+        self.assertNotIn("_axinfo", source)
         for dataset, (time, intensity) in zip((first, second), raw):
             np.testing.assert_array_equal(dataset.time_min, time)
             np.testing.assert_array_equal(dataset.intensity_uv, intensity)

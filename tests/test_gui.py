@@ -10885,7 +10885,7 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
-    def test_3d_dialog_toggles_the_grid_and_resets_only_the_view_angles(self):
+    def test_3d_dialog_selects_grid_planes_and_resets_only_the_view_angles(self):
         window = self.make_window()
         rotated = ThreeDPlotOptions(
             y_axis_title="Sample order",
@@ -10910,14 +10910,30 @@ class GuiTests(unittest.TestCase):
             "en",
         )
         try:
-            self.assertFalse(dialog.grid_checkbox.isChecked())
-            self.assertFalse(dialog.plot_options().show_grid)
-            self.assertIs(dialog.figure.axes[0]._draw_grid, False)
+            self.assertTrue(dialog.grid_xy_checkbox.isChecked())
+            self.assertFalse(dialog.grid_xz_checkbox.isChecked())
+            self.assertFalse(dialog.grid_yz_checkbox.isChecked())
+            self.assertEqual(
+                {item.get_gid() for item in dialog.figure.axes[0].collections},
+                {"hplc-grid-xy"},
+            )
 
-            dialog.grid_checkbox.setChecked(True)
+            dialog.grid_xy_checkbox.setChecked(False)
+            dialog.grid_xz_checkbox.setChecked(True)
+            dialog.grid_yz_checkbox.setChecked(True)
             self.app.processEvents()
-            self.assertTrue(dialog.plot_options().show_grid)
-            self.assertIs(dialog.figure.axes[0]._draw_grid, True)
+            self.assertEqual(
+                (
+                    dialog.plot_options().grid_xy,
+                    dialog.plot_options().grid_xz,
+                    dialog.plot_options().grid_yz,
+                ),
+                (False, True, True),
+            )
+            self.assertEqual(
+                {item.get_gid() for item in dialog.figure.axes[0].collections},
+                {"hplc-grid-xz", "hplc-grid-yz"},
+            )
 
             dialog.reset_view_button.click()
             self.app.processEvents()
@@ -10942,7 +10958,10 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(options.colormap, "Viridis")
             self.assertEqual(options.density_percent, 40)
             self.assertEqual(options.axis_line_width, 3.0)
-            self.assertTrue(options.show_grid)
+            self.assertEqual(
+                (options.grid_xy, options.grid_xz, options.grid_yz),
+                (False, True, True),
+            )
 
             # Rotating again after the reset still works.
             self.assertTrue(dialog.elevation_spin.isEnabled())

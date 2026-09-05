@@ -540,7 +540,7 @@ class AnalysisMethod:
     tick_label_font_family: str = "Arial"
     tick_label_font_size: float = 9.0
     tick_label_color: str = "#000000"
-    view_mode: str = "single"
+    view_mode: str = "overview_detail"
     # "auto" selects X, Y1, Y2, or X+Y from the cursor position.  The former
     # explicit modes remain available for users who prefer fixed wheel zoom.
     zoom_axis: str = "auto"

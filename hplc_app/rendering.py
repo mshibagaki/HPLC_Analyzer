@@ -20,9 +20,9 @@ from .models import normalize_line_style
 HIGH_QUALITY = "high_quality"
 LIGHTWEIGHT = "lightweight"
 RENDER_QUALITIES = (HIGH_QUALITY, LIGHTWEIGHT)
-WAVELENGTH_COLOR_PALETTES = {
-    214: ("#d62728", "#ef4444", "#b91c1c", "#f87171"),
-    280: ("#1f77b4", "#2563eb", "#1d4ed8", "#60a5fa"),
+CHANNEL_COLOR_PALETTES = {
+    1: ("#1f77b4", "#2563eb", "#1d4ed8", "#60a5fa"),
+    2: ("#d62728", "#ef4444", "#b91c1c", "#f87171"),
 }
 MATPLOTLIB_LINE_STYLES = {
     "solid": "-",
@@ -91,19 +91,21 @@ class ScreenRendererCapabilities:
     supports_matplotlib_artists: bool = False
 
 
-def default_trace_color(wavelength_nm, ordinal: int = 0) -> Optional[str]:
-    """Return a wavelength-family default; explicit dataset colors stay authoritative."""
+def default_trace_color(channel, ordinal: int = 0) -> Optional[str]:
+    """Return a channel-family default; explicit dataset colors stay authoritative."""
 
-    if wavelength_nm is None:
+    if channel is None:
         return None
     try:
-        wavelength = float(wavelength_nm)
-    except (TypeError, ValueError):
+        numeric_channel = float(channel)
+    except (TypeError, ValueError, OverflowError):
         return None
-    for target, palette in WAVELENGTH_COLOR_PALETTES.items():
-        if abs(wavelength - target) <= 0.5:
-            return palette[max(0, int(ordinal)) % len(palette)]
-    return None
+    if not math.isfinite(numeric_channel) or not numeric_channel.is_integer():
+        return None
+    palette = CHANNEL_COLOR_PALETTES.get(int(numeric_channel))
+    if palette is None:
+        return None
+    return palette[max(0, int(ordinal)) % len(palette)]
 
 
 def normalize_render_quality(value: object, default: str = HIGH_QUALITY) -> str:

@@ -65,6 +65,7 @@ from hplc_app.gui import (
     PEAK_TYPE_COLUMN,
     MOUSE_MODE_IDS,
     MainWindow,
+    dataset_display_color,
 )
 from hplc_app.i18n import Translator
 from hplc_app.models import (
@@ -284,6 +285,9 @@ class GuiTests(unittest.TestCase):
         first.peaks = [PeakRegion(start_min=5.0, end_min=10.0)]
         recalculate_dataset_peaks(first)
         project = Project(datasets=[first, second])
+        # Existing GUI scenarios were authored against the former default and
+        # select overview/split explicitly when that layout is under test.
+        project.method.view_mode = "single"
         project.method.show_gradient_b = True
         window = MainWindow()
         window.project = project
@@ -295,6 +299,15 @@ class GuiTests(unittest.TestCase):
         self.settings.setValue("rendering/quality", LIGHTWEIGHT)
         self.settings.sync()
         return self.make_window()
+
+    def test_new_main_window_starts_in_overview_detail_mode(self):
+        window = MainWindow()
+        try:
+            self.assertEqual(window.project.method.view_mode, "overview_detail")
+            self.assertEqual(window.view_mode_combo.currentData(), "overview_detail")
+        finally:
+            window.project.dirty = False
+            window.close()
 
     @staticmethod
     def drop_event(urls):
@@ -8266,6 +8279,50 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(
             restored.datasets[0].measurement.acquisition_datetime,
             "2026-08-31T10:11:12",
+        )
+        window.project.dirty = False
+        window.close()
+
+    def test_trace_colors_prefer_explicit_values_then_channel_defaults(self):
+        window = self.make_window()
+        first, second = window.project.datasets
+        first.color = ""
+        second.color = ""
+        # Deliberately cross the old wavelength families: the channel now owns
+        # the default colour decision.
+        first.measurement.wavelength_nm = 214.0
+        second.measurement.wavelength_nm = 280.0
+        self.assertEqual(dataset_display_color(first, 0), "#1f77b4")
+        self.assertEqual(dataset_display_color(second, 0), "#d62728")
+        first.color = "#123456"
+        self.assertEqual(dataset_display_color(first, 0), "#123456")
+        second.y_axis = 3
+        self.assertEqual(dataset_display_color(second, 2), "#2ca02c")
+        window.project.dirty = False
+        window.close()
+
+    def test_import_assigns_distinct_defaults_within_the_same_channel(self):
+        window = self.make_window()
+        while window.project.datasets:
+            window.project.remove_dataset_at(0)
+        window._refresh_all(0)
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        first.y_axis = second.y_axis = 1
+        first.measurement.wavelength_nm = 214.0
+        second.measurement.wavelength_nm = 280.0
+        first.color = second.color = ""
+
+        with patch(
+            "hplc_app.gui.load_chromatogram_file",
+            side_effect=[first, second],
+        ):
+            imported = window._import_chromatogram_paths(["first.txt", "second.txt"])
+
+        self.assertEqual(imported, 2)
+        self.assertEqual(
+            [dataset.color for dataset in window.project.datasets],
+            ["#1f77b4", "#2563eb"],
         )
         window.project.dirty = False
         window.close()

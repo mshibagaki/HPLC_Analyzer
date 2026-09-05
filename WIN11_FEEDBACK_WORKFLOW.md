@@ -2290,21 +2290,39 @@ def _number(value, digits=4) -> str:
 - 「全体+拡大」表示のとき、対応する **y 軸範囲もハイライト**する（現在は x のみ）
 
 受け入れ条件
-- [ ] ズームが独立した操作として使える（到達手段が決まっており、テストで固定
-      されている）
-- [ ] マウスモードの選択肢とアイコンの 1 対 1 対応が保たれている
-- [ ] ズームが「ズーム方向」の設定（自動 / X+Y / X / Y）に従う挙動を保っている
-- [ ] ズーム中にカーソルがプロット面の外へ出ても、離すまで選択が続く
-- [ ] プロット面の外で離しても、選択が正しく確定するか取り消されるかが決まっており、
-      テストで固定されている
-- [ ] 「全体+拡大」の上側でドラッグすると、その範囲へズームできる
-- [ ] 上側のクリックによる従来の中心移動が退行していない
-- [ ] クリックとドラッグの区別のしきい値が決まっており、テストで固定されている
-- [ ] 「全体+拡大」の強調表示が、x 範囲と y 範囲の両方を示す矩形になっている
-- [ ] 矩形が Matplotlib 描画と PyQtGraph 描画の両方で出る
-- [ ] 分割表示（Y1 / Y2）のときの矩形の扱いが決まっている
-- [ ] 表示範囲を変えると矩形が追従する
-- [ ] `REQUIREMENTS_STATUS.md` を更新する
+- [x] ズームが独立した操作として使える（ネイティブ Zoom アクションを表示し、
+      `zoom` マウスモードと同期。`test_toolbar_pan_and_zoom_each_sync_to_their_own_mouse_mode`）
+- [x] マウスモードの選択肢とアイコンの 1 対 1 対応が保たれている
+      （Pan=通常、Zoom=矩形ズームを含む9モード。`test_mode_toolbar_icons_three_way_sync_with_group_controls_and_combo`）
+- [x] ズームが「ズーム方向」の設定（自動 / X+Y / X / Y）に従う挙動を保っている
+      （既存 `test_preview_rectangle_zoom_modes_history_and_cancellation`）
+- [x] ズーム中にカーソルがプロット面の外へ出ても、離すまで選択が続く
+- [x] プロット面の外で離しても、有限座標なら表示端に丸めて確定し、座標なしなら取消す
+      （上2項目とも `test_preview_zoom_is_dedicated_and_keeps_drag_ownership_outside_plot`）
+- [x] 「全体+拡大」の上側でドラッグすると、その範囲へズームできる
+- [x] 上側のクリックによる従来の中心移動が退行していない
+- [x] クリックとドラッグの区別は3pxで、テストに固定されている
+      （上3項目とも `test_preview_overview_drag_zooms_and_click_still_recenters` と
+      `test_overview_detail_mode_keeps_overview_full_and_detail_interactive`）
+- [x] 「全体+拡大」の強調表示が、x 範囲と y 範囲の両方を示す矩形になっている
+- [x] 矩形が Matplotlib 描画と PyQtGraph 描画の両方で出る
+      （両項目とも上記概観2テストと `test_pyqtgraph_navigation_owns_zoom_pan_overview_and_history`）
+- [x] 分割表示ではドラッグ開始側の Y1 / Y2 パネルだけに矩形を出す
+      （既存矩形ズームモードテスト）
+- [x] 表示範囲を変えると矩形が追従する（X/Y変更後の矩形実寸を両描画経路で確認）
+- [x] `REQUIREMENTS_STATUS.md` を更新する
+
+実測（2026-09-05）:
+- Windows 11 / Python 3.11.9 x64 / PySide6 6.8.3 / Matplotlib 3.10.1 /
+  NumPy 2.2.3 / PyQtGraph 0.13.7 でフルスイート **392件**が
+  **657.711秒**で成功した。
+- parity probe は全11機能 supported。統合画面ベンチマークは80万点を24,640点へ
+  削減し、raw SHA-256不変、native 0.157秒 / legacy 0.164秒（legacy/native 1.04倍）だった。
+- Python 3.8.10 x86 で変更Python 5ファイルの構文チェック、現行環境の `compileall`、
+  Level 2ソース契約、Windows 7オフライン manifest / wheelhouse検証に成功した。
+- スキーマ、依存pin、科学計算、生データ、オフラインビルド入力は変更していない。
+  実際のポインターでの領域外ドラッグ、9アイコンの見やすさ、概観矩形の視認性は
+  既存の実機ゲートに残す。
 
 対象ファイル: `hplc_app/gui.py`, `hplc_app/screen_preview.py`,
 `hplc_app/pyqtgraph_scene.py`, `hplc_app/i18n.py`, `tests/test_gui.py`

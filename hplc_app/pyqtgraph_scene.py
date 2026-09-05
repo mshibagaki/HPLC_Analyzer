@@ -59,13 +59,11 @@ class PyQtGraphSceneConsumer:
         self.overview.hideAxis("left")
         self.overview.hideAxis("bottom")
         self.overview.setTitle("Overview", color="#4b5563", size="8pt")
-        self.overview_region = self.pg.LinearRegionItem(
-            values=(0.0, 1.0),
-            movable=False,
-            brush=self._brush("#2563eb", 0.14),
-            pen=self.pg.mkPen("#1d4ed8", width=0.8),
-        )
-        self.overview.addItem(self.overview_region)
+        self.overview_region = qt_widgets.QGraphicsRectItem()
+        self.overview_region.setPen(self.pg.mkPen("#1d4ed8", width=0.8))
+        self.overview_region.setBrush(self._brush("#2563eb", 0.14))
+        self.overview_region.setZValue(10.0)
+        self.overview.vb.addItem(self.overview_region, ignoreBounds=True)
         self.overview.setVisible(False)
         self.overview_secondary = self.pg.ViewBox()
         self.overview.scene().addItem(self.overview_secondary)
@@ -665,7 +663,9 @@ class PyQtGraphSceneConsumer:
         if start is None or end is None:
             self.zoom_rectangle.hide()
             return
-        view = self.secondary if self.split_y_axes and axis_id == "y2" else self.primary.vb
+        view = (self.overview.vb if axis_id == "overview_y1" else
+                self.secondary if self.split_y_axes and axis_id == "y2"
+                else self.primary.vb)
         if view is not self._zoom_view:
             self._zoom_view.removeItem(self.zoom_rectangle)
             view.addItem(self.zoom_rectangle, ignoreBounds=True)
@@ -1133,7 +1133,12 @@ class PyQtGraphSceneConsumer:
         self.overview_region.setVisible(overview_state.enabled)
         if overview_state.enabled:
             self.overview.setXRange(*overview_state.full_x, padding=0.0)
-            self.overview_region.setRegion(overview_state.detail_x)
+            left, right = overview_state.detail_x
+            bottom, top = view_state.y1
+            self.overview_region.setRect(self.qt_core.QRectF(
+                min(left, right), min(bottom, top),
+                abs(right - left), abs(top - bottom),
+            ))
 
         self._sync_auxiliary_views()
         self._sync_overview_view()
@@ -1149,9 +1154,8 @@ class PyQtGraphSceneConsumer:
             "gradient": self._range_tuple(gradient_range[1]),
             "overview_enabled": self.overview.isVisible(),
             "overview_full_x": self._range_tuple(overview_range[0]),
-            "overview_detail_x": self._range_tuple(
-                self.overview_region.getRegion()
-            ),
+            "overview_detail_x": overview_state.detail_x,
+            "overview_detail_y1": self._range_tuple(view_state.y1),
         }
         self.last_evidence["view_state"] = evidence
         return dict(evidence)

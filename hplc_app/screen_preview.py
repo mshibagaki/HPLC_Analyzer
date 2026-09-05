@@ -310,54 +310,47 @@ class ExperimentalScreenPreview:
         drag = self._zoom_drag
         if drag is None:
             zoom_checked = owner.toolbar._actions["zoom"].isChecked()
-            # Issue #236/9.17: Zoom no longer has its own visible toolbar
-            # icon (it merged into "normal", alongside Pan). A right-button
-            # drag while normal mode's pan is active reaches the same
-            # rubber-band zoom instead, matching Matplotlib's own pan tool
-            # ("left button pans, right button zooms") and the retained
-            # (hidden) zoom QAction's existing meaning elsewhere.
-            right_drag_available = (
-                owner._mouse_mode == "normal"
-                and owner.toolbar._actions["pan"].isChecked()
-            )
-            if not (zoom_checked or right_drag_available):
+            if not zoom_checked:
                 return False
             in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
-            role = event.axis_role if event.axis_role in ("y1", "y2") else "y1"
+            in_overview = event.axis_role == "overview_y1"
+            role = (event.axis_role if event.axis_role in
+                    ("y1", "y2", "overview_y1") else "y1")
             values = event.data_for(role)
-            valid = (in_plot and all(value is not None and isfinite(value) for value in values)
+            valid = ((in_plot or in_overview)
+                     and all(value is not None and isfinite(value) for value in values)
                      and event.canvas_x is not None and event.canvas_y is not None)
-            expected_button = 1 if zoom_checked else 3
-            if (name == "button_press_event" and event.button == expected_button
+            if (name == "button_press_event" and event.button == 1
                     and valid and not event.double_click):
                 configured = owner.project.method.zoom_axis
-                mode = "both" if configured == "auto" else configured
+                mode = ("x" if in_overview else
+                        "both" if configured == "auto" else configured)
                 self._zoom_drag = {
                     "start": values, "role": role, "mode": mode,
                     "pixel": (event.canvas_x, event.canvas_y),
-                    "button": expected_button,
                 }
                 self.consumer.set_zoom_rectangle(values, values, role, mode)
                 return True
-            if zoom_checked:
-                return name == "button_press_event" and in_plot
-            # right_drag_available (pan active, normal mode): only the
-            # matched button (3) is ours. A left-button press here is a
-            # native pan-drag start and must fall through untouched -- this
-            # handler previously returned False outright whenever zoom was
-            # unchecked (before 9.17 added the right-drag path), and it must
-            # keep doing so for every button that is not the one it owns.
-            return False
-        in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
-        role = event.axis_role if event.axis_role in ("y1", "y2") else "y1"
+            return name == "button_press_event" and (in_plot or in_overview)
+        role = drag["role"]
         values = event.data_for(role)
-        valid = (in_plot and all(value is not None and isfinite(value) for value in values)
-                 and event.canvas_x is not None and event.canvas_y is not None)
         if name == "scroll_event":
             return True
-        if not valid or role != drag["role"] or event.button != drag["button"]:
-            self.cancel_zoom_drag()
+        if name not in ("motion_notify_event", "button_release_event"):
             return True
+        valid = (all(value is not None and isfinite(value) for value in values)
+                 and event.canvas_x is not None and event.canvas_y is not None)
+        if not valid:
+            if name == "button_release_event":
+                self.cancel_zoom_drag()
+            return True
+        state = self.consumer.capture_view_state()
+        x_limits = self.consumer.overview_state.full_x if role == "overview_y1" else state.x
+        y_limits = state.y1 if role == "overview_y1" else getattr(state, role)
+        values = (
+            min(max(values[0], min(x_limits)), max(x_limits)),
+            min(max(values[1], min(y_limits)), max(y_limits)),
+        )
         if name == "motion_notify_event":
             self.consumer.set_zoom_rectangle(drag["start"], values, role, drag["mode"])
         elif name == "button_release_event":
@@ -365,10 +358,24 @@ class ExperimentalScreenPreview:
             dx = abs(event.canvas_x - drag["pixel"][0])
             dy = abs(event.canvas_y - drag["pixel"][1])
             mode = drag["mode"]
-            if ((mode == "x" and dx < 3) or (mode == "y" and dy < 3)
-                    or (mode == "both" and (dx < 3 or dy < 3))):
+            click_only = (
+                (mode == "x" and dx < 3)
+                or (mode == "y" and dy < 3)
+                or (mode == "both" and (dx < 3 or dy < 3))
+            )
+            if click_only:
+                if role == "overview_y1":
+                    half_span = (state.x[1] - state.x[0]) / 2.0
+                    overview = compose_overview_state(
+                        True, self.consumer.overview_state.full_x,
+                        (values[0] - half_span, values[0] + half_span),
+                    )
+                    self.navigation._record_and_apply(
+                        replace(state, x=overview.detail_x)
+                    )
+                    owner._apply_view_state(self.consumer.capture_view_state())
+                    owner.toolbar.set_history_buttons()
                 return True
-            state = self.consumer.capture_view_state()
             changes = {}
             if mode in ("x", "both"):
                 changes["x"] = tuple(sorted((drag["start"][0], values[0])))

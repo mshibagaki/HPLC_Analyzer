@@ -2387,19 +2387,42 @@ def _number(value, digits=4) -> str:
 - **ch1 系の色は寒色系、ch2 系は暖色系**にする
 
 受け入れ条件
-- [ ] 新しいプロジェクトの表示モードが「全体+拡大」で始まる
-- [ ] 保存済みプロジェクトを開いたとき、保存された表示モードが尊重される
-- [ ] 表示モードの保存・読み込みが退行していない
-- [ ] ch1 のデータセットに寒色系、ch2 に暖色系の既定色が付く
-- [ ] 明示的な色を持つデータセットが、この変更で色を変えない
-- [ ] 配色の解決順（明示色 → 既定 → パレット）が変わっていない
-- [ ] 同じチャンネルのデータセットが複数あるとき、区別できる色になる
-- [ ] 波長既定との関係が決まっており、テストで固定されている
-- [ ] 既存プロジェクトの見た目がどう変わるかを PR に書いている
-- [ ] `REQUIREMENTS_STATUS.md` を更新する
+- [x] 新しいプロジェクトの表示モードが「全体+拡大」で始まる
+      （`test_new_main_window_starts_in_overview_detail_mode`）
+- [x] 保存済みプロジェクトを開いたとき、保存された表示モードが尊重される
+      （`test_new_projects_default_to_overview_detail_without_migrating_saved_mode` で
+      明示した `single` を保存・復元）
+- [x] 表示モードの保存・読み込みが退行していない
+      （同テストと既存プロジェクト往復テスト、フルスイート）
+- [x] ch1 のデータセットに寒色系、ch2 に暖色系の既定色が付く
+      （`test_default_trace_colors_follow_channel_families`、
+      `test_trace_colors_prefer_explicit_values_then_channel_defaults`）
+- [x] 明示的な色を持つデータセットが、この変更で色を変えない
+      （`test_trace_colors_prefer_explicit_values_then_channel_defaults`）
+- [x] 配色の解決順（明示色 → 既定 → パレット）が変わっていない
+      （同テストと `dataset_display_color` のフォールバック）
+- [x] 同じチャンネルのデータセットが複数あるとき、区別できる色になる
+      （`test_import_assigns_distinct_defaults_within_the_same_channel`）
+- [x] 波長既定との関係が決まっており、テストで固定されている
+      （チャンネルを優先し波長既定を廃止。旧214/280を交差させたGUIテストで固定）
+- [x] 既存プロジェクトの見た目がどう変わるかを PR に書いている
+      （保存済み表示モードと明示色は不変、未設定色だけチャンネル既定になる旨を記載）
+- [x] `REQUIREMENTS_STATUS.md` を更新する
+
+実測（2026-09-05）:
+- Windows 11 / Python 3.11.9 x64 / PySide6 6.8.3 / Matplotlib 3.10.1 /
+  NumPy 2.2.3 / PyQtGraph 0.13.7 でフルスイート **391件**が
+  **662.080秒**で成功した。
+- Python 3.8.10 x86 で変更Python 6ファイルの構文チェックに成功した。
+  現行環境の `compileall`、`ci_validate.py --offline-assets auto` の Level 2
+  ソース契約と Windows 7 オフライン manifest / wheelhouse 検証も成功した。
+- スキーマ、依存pin、科学計算、生データ、保存済み表示モード、明示色、
+  オフラインビルド入力は変更していない。新規プロジェクトと未設定色だけが新しい
+  既定を使う。チャンネル配色と全体+拡大のネイティブ画面での見やすさは既存の
+  実機ゲートに残す。
 
 対象ファイル: `hplc_app/models.py`, `hplc_app/rendering.py`, `hplc_app/gui.py`,
-`tests/test_core.py`, `tests/test_gui.py`
+`hplc_app/plot3d.py`, `tests/test_core.py`, `tests/test_gui.py`
 
 注意
 - **第 12.6・12.7 節に確定した内容があります。**

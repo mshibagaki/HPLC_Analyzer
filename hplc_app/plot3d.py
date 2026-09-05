@@ -112,7 +112,7 @@ def suggest_z_tick_interval(
 def _trace_colors(datasets: Sequence[Dataset]):
     return [
         dataset.color
-        or default_trace_color(dataset.measurement.wavelength_nm, index)
+        or default_trace_color(dataset.y_axis, index)
         or TRACE_FALLBACK_COLORS[index % len(TRACE_FALLBACK_COLORS)]
         for index, dataset in enumerate(datasets)
     ]

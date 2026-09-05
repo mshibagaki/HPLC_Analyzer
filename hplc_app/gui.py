@@ -205,11 +205,11 @@ AVAILABLE_PLOT_FONTS = {font.name for font in font_manager.fontManager.ttflist}
 
 
 def dataset_display_color(dataset: Dataset, ordinal: int) -> str:
-    """Resolve an explicit color first, then a wavelength-aware display default."""
+    """Resolve an explicit color first, then a channel-aware display default."""
 
     return (
         dataset.color
-        or default_trace_color(dataset.measurement.wavelength_nm, ordinal)
+        or default_trace_color(dataset.y_axis, ordinal)
         or COLORS[ordinal % len(COLORS)]
     )
 
@@ -6243,16 +6243,14 @@ class MainWindow(QtWidgets.QMainWindow):
                     break
             try:
                 dataset = load_chromatogram_file(path)
-                wavelength = dataset.measurement.wavelength_nm
-                same_wavelength_count = sum(
+                channel = dataset.y_axis
+                same_channel_count = sum(
                     1
                     for existing in self.project.datasets
-                    if existing.measurement.wavelength_nm is not None
-                    and wavelength is not None
-                    and abs(existing.measurement.wavelength_nm - wavelength) <= 0.5
+                    if existing.y_axis == channel
                 )
-                dataset.color = default_trace_color(
-                    wavelength, same_wavelength_count
+                dataset.color = dataset.color or default_trace_color(
+                    channel, same_channel_count
                 ) or COLORS[len(self.project.datasets) % len(COLORS)]
                 # The label is a free user field. It stays blank on import so the
                 # acquisition time is read in the timestamp column instead of

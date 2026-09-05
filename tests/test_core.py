@@ -1412,12 +1412,22 @@ class AnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "40 hexadecimal"):
             normalize_signer_thumbprints(["not-a-certificate"])
 
-    def test_default_trace_colors_follow_wavelength_families(self):
-        self.assertEqual(default_trace_color(280.0, 0), "#1f77b4")
-        self.assertEqual(default_trace_color(280.0, 1), "#2563eb")
-        self.assertEqual(default_trace_color(214.0, 0), "#d62728")
-        self.assertEqual(default_trace_color(214.4, 1), "#ef4444")
-        self.assertIsNone(default_trace_color(220.0, 0))
+    def test_default_trace_colors_follow_channel_families(self):
+        self.assertEqual(default_trace_color(1, 0), "#1f77b4")
+        self.assertEqual(default_trace_color(1, 1), "#2563eb")
+        self.assertEqual(default_trace_color(2, 0), "#d62728")
+        self.assertEqual(default_trace_color(2, 1), "#ef4444")
+        self.assertIsNone(default_trace_color(3, 0))
+
+    def test_new_projects_default_to_overview_detail_without_migrating_saved_mode(self):
+        project = Project()
+        self.assertEqual(project.method.view_mode, "overview_detail")
+        project.method.view_mode = "single"
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "single-view.hplcproj")
+            save_project(path, project)
+            restored = load_project(path)
+        self.assertEqual(restored.method.view_mode, "single")
 
     def test_manual_integration_and_quantitation(self):
         dataset = self.synthetic_dataset()

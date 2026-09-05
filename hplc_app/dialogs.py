@@ -4255,11 +4255,31 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         form.addRow("濃い側" if language == "ja" else "Dense end", density_widget)
         self.axis_width_spin = spin(options.axis_line_width, 0.1, 10.0, 0.1)
         form.addRow("軸線幅" if language == "ja" else "Axis line width", self.axis_width_spin)
-        self.grid_checkbox = QtWidgets.QCheckBox(
-            "グリッド線を表示する" if language == "ja" else "Show grid lines"
+        grid_widget = QtWidgets.QWidget()
+        grid_layout = QtWidgets.QVBoxLayout(grid_widget)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        self.grid_xy_checkbox = QtWidgets.QCheckBox(
+            "保持時間 × 系列" if language == "ja" else "Retention time × series"
         )
-        self.grid_checkbox.setChecked(bool(options.show_grid))
-        form.addRow("グリッド" if language == "ja" else "Grid", self.grid_checkbox)
+        self.grid_xz_checkbox = QtWidgets.QCheckBox(
+            "保持時間 × 強度" if language == "ja" else "Retention time × intensity"
+        )
+        self.grid_yz_checkbox = QtWidgets.QCheckBox(
+            "系列 × 強度" if language == "ja" else "Series × intensity"
+        )
+        self.grid_xy_checkbox.setChecked(bool(options.grid_xy))
+        self.grid_xz_checkbox.setChecked(bool(options.grid_xz))
+        self.grid_yz_checkbox.setChecked(bool(options.grid_yz))
+        for checkbox in (
+            self.grid_xy_checkbox,
+            self.grid_xz_checkbox,
+            self.grid_yz_checkbox,
+        ):
+            grid_layout.addWidget(checkbox)
+        form.addRow(
+            "グリッド平面" if language == "ja" else "Grid planes",
+            grid_widget,
+        )
 
         form.addItem(QtWidgets.QSpacerItem(1, 1, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Expanding))
         self.error_label = QtWidgets.QLabel()
@@ -4293,7 +4313,9 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             self.colormap_combo,
             self.density_slider,
             self.axis_width_spin,
-            self.grid_checkbox,
+            self.grid_xy_checkbox,
+            self.grid_xz_checkbox,
+            self.grid_yz_checkbox,
         )
         for widget in widgets:
             signal = (
@@ -4328,7 +4350,9 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             colormap=self.colormap_combo.currentText(),
             density_percent=self.density_slider.value(),
             axis_line_width=self.axis_width_spin.value(),
-            show_grid=self.grid_checkbox.isChecked(),
+            grid_xy=self.grid_xy_checkbox.isChecked(),
+            grid_xz=self.grid_xz_checkbox.isChecked(),
+            grid_yz=self.grid_yz_checkbox.isChecked(),
         )
 
     def reset_view(self):

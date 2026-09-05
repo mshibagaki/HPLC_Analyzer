@@ -10,6 +10,7 @@ from matplotlib import colormaps
 from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator
 from mpl_toolkits.mplot3d import Axes3D as _Axes3D
+from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 from .analysis import display_values
 from .models import AnalysisMethod, Dataset
@@ -57,7 +58,9 @@ class ThreeDPlotOptions:
     colormap: str = "Blues"
     density_percent: int = 100
     axis_line_width: float = 4.0
-    show_grid: bool = False
+    grid_xy: bool = True
+    grid_xz: bool = False
+    grid_yz: bool = False
 
 
 def gradient_colors(name: str, density_percent: int, count: int):
@@ -129,6 +132,56 @@ def _axis_labels(method: AnalysisMethod) -> Tuple[str, str]:
     )
 
 
+def _ticks_inside(values, limits):
+    low, high = sorted((float(limits[0]), float(limits[1])))
+    return [
+        float(value)
+        for value in values
+        if np.isfinite(value) and low <= float(value) <= high
+    ]
+
+
+def _add_grid_plane(axis, plane: str) -> None:
+    """Draw one selected 3D grid plane using only public Matplotlib APIs."""
+
+    x_min, x_max = axis.get_xlim()
+    y_min, y_max = axis.get_ylim()
+    z_min, z_max = axis.get_zlim()
+    x_ticks = _ticks_inside(axis.get_xticks(), (x_min, x_max))
+    y_ticks = _ticks_inside(axis.get_yticks(), (y_min, y_max))
+    z_ticks = _ticks_inside(axis.get_zticks(), (z_min, z_max))
+    if plane == "xy":
+        segments = [
+            ((value, y_min, z_min), (value, y_max, z_min)) for value in x_ticks
+        ] + [
+            ((x_min, value, z_min), (x_max, value, z_min)) for value in y_ticks
+        ]
+    elif plane == "xz":
+        segments = [
+            ((value, y_min, z_min), (value, y_min, z_max)) for value in x_ticks
+        ] + [
+            ((x_min, y_min, value), (x_max, y_min, value)) for value in z_ticks
+        ]
+    elif plane == "yz":
+        segments = [
+            ((x_min, value, z_min), (x_min, value, z_max)) for value in y_ticks
+        ] + [
+            ((x_min, y_min, value), (x_min, y_max, value)) for value in z_ticks
+        ]
+    else:
+        raise ValueError("Unknown 3D grid plane: %s" % plane)
+    if not segments:
+        return
+    collection = Line3DCollection(
+        segments,
+        colors="#cbd5e1",
+        linewidths=0.65,
+        alpha=0.8,
+    )
+    collection.set_gid("hplc-grid-%s" % plane)
+    axis.add_collection3d(collection)
+
+
 def build_3d_chromatogram_figure(
     datasets: Sequence[Dataset],
     method: AnalysisMethod,
@@ -197,8 +250,16 @@ def build_3d_chromatogram_figure(
     axis.zaxis.set_major_locator(MultipleLocator(options.z_tick_interval))
     axis.view_init(elev=options.elevation_deg, azim=options.azimuth_deg)
     axis.set_box_aspect(aspect)
-    # Grid lines only; the panes stay hidden either way.
-    axis.grid(bool(options.show_grid))
+    # Matplotlib's native 3D grid crosses multiple planes, so selected planes
+    # are drawn explicitly while the native all-or-nothing grid stays off.
+    axis.grid(False)
+    for enabled, plane in (
+        (options.grid_xy, "xy"),
+        (options.grid_xz, "xz"),
+        (options.grid_yz, "yz"),
+    ):
+        if enabled:
+            _add_grid_plane(axis, plane)
     for item in (axis.xaxis, axis.yaxis, axis.zaxis):
         item.pane.set_visible(False)
         item.line.set_color("#000000")

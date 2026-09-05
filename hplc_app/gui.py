@@ -13,6 +13,7 @@ from matplotlib.backends import backend_pdf as _backend_pdf  # bundled for froze
 from matplotlib.backends import backend_svg as _backend_svg
 from matplotlib.backend_bases import MouseButton
 from matplotlib import font_manager
+from matplotlib.patches import Rectangle
 from matplotlib.ticker import MultipleLocator
 from matplotlib.widgets import SpanSelector
 
@@ -260,6 +261,7 @@ ESTIMATED_VALUE_BACKGROUND = "#fdf2ff"
 
 MOUSE_MODE_IDS = (
     "normal",
+    "zoom",
     "pointer",
     "select",
     "integrate",
@@ -348,6 +350,8 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
     def press_zoom(self, event):
         owner = self._axis_pan_owner
         if owner is not None and getattr(owner, "_view_initialized", False):
+            if getattr(event, "inaxes", None) is owner.axes_overview:
+                return
             owner._push_view_history()
         return super().press_zoom(event)
 
@@ -637,6 +641,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._edit_range_peak_id = None
         self._peak_edit_return_mouse_mode = None
         self._overview_view_patch = None
+        self._overview_zoom_drag = None
+        self._overview_zoom_patch = None
         self._overview_window_state = ScreenOverviewState(
             enabled=False,
             full_x=(0.0, 1.0),
@@ -1727,8 +1733,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _install_mode_toolbar_actions(self):
         """Add one toolbar icon per mouse mode (Issue #236 / workflow doc 9.15).
 
-        Pointer already has one. "normal" is represented by the toolbar's own
-        Pan icon (Pan and Zoom merge into one "normal" entry -- 9.17). The
+        Pointer already has one. "normal" and "zoom" are represented by the
+        toolbar's own Pan and Zoom icons. The
         remaining six each get a new, small icon inserted next to pointer;
         five of them mirror an existing checkable control two-way, so the
         mode combo, this icon and the existing group-panel button (or, for
@@ -1793,22 +1799,14 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.toolbar.addSeparator()
 
-        self._install_zoom_preservation()
+        self._configure_toolbar_actions()
 
-    def _install_zoom_preservation(self):
-        """Keep the Zoom QAction usable without a second visible icon.
+    def _configure_toolbar_actions(self):
+        """Keep independent Pan/Zoom icons and remove only Customize.
 
-        Pan and Zoom merge into the single "normal" icon (Issue #236 / 9.15,
-        9.17): the rubber-band zoom stays reachable through a right-drag in
-        normal mode -- Matplotlib's own pan tool already supports this
-        natively, and screen_preview._handle_zoom_event is taught the same
-        thing below -- so the retained QAction only needs to stop being a
-        second visible toolbar button, not lose its behaviour.
-        `removeAction` only detaches it from the toolbar widget; the QAction
-        stays alive in `toolbar._actions["zoom"]`, which both zoom gatekeepers
-        read directly rather than through the toolbar's own widget list.
-
-        Customize (the arrow icon, `edit_parameters`) is removed outright
+        Issue #249 reverses #236's temporary Pan/Zoom icon merge: the native
+        Zoom QAction remains visible and represents the dedicated zoom mouse
+        mode. Customize (the arrow icon, `edit_parameters`) remains removed
         (Issue #236 / 9.16): Subplots (`configure_subplots`) now always opens
         the application's own axis dialog on both renderers, so Customize's
         PyQtGraph behaviour was already a duplicate, and its Matplotlib-only
@@ -1816,9 +1814,6 @@ class MainWindow(QtWidgets.QMainWindow):
         together with the existing "表示設定" trace-color/line-style dialog.
         """
         actions = getattr(self.toolbar, "_actions", {}) or {}
-        zoom_action = actions.get("zoom")
-        if zoom_action is not None:
-            self.toolbar.removeAction(zoom_action)
         customize_action = actions.get("edit_parameters")
         if customize_action is not None:
             self.toolbar.removeAction(customize_action)
@@ -1857,8 +1852,7 @@ class MainWindow(QtWidgets.QMainWindow):
         zoom_active = self.toolbar._actions["zoom"].isChecked()
         if not zoom_active and self._screen_preview is not None:
             self._screen_preview.cancel_zoom_drag()
-        if not (pan_active or zoom_active):
-            return
+        target_mode = "zoom" if zoom_active else "normal"
         for control in (
             self.integrate_button,
             self.edit_peak_button,
@@ -1869,8 +1863,10 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             if control.isChecked():
                 control.setChecked(False)
-        normal_index = self.mouse_mode_combo.findData("normal")
-        self.mouse_mode_combo.setCurrentIndex(max(0, normal_index))
+        target_index = self.mouse_mode_combo.findData(target_mode)
+        self.mouse_mode_combo.setCurrentIndex(max(0, target_index))
+        if not (pan_active or zoom_active):
+            self._ensure_normal_mode_navigation()
 
     def _action(self, slot=None, checkable=False):
         action = QAction(self)
@@ -2478,6 +2474,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ("back", "toolbar_back_tooltip"),
             ("forward", "toolbar_forward_tooltip"),
             ("pan", "toolbar_pan_tooltip"),
+            ("zoom", "toolbar_zoom_tooltip"),
             ("configure_subplots", "toolbar_subplots_tooltip"),
             ("save_figure", "toolbar_save_tooltip"),
         ):
@@ -3557,6 +3554,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_ylim_changed(self, _axis):
         if self._view_state_update_guard:
             return
+        self._update_overview_window()
         self._sync_view_state_from_axes()
         self._request_canvas_draw(throttled=True, refresh_series=True)
         self.toolbar.set_history_buttons()
@@ -3577,26 +3575,26 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._overview_view_patch is not None:
             try:
                 left, right = state.detail_x
-                if hasattr(self._overview_view_patch, "set_x"):
-                    self._overview_view_patch.set_x(left)
-                    self._overview_view_patch.set_width(right - left)
-                else:
-                    self._overview_view_patch.set_xy(
-                        ((left, 0.0), (left, 1.0), (right, 1.0), (right, 0.0))
-                    )
+                bottom, top = self.axes.get_ylim()
+                self._overview_view_patch.set_bounds(
+                    left, min(bottom, top), right - left, abs(top - bottom)
+                )
                 return
             except (ValueError, AttributeError, RuntimeError):
                 self._overview_view_patch = None
         left, right = state.detail_x
-        self._overview_view_patch = self.axes_overview.axvspan(
-            left,
-            right,
+        bottom, top = self.axes.get_ylim()
+        self._overview_view_patch = Rectangle(
+            (left, min(bottom, top)),
+            right - left,
+            abs(top - bottom),
             facecolor="#2563eb",
             edgecolor="#1d4ed8",
             linewidth=0.8,
             alpha=0.14,
             zorder=10,
         )
+        self.axes_overview.add_patch(self._overview_view_patch)
 
     def _annotation_axis(self, annotation: TextAnnotation):
         if annotation.y_axis == 2 and self.axes_right is not None:
@@ -3864,6 +3862,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._screen_preview.cancel_annotation_drag()
             self._screen_preview.cancel_zoom_drag()
         view_state = self._capture_view_state() if preserve_view else None
+        self._cancel_overview_zoom_drag()
         self._clear_span_selector()
         self._interaction_cursor = None
         self._annotation_artists = {}
@@ -4360,24 +4359,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.toolbar.zoom()
 
     def _ensure_normal_mode_navigation(self):
-        """Make "normal" mode behave like the toolbar's own pan tool.
-
-        Selecting "normal" (from the combo, the toolbar icon, or by leaving
-        another mode) used to leave both pan and zoom inactive, so dragging
-        the plot did nothing until the toolbar button was pressed separately.
-        Activating pan here only when neither is already active leaves an
-        active zoom alone, matching the toolbar's own pan/zoom toggle.
-        QAction.setChecked() (which is all toolbar.pan() uses internally to
-        reflect the new mode) does not emit `triggered`, so this cannot
-        re-enter _toolbar_navigation_triggered.
-        """
+        """Make the independent normal mode activate Pan, never Zoom."""
 
         actions = getattr(self.toolbar, "_actions", {}) or {}
         pan_action = actions.get("pan")
         zoom_action = actions.get("zoom")
         pan_active = pan_action is not None and pan_action.isChecked()
         zoom_active = zoom_action is not None and zoom_action.isChecked()
-        if not (pan_active or zoom_active) and pan_action is not None:
+        if zoom_active:
+            self.toolbar.zoom()
+            pan_active = False
+        if not pan_active and pan_action is not None:
             self.toolbar.pan()
 
     @property
@@ -4428,6 +4420,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 control.setChecked(False)
         self._clear_span_selector()
         self._hide_interaction_cursor()
+        if mode != "zoom":
+            self._cancel_overview_zoom_drag()
         if mode == "normal":
             if self.select_toolbar_action.isChecked():
                 self.select_toolbar_action.setChecked(False)
@@ -4435,6 +4429,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ensure_normal_mode_navigation()
             return
         self._deactivate_toolbar_navigation()
+        if mode == "zoom":
+            zoom_action = self.toolbar._actions.get("zoom")
+            if zoom_action is not None and not zoom_action.isChecked():
+                self.toolbar.zoom()
+            return
         if mode == "select":
             if self._selected_dataset() is None:
                 if self.select_toolbar_action.isChecked():
@@ -5086,6 +5085,33 @@ class MainWindow(QtWidgets.QMainWindow):
             event = event.with_hit_target(*self._matplotlib_hit_target(event))
         if event.button != 1:
             return
+        if (
+            self._mouse_mode == "zoom"
+            and event.axis_role == "overview_y1"
+            and self.axes_overview is not None
+            and not event.double_click
+        ):
+            x_value, _y_value = event.data_for("overview_y1")
+            if (
+                x_value is not None
+                and math.isfinite(float(x_value))
+                and event.canvas_x is not None
+            ):
+                left, right = self._full_x_bounds()
+                x_value = min(max(float(x_value), left), right)
+                self._overview_zoom_drag = {
+                    "start": x_value,
+                    "pixel": float(event.canvas_x),
+                }
+                bottom, top = self.axes_overview.get_ylim()
+                self._overview_zoom_patch = Rectangle(
+                    (x_value, min(bottom, top)), 0.0, abs(top - bottom),
+                    facecolor="#2563eb", edgecolor="#1d4ed8",
+                    linewidth=1.0, alpha=0.12, zorder=20,
+                )
+                self.axes_overview.add_patch(self._overview_zoom_patch)
+                self._request_canvas_draw(throttled=True)
+            return
         # Issue #236/9.1: "normal" mode now defaults to pan being active, so
         # toolbar.mode is no longer empty while idle in it (it used to be,
         # which is what this gate originally relied on to mean "no native
@@ -5198,6 +5224,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(event)
         self._update_pointer_coordinates(event)
+        if self._overview_zoom_drag is not None:
+            x_value, _y_value = event.data_for("overview_y1")
+            if x_value is not None and math.isfinite(float(x_value)):
+                left, right = self._full_x_bounds()
+                current = min(max(float(x_value), left), right)
+                start = self._overview_zoom_drag["start"]
+                if self._overview_zoom_patch is not None:
+                    self._overview_zoom_patch.set_x(min(start, current))
+                    self._overview_zoom_patch.set_width(abs(current - start))
+                    self._request_canvas_draw(throttled=True)
+            return
         if self._vertical_marker_drag is not None:
             drag = self._vertical_marker_drag
             x_value, _y_value = event.data_for(drag["axis_role"])
@@ -5307,6 +5344,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_canvas_release(self, event):
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(event)
+        if self._overview_zoom_drag is not None:
+            drag = self._overview_zoom_drag
+            x_value, _y_value = event.data_for("overview_y1")
+            pixel = event.canvas_x
+            self._cancel_overview_zoom_drag()
+            if x_value is None or pixel is None or not math.isfinite(float(x_value)):
+                return
+            left, right = self._full_x_bounds()
+            current = min(max(float(x_value), left), right)
+            if abs(float(pixel) - drag["pixel"]) < 3.0 or current == drag["start"]:
+                self._center_detail_on(current)
+                return
+            self._push_view_history()
+            state = self._screen_view_state()
+            self._apply_view_state(replace(
+                state, x=tuple(sorted((drag["start"], current)))
+            ))
+            self.toolbar.set_history_buttons()
+            return
         if self._vertical_marker_drag is not None:
             drag = self._vertical_marker_drag
             marker = drag["marker"]
@@ -5385,6 +5441,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._updating_table = False
         self._plot()
         self._update_title()
+
+    def _cancel_overview_zoom_drag(self):
+        self._overview_zoom_drag = None
+        patch = self._overview_zoom_patch
+        self._overview_zoom_patch = None
+        if patch is not None:
+            try:
+                patch.remove()
+            except (ValueError, AttributeError, RuntimeError):
+                pass
+            self._request_canvas_draw(throttled=True)
 
     def _full_x_bounds(self):
         datasets = [dataset for dataset in self.project.datasets if dataset.visible]

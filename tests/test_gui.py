@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import hashlib
 import json
 import os
@@ -1660,6 +1661,11 @@ class GuiTests(unittest.TestCase):
             consumer.apply_view_state(initial, compose_overview_state(
                 True, (0.0, 100.0), initial.x
             ))
+            overview_rect = consumer.overview_region.rect()
+            self.assertEqual(
+                (overview_rect.top(), overview_rect.bottom()),
+                (initial.y1[0], initial.y1[1]),
+            )
             consumer.snapshot()
             navigation.reset_history()
             point = consumer.overview.vb.mapViewToScene(core.QPointF(95.0, 0.5))
@@ -1667,7 +1673,10 @@ class GuiTests(unittest.TestCase):
             send_mouse(types.MouseButtonPress, position, buttons.LeftButton, buttons.LeftButton)
             send_mouse(types.MouseButtonRelease, position, buttons.LeftButton, buttons.NoButton)
             self.assertEqual(consumer.capture_view_state().x, (40.0, 100.0))
-            self.assertEqual(consumer.overview_region.getRegion(), (40.0, 100.0))
+            overview_rect = consumer.overview_region.rect()
+            self.assertEqual(
+                (overview_rect.left(), overview_rect.right()), (40.0, 100.0)
+            )
             navigation.navigate("back")
             self.assertEqual(consumer.capture_view_state(), initial)
             # Zooming out beyond an overview's full extent is a no-op and must
@@ -2694,7 +2703,7 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
-    def test_toolbar_pan_click_syncs_mouse_mode_and_normal_mode_preserves_zoom(self):
+    def test_toolbar_pan_and_zoom_each_sync_to_their_own_mouse_mode(self):
         window = self.make_window()
         try:
             pan_action = window.toolbar._actions["pan"]
@@ -2724,13 +2733,13 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(pan_action.isChecked())
             self.assertFalse(zoom_action.isChecked())
 
-            # An already-active zoom is preserved, not overridden by pan,
-            # when normal mode is (re-)entered.
-            pan_action.setChecked(False)
-            zoom_action.setChecked(True)
-            window._ensure_normal_mode_navigation()
+            zoom_action.trigger()
+            self.assertEqual(window.mouse_mode_combo.currentData(), "zoom")
             self.assertFalse(pan_action.isChecked())
             self.assertTrue(zoom_action.isChecked())
+            window.mouse_mode_combo.setCurrentIndex(normal_index)
+            self.assertTrue(pan_action.isChecked())
+            self.assertFalse(zoom_action.isChecked())
         finally:
             window.project.dirty = False
             window.close()
@@ -2741,6 +2750,10 @@ class GuiTests(unittest.TestCase):
             window.dataset_table.selectRow(0)
             window.peak_table.selectRow(0)
             toolbar_actions = window.toolbar.actions()
+            self.assertEqual(len(MOUSE_MODE_IDS), 9)
+            self.assertEqual(window.mouse_mode_combo.count(), 9)
+            self.assertIn(window.toolbar._actions["pan"], toolbar_actions)
+            self.assertIn(window.toolbar._actions["zoom"], toolbar_actions)
             for action in (
                 window.select_toolbar_action,
                 window.integrate_toolbar_action,
@@ -2796,11 +2809,15 @@ class GuiTests(unittest.TestCase):
             checked = [
                 action.isChecked()
                 for action in (
+                    window.toolbar._actions["pan"],
+                    window.toolbar._actions["zoom"],
+                    window.pointer_action,
                     window.select_toolbar_action,
                     window.integrate_toolbar_action,
                     window.edit_peak_toolbar_action,
                     window.split_peak_toolbar_action,
                     window.move_trace_toolbar_action,
+                    window.annotation_action,
                 )
             ]
             self.assertEqual(sum(checked), 1)
@@ -2815,9 +2832,7 @@ class GuiTests(unittest.TestCase):
             self.assertNotIn(
                 toolbar_actions.get("edit_parameters"), window.toolbar.actions()
             )
-            self.assertNotIn(
-                toolbar_actions.get("zoom"), window.toolbar.actions()
-            )
+            self.assertIn(toolbar_actions.get("zoom"), window.toolbar.actions())
             with patch("hplc_app.gui.AxisLabelsDialog") as dialog_class, patch(
                 "hplc_app.gui.dialog_exec", return_value=False
             ):
@@ -3607,7 +3622,7 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
-    def test_preview_right_drag_zooms_while_normal_mode_pan_is_active(self):
+    def test_preview_zoom_is_dedicated_and_keeps_drag_ownership_outside_plot(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
@@ -3629,51 +3644,105 @@ class GuiTests(unittest.TestCase):
                     data_coordinates=(("y1", x, y),),
                 )
 
-            # Issue #236 / 9.17: with neither pan nor zoom active, a
-            # right-button press must not start a zoom drag -- pan being
-            # active is what makes the right-drag reachable, not merely
-            # being in "normal" mode.
-            self.assertFalse(window.toolbar._actions["pan"].isChecked())
-            self.assertFalse(window.toolbar._actions["zoom"].isChecked())
+            window._ensure_normal_mode_navigation()
             preview.handle_event(
                 "button_press_event", event(10.0, 100.0, 100.0, 100.0, 3)
             )
             self.assertIsNone(preview._zoom_drag)
-
-            # Activating pan (the toolbar's own default for "normal") makes
-            # the right-drag reachable, reproducing the rubber-band zoom that
-            # used to require the now-hidden Zoom icon.
-            window._ensure_normal_mode_navigation()
-            self.assertTrue(window.toolbar._actions["pan"].isChecked())
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("zoom")
+            )
             before_count = window._view_history.count
             preview.handle_event(
-                "button_press_event", event(10.0, 100.0, 100.0, 100.0, 3)
+                "button_press_event", event(10.0, 100.0, 100.0, 100.0, 1)
+            )
+            outside = ScreenPointerEvent(
+                axis_role="outside", hit_region="", canvas_x=900.0,
+                canvas_y=900.0,
+                data_coordinates=(("y1", initial.x[1] + 50.0,
+                                  initial.y1[1] + 500.0),),
             )
             preview.handle_event(
-                "motion_notify_event", event(20.0, 500.0, 300.0, 300.0, 3)
+                "motion_notify_event", outside
             )
             self.assertTrue(consumer.zoom_rectangle.isVisible())
-            preview.handle_event(
-                "button_release_event", event(20.0, 500.0, 300.0, 300.0, 3)
-            )
+            preview.handle_event("button_release_event", outside)
             state = window._screen_view_state()
-            self.assertEqual(state.x, (10.0, 20.0))
-            self.assertEqual(state.y1, (100.0, 500.0))
+            self.assertEqual(state.x, (10.0, initial.x[1]))
+            self.assertEqual(state.y1, (100.0, initial.y1[1]))
             self.assertEqual(window._view_history.count, before_count)
             self.assertTrue(window.toolbar._actions["back"].isEnabled())
             window.toolbar._actions["back"].trigger()
             self.assertEqual(window._screen_view_state(), initial)
-
-            # A left-button press in the same (pan-active, zoom-unchecked)
-            # state is not the expected button, so it must not start a drag
-            # either -- only button 3 reaches the new path.
             preview.handle_event(
                 "button_press_event", event(10.0, 100.0, 100.0, 100.0, 1)
             )
+            preview.handle_event(
+                "button_release_event",
+                ScreenPointerEvent(axis_role="outside", canvas_x=300.0,
+                                   canvas_y=300.0),
+            )
             self.assertIsNone(preview._zoom_drag)
+            self.assertEqual(window._screen_view_state(), initial)
         finally:
             if window.toolbar._actions["zoom"].isChecked():
                 window.toolbar._actions["zoom"].trigger()
+            window.project.dirty = False
+            window.close()
+
+    def test_preview_overview_drag_zooms_and_click_still_recenters(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            initial = window._screen_view_state()
+            window._apply_view_state(replace(initial, x=(5.0, 25.0)))
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("zoom")
+            )
+
+            def overview_event(x, pixel, axis_role="overview_y1"):
+                return ScreenPointerEvent(
+                    button=1, axis_role=axis_role,
+                    hit_region="x" if axis_role == "overview_y1" else "",
+                    canvas_x=pixel, canvas_y=20.0,
+                    data_coordinates=(("overview_y1", x, 0.0),),
+                )
+
+            preview.handle_event(
+                "button_press_event", overview_event(10.0, 100.0)
+            )
+            preview.handle_event(
+                "motion_notify_event", overview_event(20.0, 300.0, "outside")
+            )
+            self.assertIsNotNone(preview._zoom_drag)
+            preview.handle_event(
+                "button_release_event", overview_event(20.0, 300.0, "outside")
+            )
+            self.assertEqual(window._screen_view_state().x, (10.0, 20.0))
+
+            click = overview_event(30.0, 200.0)
+            preview.handle_event("button_press_event", click)
+            preview.handle_event("button_release_event", click)
+            self.assertAlmostEqual(
+                sum(window._screen_view_state().x) / 2.0, 30.0
+            )
+
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("normal")
+            )
+            preview.handle_event(
+                "button_press_event", overview_event(40.0, 200.0)
+            )
+            self.assertAlmostEqual(
+                sum(window._screen_view_state().x) / 2.0, 40.0
+            )
+        finally:
             window.project.dirty = False
             window.close()
 
@@ -10060,7 +10129,12 @@ class GuiTests(unittest.TestCase):
         self.assertAlmostEqual(window.axes_overview.get_xlim()[0], full_bounds[0], places=6)
         self.assertAlmostEqual(window.axes_overview.get_xlim()[1], full_bounds[1], places=6)
         window.axes.set_xlim(4.0, 12.0)
+        window.axes.set_ylim(100.0, 500.0)
         self.assertEqual(window._overview_window_state.detail_x, (4.0, 12.0))
+        self.assertEqual(
+            tuple(window._overview_view_patch.get_bbox().bounds),
+            (4.0, 100.0, 8.0, 400.0),
+        )
         window._on_scroll(
             SimpleNamespace(
                 button="up",
@@ -10073,6 +10147,24 @@ class GuiTests(unittest.TestCase):
         self.assertAlmostEqual(window.axes_overview.get_xlim()[0], full_bounds[0], places=6)
         self.assertAlmostEqual(window.axes_overview.get_xlim()[1], full_bounds[1], places=6)
         self.assertIsNotNone(window._overview_view_patch)
+        window.mouse_mode_combo.setCurrentIndex(
+            window.mouse_mode_combo.findData("zoom")
+        )
+        window._on_canvas_press(ScreenPointerEvent(
+            button=1, axis_role="overview_y1", hit_region="x",
+            canvas_x=100.0, canvas_y=20.0,
+            data_coordinates=(("overview_y1", 5.0, 0.0),),
+        ))
+        window._on_canvas_motion(ScreenPointerEvent(
+            axis_role="outside", canvas_x=300.0, canvas_y=20.0,
+            data_coordinates=(("overview_y1", 15.0, 0.0),),
+        ))
+        self.assertIsNotNone(window._overview_zoom_drag)
+        window._on_canvas_release(ScreenPointerEvent(
+            axis_role="outside", canvas_x=300.0, canvas_y=20.0,
+            data_coordinates=(("overview_y1", 15.0, 0.0),),
+        ))
+        self.assertEqual(tuple(window.axes.get_xlim()), (5.0, 15.0))
         window._center_detail_on(20.0)
         self.assertAlmostEqual(sum(window.axes.get_xlim()) / 2.0, 20.0, places=5)
         window.project.dirty = False

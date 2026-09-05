@@ -45,6 +45,14 @@ def _number(value, digits=4) -> str:
     return ("%%.%dg" % digits) % value
 
 
+def _area_number(value) -> str:
+    """Format the report's µV·sec area without scientific notation."""
+
+    if value is None:
+        return ""
+    return format(float(value), ",.0f")
+
+
 def _axis_label(project: Project, dataset: Dataset, unit: str) -> str:
     custom = (
         project.method.y_axis_2_label
@@ -147,16 +155,6 @@ def _peak_rows(
     for number, peak in enumerate(peaks, start=start_number):
         row = [
             str((number_labels or {}).get(peak.id, number)),
-            (
-                # A fitted row's numbers are read off the model curve, so the
-                # type column says so before the estimated area is read.
-                "Fit %s%s -> #%s (estimated)" % (
-                    peak.fit_model.upper(),
-                    " sat." if is_saturation_corrected(peak) else "",
-                    (parent_numbers or {}).get(peak.parent_peak_id, "?"),
-                )
-                if peak.is_fitted else "Integration"
-            ),
         ]
         if options.retention_time:
             row.append(_number(peak.retention_time_min))
@@ -164,7 +162,7 @@ def _peak_rows(
             row.append("%s–%s" % (_number(peak.start_min), _number(peak.end_min)))
         row.extend(
             (
-                _number(peak.area_mau_sec),
+                _area_number(peak.raw_area_uv_sec),
                 _number(peak.area_percent),
                 _number(peak.fwhm_min),
             )
@@ -172,15 +170,8 @@ def _peak_rows(
         if options.gradient_b:
             row.append(_number(peak.gradient_b_pct))
         if options.quantitation:
+            row.append(_number(peak.amount_nmol))
             row.append(_number(peak.amount_ug))
-        if options.baseline:
-            row.append(
-                peak.fit_model.upper()
-                if peak.is_fitted
-                else (
-                    "Auto" if peak.integration_source == "auto" else "Manual"
-                )
-            )
         rows.append(tuple(row))
     return rows
 
@@ -196,25 +187,22 @@ def _add_peak_table(
     fit_axis=False,
 ):
     axis.axis("off")
-    headers = ["#", "種別／親" if language == "ja" else "Type / parent"]
-    widths = [0.045, 0.135]
+    headers = ["#"]
+    widths = [0.14]
     if options.retention_time:
         headers.append("RT (min)")
         widths.append(0.085)
     if options.integration_range:
         headers.append("Range (min)")
         widths.append(0.15)
-    headers.extend(("Area (mAU·sec)", "%Area", "FWHM (min)"))
-    widths.extend((0.14, 0.075, 0.1))
+    headers.extend(("Area (µV·sec)", "%Area", "FWHM (min)"))
+    widths.extend((0.15, 0.075, 0.1))
     if options.gradient_b:
         headers.append("%B")
         widths.append(0.06)
     if options.quantitation:
-        headers.append("Amount (µg)")
-        widths.append(0.11)
-    if options.baseline:
-        headers.append("Method")
-        widths.append(0.09)
+        headers.extend(("Amount (nmol)", "Amount (µg)"))
+        widths.extend((0.1, 0.1))
     width_total = sum(widths)
     rows = _peak_rows(
         peaks,
@@ -439,13 +427,17 @@ def analysis_report_figures(
         }
         number_labels = dict(parent_numbers)
         number_labels.update({
-            peak.id: "F%d" % number
+            peak.id: "F%d estimated%s→#%s" % (
+                number,
+                "/sat." if is_saturation_corrected(peak) else "",
+                parent_numbers.get(peak.parent_peak_id, "?"),
+            )
             for number, peak in enumerate(
                 (peak for peak in display_peaks if peak.is_fitted), start=1
             )
         })
         figure = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
-        figure.subplots_adjust(left=0.075, right=0.9, top=0.95, bottom=0.055, hspace=0.38)
+        figure.subplots_adjust(left=0.105, right=0.895, top=0.95, bottom=0.055, hspace=0.38)
         grid = figure.add_gridspec(4, 1, height_ratios=(0.42, 0.95, 3.8, 2.65))
         title_axis = figure.add_subplot(grid[0])
         title_axis.axis("off")
@@ -489,7 +481,7 @@ def analysis_report_figures(
             pad=5,
         )
         figure.text(
-            0.075,
+            0.105,
             0.025,
             dataset.original_path,
             fontsize=5.5,

@@ -2359,20 +2359,54 @@ def _number(value, digits=4) -> str:
 - **選択モードで選択したら、選択領域がそのままマークされている**ようにする
 
 受け入れ条件
-- [ ] 表示チェックの切り替えで、表示範囲が一度も全体表示にならない
-- [ ] 積分・分割の後も同じことが言える
-- [ ] 表示モードの切り替えでも同じことが言える
-- [ ] **全体表示を経由しないことを、描画順序かフレーム内容でテストに固定する**
+- [x] 表示チェックの切り替えで、表示範囲が一度も全体表示にならない
+      （`test_native_scene_refresh_never_processes_an_auto_ranged_frame`）
+- [x] 積分・分割の後も同じことが言える
+      （同テストで表示切替・手動積分・ピーク分割を同じ描画順序契約に通す）
+- [x] 表示モードの切り替えでも同じことが言える
+      （同テストの `overview_detail` 切替）
+- [x] **全体表示を経由しないことを、描画順序かフレーム内容でテストに固定する**
       （目視だけで判断しない）
-- [ ] 表示モードを切り替えても Matplotlib のキャンバスが表示されない
-- [ ] 分割表示への切り替え・解除が退行していない
-- [ ] 選択モードで範囲を選ぶと、離した後も帯が表示されたままになる
-- [ ] 帯が消えるきっかけが決まっており、テストで固定されている
-- [ ] 積分・範囲修正のドラッグは従来どおり（確定すると帯が消える）
-- [ ] `_selected_time_range` と帯の表示が食い違わない
-- [ ] シーンの作り直し回数が セ(#203) / テ(#216) の水準から増えていない
-- [ ] Matplotlib 描画が退行していない
-- [ ] `REQUIREMENTS_STATUS.md` を更新する
+      （同テストは `processEvents()` が観測した全 X 範囲を記録し、保存範囲以外を拒否）
+- [x] 表示モードを切り替えても Matplotlib のキャンバスが表示されない
+      （`test_preview_split_layout_switch_refresh_and_failure_cleanup` が旧 consumer の
+      close 時点で完成済み replacement widget が current であることを検証）
+- [x] 分割表示への切り替え・解除が退行していない
+      （同テストの split / single / overview_detail 往復と既存分割テスト）
+- [x] 選択モードで範囲を選ぶと、離した後も帯が表示されたままになる
+      （`test_preview_selection_range_uses_shared_non_mutating_contract` と
+      `test_mouse_mode_selects_integration_area_and_time_range`）
+- [x] 帯が消えるきっかけが決まっており、テストで固定されている
+      （次の選択開始、Escape、選択モード終了、選択項目の削除で range と帯を同時解除）
+- [x] 積分・範囲修正のドラッグは従来どおり（確定すると帯が消える）
+      （`test_preview_manual_integration_matches_existing_calculation`、
+      `test_preview_peak_range_edit_matches_existing_calculation`）
+- [x] `_selected_time_range` と帯の表示が食い違わない
+      （native / Matplotlib の両選択テストと削除テスト）
+- [x] シーンの作り直し回数が セ(#203) / テ(#216) の水準から増えていない
+      （`test_native_display_toggles_do_not_rebuild_scene_or_mouse_owner` とフルスイート）
+- [x] Matplotlib 描画が退行していない
+      （Matplotlib 選択帯テストとフルスイート）
+- [x] `REQUIREMENTS_STATUS.md` を更新する
+
+実測（2026-09-05）:
+- Windows 11 / Python 3.11.9 x64 / PySide6 6.8.3 / Matplotlib 3.10.1 /
+  NumPy 2.2.3 / PyQtGraph 0.13.7 でフルスイート **393件**が
+  **653.946秒**で成功した。
+- Python 3.8.10 x86 で変更Python 4ファイルの構文チェックに成功した。
+  現行環境の `compileall`、`ci_validate.py --offline-assets auto` の Level 2
+  ソース契約と Windows 7 オフライン manifest / wheelhouse 検証も成功した。
+- parity probe は11機能すべて supported。800,000点の統合ベンチマークは表示点を
+  24,640点に削減し、生配列 SHA-256 を維持したまま native 中央値 0.122秒、
+  legacy 中央値 0.125秒（legacy/native 約1.03倍）だった。
+- `_finish_render` は画面アダプタから渡された最終 view/overview state をイベント処理前に
+  適用し、その途中では auto-range を有効にしない。最終レイアウトと既存 evidence の
+  確定に必要な `processEvents()` は `apply_view_state` の最後にだけ残した。
+- 分割用プロットの常設は、単一表示の重ね合わせ Y2 ViewBox と分割表示の独立 PlotItem の
+  所有構造を広く変えるため採用せず、完成・描画済みの replacement widget を一度で
+  current にしてから旧 widget を閉じる方式を採用した。スキーマ、依存pin、科学計算、
+  生データ、オフラインビルド入力は変更していない。実際のちらつきと選択帯の見え方は
+  `VALIDATION_BLOCKERS.md` の Windows 11 実機ゲートに残す。
 
 対象ファイル: `hplc_app/gui.py`, `hplc_app/screen_preview.py`,
 `hplc_app/pyqtgraph_scene.py`, `tests/test_gui.py`

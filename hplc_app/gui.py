@@ -995,11 +995,12 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             split = self.project.method.view_mode == "split_y_axes"
             if self._screen_preview.consumer.split_y_axes != split:
-                previous, self._screen_preview = self._screen_preview, None
-                previous.close()
+                previous = self._screen_preview
                 from .screen_preview import ExperimentalScreenPreview
-                self._screen_preview = ExperimentalScreenPreview(self)
-                self.plot_stack.setCurrentWidget(self._screen_preview.consumer.widget)
+                replacement = ExperimentalScreenPreview(self)
+                self._screen_preview = replacement
+                self.plot_stack.setCurrentWidget(replacement.consumer.widget)
+                previous.close()
             self._screen_preview.refresh()
             return True
         except Exception:
@@ -4279,6 +4280,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._install_span_selector("edit")
         elif self._mouse_mode == "select":
             self._install_span_selector("select")
+            if self._span_selector is not None and self._selected_time_range:
+                self._span_selector.extents = self._selected_time_range
+                self._span_selector.set_visible(True)
         if (
             self.integrate_button.isChecked()
             or self.edit_peak_button.isChecked()
@@ -4376,8 +4380,23 @@ class MainWindow(QtWidgets.QMainWindow):
     def selected_time_range(self):
         return self._selected_time_range
 
+    def _clear_selected_time_range(self):
+        """Clear the range state and every backend's corresponding band."""
+
+        changed = self._selected_time_range is not None
+        self._selected_time_range = None
+        if self._screen_preview is not None:
+            self._screen_preview.consumer.set_span_selection()
+        if self._span_selector is not None and self._span_selector_mode == "select":
+            clear = getattr(self._span_selector, "clear", None)
+            if clear is not None:
+                clear()
+        return changed
+
     def _set_mouse_mode_display(self, mode: str):
         normalized = mode if mode in MOUSE_MODE_IDS else "normal"
+        if self._mouse_mode == "select" and normalized != "select":
+            self._clear_selected_time_range()
         self._mouse_mode = normalized
         index = self.mouse_mode_combo.findData(normalized)
         self.mouse_mode_combo.blockSignals(True)
@@ -4400,6 +4419,8 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = str(self.mouse_mode_combo.currentData() or "normal")
         if mode not in MOUSE_MODE_IDS:
             mode = "normal"
+        if self._mouse_mode == "select" and mode != "select":
+            self._clear_selected_time_range()
         self._mouse_mode = mode
         controls = {
             "pointer": self.pointer_action,
@@ -5000,6 +5021,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ),
         )
         self.project.dirty = True
+        self._clear_selected_time_range()
         self._refresh_peak_table()
         self._plot()
         self._update_title()
@@ -5015,8 +5037,13 @@ class MainWindow(QtWidgets.QMainWindow):
         escape_key = (
             QtCore.Qt.Key.Key_Escape if QT_API == 6 else QtCore.Qt.Key_Escape
         )
-        if event.key() == escape_key and self.edit_peak_button.isChecked():
-            self.edit_peak_button.setChecked(False)
+        if event.key() == escape_key and (
+            self.edit_peak_button.isChecked()
+            or self._selected_time_range is not None
+        ):
+            if self.edit_peak_button.isChecked():
+                self.edit_peak_button.setChecked(False)
+            self._clear_selected_time_range()
             event.accept()
             return
         super().keyPressEvent(event)

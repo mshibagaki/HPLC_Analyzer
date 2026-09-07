@@ -82,6 +82,14 @@ class ReleaseDocumentationTests(unittest.TestCase):
             "none is considered passed from CI or offscreen tests",
         ):
             self.assertIn(required, text)
+        # Both remaining rows were withdrawn on 2026-09-06 rather than delivered.
+        # Keep the reasons in the file: a later session that finds no open row
+        # should be able to see why, instead of reopening a settled question.
+        for withdrawal in (
+            '**Withdrawn 2026-09-06: "Spectrum-domain selection and retention labels".**',
+            '**Withdrawn 2026-09-06: "Activate signed updater workflow".**',
+        ):
+            self.assertIn(withdrawal, text)
         self.assertIn("Run ID and timestamp separated from label", text)
         self.assertIn("all/visible/selected report scopes", text)
         self.assertIn("Multiple project-owned work directories", text)

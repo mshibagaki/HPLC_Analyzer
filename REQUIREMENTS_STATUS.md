@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-06 (Issue #252 delivery; spectrum-domain and signed-updater rows withdrawn)
+Updated: 2026-09-07 (Issues #267-#271 planning; spectrum-domain and signed-updater rows withdrawn)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -65,6 +65,19 @@ Windows 11 field use on `8ecd0bf` found further defects whose confirmed root cau
 Issue #251 in the same batch was a defaults change rather than a defect and is delivered as recorded in the Preferences and colors row above.
 
 Two planning decisions in that batch reverse or constrain earlier ones. The 2026-09-02 decision to merge the toolbar's pan and zoom into one icon was withdrawn on 2026-09-03; zoom returns as an independent function while the one-to-one correspondence between mouse modes and toolbar icons still stands. And #252 removes the report table's type column, which is currently the only place in that table where a fitted row is marked as estimated, so the estimate marking has to survive in another column for the Issue #218 requirement to hold.
+
+Windows 11 field use on `36ddb84` found further defects and gaps in rows listed above as implemented, grouped into five issues. Their root causes are recorded in `WIN11_FEEDBACK_WORKFLOW.md` section 15; all are confirmed except the source-path symptom, which did not reproduce offscreen.
+
+| Issue | Affected row | What is actually wrong |
+|---|---|---|
+| #267 | Selection and display | The overview panel has a fixed height, no border of its own because both its axes are hidden, a highlight rectangle for Y1 only although the Y2 view box already exists unused, and no wheel, button or scrollbar because its mouse handling is disabled. Separately, every left and right axis is given a fixed width sized for an eleven-character tick label plus a second allowance for the axis title that PyQtGraph already adds, plus 16px, so tick numbers sit far from their axis titles |
+| #268 | Selection and display | In zoom mode a double click is consumed by the zoom handler's final `return`, so it never reaches the navigation controller's existing back step, and axis strips are excluded from the zoom hit test, so dragging on an axis does nothing |
+| #269 | Selection and display | The toolbar inserts every mode icon before the pointer widget, so the icons run in a different order from the mouse-mode list and Pan and Zoom sit in the middle. The select icon is only cleared in two of the branches of the mode-change handler, so switching from select to zoom leaves it checked. The text-label action has no icon at all, and the pointer button still shows its caption |
+| #271 | Peak fitting | The saturated-peak correction computes a corrected area but leaves %Area and the quantitation amounts blank and never touches the parent integration, so nothing the operator actually reads changes when a clipped peak is corrected |
+
+Issue #270 covers a solo-display column, wider per-channel colour ranges, and the reported source-path cell. The colour palettes hold four near-identical blues for channel 1 and four near-identical reds for channel 2, so traces repeat colours from the fifth onward. The source-path symptom is recorded as unreproduced: the delegate, column index, width and tooltip are all correct, and an offscreen measurement of a deep sub-folder path elided to the right-hand end as intended, so the condition has to be pinned on the machine before anything is changed.
+
+Two planning decisions reverse earlier ones. Issue #218 deliberately left %Area and quantitation blank on fitted rows so that estimated values could not be mistaken for measured ones; on 2026-09-06 the operator asked for the corrected area to be the area that counts, so #271 gives saturation-corrected rows a %Area that participates in the total and quantitation amounts, while every surface keeps marking them estimated and the parent's raw values stay untouched. The corrected area is defined as the measured samples outside the clipped span plus the model curve inside it, not the complete model integral, so it means the same thing as every other peak's area — the area inside the integration window. Measured recovery on a synthetic clipped EMG peak is within 1.3% when the window contains the peak, and around 20% low for both definitions when deep clipping leaves too little unclipped flank to fit, which the correction has to make visible rather than hide.
 
 ## Project compatibility notes for Issues #181 and #221
 

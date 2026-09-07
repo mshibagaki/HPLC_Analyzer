@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-06 (Issue #252 delivery)
+Updated: 2026-09-06 (Issue #252 delivery; spectrum-domain row withdrawn)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -32,8 +32,17 @@ This tracked file is the source of truth for the original product requests. Upda
 
 | Priority | Requirement | Current boundary | Next coherent delivery |
 |---|---|---|---|
-| High | Spectrum-domain selection and retention labels | Chromatogram multi-selection/labels are complete, but there is no separate spectrum data model, importer, view, or shared chromatogram/spectrum selection contract | Specify supported spectrum source format and semantics, then add the persisted model/import/view before enabling common labels |
 | Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution. Issue #190 settled the distribution channel the check depends on — public GitHub Releases plus offline media, recorded in `DISTRIBUTION.md` — without changing any application behavior | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
+
+**Withdrawn 2026-09-06: "Spectrum-domain selection and retention labels".** The
+requester confirmed that the word "spectrum" in the original request list was a
+terminology mix-up from early development. Everything this application handles is
+a chromatogram; there is no spectrum domain, and the supported inputs are the
+`.gcd` and `.txt` files already implemented. Read every earlier "spectrum" in the
+original requests as "chromatogram". The row asked for a second data domain that
+was never part of the product, so it is withdrawn rather than deferred, and no
+spectrum model, importer, or view is planned. Issue #265 removes the remaining
+"spectrum" wording from the user interface.
 
 The following are useful extensions, but are not gaps in the original requested minimum: a shared analyte master library beyond the application-wide analyte presets of Issue #215 and the persisted Run snapshot, multi-peak deconvolution/curved baseline fitting beyond the Gaussian/EMG single-peak fitting and saturated-peak correction of Issue #218, and the long-term TraceLab platform split.
 

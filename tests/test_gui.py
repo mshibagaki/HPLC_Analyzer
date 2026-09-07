@@ -2838,6 +2838,46 @@ class GuiTests(unittest.TestCase):
                 )
             ]
             self.assertEqual(sum(checked), 1)
+
+            mode_actions = {
+                "normal": window.toolbar._actions["pan"],
+                "zoom": window.toolbar._actions["zoom"],
+                "pointer": window.pointer_toolbar_widget_action,
+                "select": window.select_toolbar_action,
+                "integrate": window.integrate_toolbar_action,
+                "edit_peak": window.edit_peak_toolbar_action,
+                "split_peak": window.split_peak_toolbar_action,
+                "move_trace": window.move_trace_toolbar_action,
+                "annotation": window.annotation_action,
+            }
+            visible_actions = [
+                action for action in window.toolbar.actions() if not action.isSeparator()
+            ]
+            self.assertEqual(
+                visible_actions[: len(MOUSE_MODE_IDS)],
+                [mode_actions[mode_id] for mode_id in MOUSE_MODE_IDS],
+            )
+            self.assertTrue(
+                all(
+                    action not in mode_actions.values()
+                    for action in visible_actions[len(MOUSE_MODE_IDS) :]
+                )
+            )
+            self.assertFalse(window.annotation_action.icon().isNull())
+            annotation_image = window.annotation_action.icon().pixmap(24, 24).toImage()
+            self.assertGreater(annotation_image.pixelColor(12, 12).alpha(), 0)
+
+            select_index = window.mouse_mode_combo.findData("select")
+            window.mouse_mode_combo.setCurrentIndex(select_index)
+            self.assertTrue(window.select_toolbar_action.isChecked())
+            for mode_id in MOUSE_MODE_IDS:
+                if mode_id == "select":
+                    continue
+                with self.subTest(select_to=mode_id):
+                    window.mouse_mode_combo.setCurrentIndex(select_index)
+                    target_index = window.mouse_mode_combo.findData(mode_id)
+                    window.mouse_mode_combo.setCurrentIndex(target_index)
+                    self.assertFalse(window.select_toolbar_action.isChecked())
         finally:
             window.project.dirty = False
             window.close()
@@ -7818,6 +7858,14 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.pointer_control_button.text(), "縦線ポインター")
         self.assertFalse(window.pointer_toolbar_button.icon().isNull())
         self.assertFalse(window.pointer_control_button.icon().isNull())
+        icon_only = (
+            QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+            if QT_API == 6
+            else QtCore.Qt.ToolButtonIconOnly
+        )
+        self.assertEqual(window.pointer_toolbar_button.toolButtonStyle(), icon_only)
+        self.assertLess(window.pointer_toolbar_button.minimumWidth(), 145)
+        self.assertFalse(window.pointer_action.toolTip() == "")
         self.assertIn(window.pointer_toolbar_widget_action, window.toolbar.actions())
         window.pointer_action.setChecked(True)
         self.assertTrue(window.pointer_toolbar_button.isChecked())

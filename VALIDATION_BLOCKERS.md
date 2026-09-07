@@ -1,6 +1,6 @@
 # External blockers and deferred physical validation
 
-Updated: 2026-09-06 (code signing decided against)
+Updated: 2026-09-07 (Issue #269 automated evidence)
 
 This file records work that source changes and automated CI cannot complete alone. An unavailable physical or external gate is `BLOCKED — evidence required`; it is never treated as passed or silently marked not applicable. Release execution remains governed by `.github/RELEASE_PROCESS.md` and `.github/RELEASE_CHECKLIST.md`.
 
@@ -69,6 +69,8 @@ Issue #252 adds a physical confirmation to the print-path gate: confirm the wide
 ## Automated or offscreen evidence already available
 
 These results reduce implementation risk but do not replace the physical gates above.
+
+- Issue #269 rebuilds the toolbar from the shared `MOUSE_MODE_IDS` order using the existing QAction objects, so Pan and Zoom lead all nine modes and Home/Back/Forward/Subplots/Save remain grouped afterward without breaking the two zoom references. The annotation icon is a font-independent serif T drawn with `QPainterPath`; the toolbar pointer is icon-only and retains its tooltip. Select-state synchronization now occurs once at the start of every mode change and regression coverage checks all eight exits from select, including Zoom, while preserving the existing combo/action/control re-entry guard. All 393 tests pass in 321.923 seconds in the Windows 11 environment (Python 3.11.9 x64). The parity probe reports all 11 features supported; the integrated 800,000-point benchmark preserved raw SHA-256 and measured 0.122 seconds native versus 0.123 seconds legacy (1.01x legacy/native). Python 3.8.10 x86 syntax compilation of both changed Python files, current-environment `compileall`, Level 2 source contracts and the Windows 7 offline manifest/wheelhouse check passed. No schema, dependency pin, scientific calculation, raw chromatogram value or offline-build input changed. Physical confirmation that the T glyph, compact pointer and full toolbar order remain legible at native Windows DPI is still required under the desktop-view gate above.
 
 - Issue #252 initializes analysis-report choices from the current integration-area/baseline, retention-label and B% screen toggles while leaving gradient conditions and quantitation on by default and preserving report-only overrides. First-page horizontal margins are 0.105/0.895; rendered geometry keeps the Y-axis label inside the page and the plot width above 0.75. The peak table removes Type / parent and Method, moves the fitted `estimated`/parent marker into `#`, retains baseline drawing, reports the existing `raw_area_uv_sec` value as comma-separated fixed µV·sec, and includes both nmol and µg. First and 48-row continuation tables share identical normalized columns, and existing print-preview/PDF tests exercise the common page content. All 393 tests pass in 647.388 seconds in the Windows 11 environment (Python 3.11.9 x64). Python 3.8.10 x86 syntax compilation of all five changed Python files, current-environment `compileall`, Level 2 source contracts and the Windows 7 offline manifest/wheelhouse check passed. No schema, dependency pin, scientific calculation, raw chromatogram value or offline-build input changed. Physical page-layout and print-driver confirmation remains required under the print-path gate above.
 

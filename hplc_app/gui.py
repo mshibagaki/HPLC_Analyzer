@@ -83,6 +83,7 @@ from .naming import (
 )
 from .parser import load_chromatogram_file
 from .peak_fitting import (
+    LIMITED_FLANK_NOTE,
     apply_fit_result,
     clear_legacy_fit,
     fit_peak,
@@ -253,10 +254,9 @@ DATASET_COLUMNS_BY_ID = {
 }
 DATASET_HIDDEN_COLUMN_IDS = ("group", "source")
 
-# Columns whose fitted-row values are derived from the model curve rather than
-# measured. PEAK_AREA_PERCENT_COLUMN is absent on purpose: fitted rows never
-# receive a %Area, because that share belongs to the measured integrations.
+# Columns whose fitted-row values are derived rather than measured.
 ESTIMATED_PEAK_COLUMNS = frozenset((3, 4, 5, 6, 7, 9))
+SATURATION_ESTIMATED_PEAK_COLUMNS = frozenset((8, 14, 15))
 ESTIMATED_VALUE_BACKGROUND = "#fdf2ff"
 
 MOUSE_MODE_IDS = (
@@ -3175,7 +3175,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 # width read off the model curve. They share their columns with
                 # measured values, so they are tinted and explained rather than
                 # left to look like something the detector recorded.
-                if peak.is_fitted and column in ESTIMATED_PEAK_COLUMNS:
+                estimated_columns = ESTIMATED_PEAK_COLUMNS
+                if is_saturation_corrected(peak):
+                    estimated_columns = (
+                        estimated_columns | SATURATION_ESTIMATED_PEAK_COLUMNS
+                    )
+                if peak.is_fitted and column in estimated_columns:
                     item.setBackground(QtGui.QColor(ESTIMATED_VALUE_BACKGROUND))
                     item.setToolTip(self.translator("estimated_from_fit"))
                 table.setItem(row, column, item)
@@ -6005,7 +6010,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if peak.id not in peak_ids
             and peak.parent_peak_id not in removed_parent_ids
         ]
-        if removed_parent_ids:
+        if removed_parent_ids or affected_parent_ids:
             recalculate_dataset_peaks(dataset)
         for parent_id in affected_parent_ids - removed_parent_ids:
             self._sync_legacy_fit_for_parent(dataset, parent_id)
@@ -6159,6 +6164,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             apply_fit_result(fitted_peak, parent_peak, result, dataset)
         mirror_fitted_peak_for_legacy(parent_peak, fitted_peak)
+        recalculate_dataset_peaks(dataset)
         self._push_undo_snapshot(
             before,
             self._history_label(
@@ -6230,6 +6236,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if target is None:
             return
         dataset, parent_peak, fitted_peak = target
+        if fitted_peak is None:
+            fitted_peak = next(
+                (
+                    peak for peak in reversed(dataset.fitted_peaks)
+                    if peak.parent_peak_id == parent_peak.id
+                    and is_saturation_corrected(peak)
+                ),
+                None,
+            )
         model = self._ask_fit_model()
         if model is None:
             return
@@ -6283,6 +6298,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             apply_fit_result(fitted_peak, parent_peak, result, dataset, span)
         mirror_fitted_peak_for_legacy(parent_peak, fitted_peak)
+        recalculate_dataset_peaks(dataset)
         self._push_undo_snapshot(
             before,
             self._history_label("飽和ピーク補正", "Saturated peak correction"),
@@ -6303,6 +6319,12 @@ class MainWindow(QtWidgets.QMainWindow):
             ),
             9000,
         )
+        if LIMITED_FLANK_NOTE in fitted_peak.notes.splitlines():
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.translator("warning"),
+                self.translator("limited_saturation_flanks"),
+            )
 
     def _sync_legacy_fit_for_parent(self, dataset: Dataset, parent_id: str):
         parent = next(

@@ -3781,6 +3781,7 @@ class QuantitationHelpDialog(QtWidgets.QDialog):
             <p>指定したベースラインを差し引いた吸光度を、保持時間について台形積分します。</p>
             <p><b>S = ∫ A(t) dt</b>　[単位: mAU·sec]</p>
             <p>時間 <i>t</i> は秒として積分します。面積が負になる区間も符号付きで積分します。%Areaは、各ピークの正のµV·sec面積を合計して算出します。</p>
+            <p>飽和ピーク補正では、積分範囲内の実測値を保ち、飽和区間だけを非飽和部分に当てはめたモデル値で置き換えます。この補正面積が親ピークに代わって%Areaと定量に使われ、結果は推定値として表示されます。</p>
 
             <h3>3. 物質量</h3>
             <p>Beer–Lambertの法則 A = εlc と流量を用います。流量が一定の場合：</p>
@@ -3809,6 +3810,7 @@ class QuantitationHelpDialog(QtWidgets.QDialog):
             <p><b>A (AU) = I (µV) × R (AU/V) × 10<sup>−6</sup></b></p>
             <h3>2. Peak area</h3>
             <p><b>S = ∫ A(t) dt</b> [mAU·sec], after subtracting the selected baseline and integrating time in seconds.</p>
+            <p>For saturation correction, measured values inside the integration range are retained and only the saturated interval is replaced by the model fitted to the unsaturated samples. This estimated corrected area replaces its clipped parent in %Area and quantitation.</p>
             <h3>3. Amount</h3>
             <p>Using Beer–Lambert law A = εlc and constant flow:</p>
             <p><b>n (nmol) = S × F × 10<sup>3</sup> / (60 εl)</b>, where F is in mL/min.</p>

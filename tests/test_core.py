@@ -1535,7 +1535,12 @@ class AnalysisTests(unittest.TestCase):
 
         result, used = fit_saturated_peak(dataset, parent, "gaussian")
         self.assertEqual(used, span)
-        corrected_area = fitted_area_uv_min(result)
+        model_values = evaluate_fit_profile(time, result)
+        hybrid_values = clipped.copy()
+        hybrid_values[(time >= used.start_min) & (time <= used.end_min)] = (
+            model_values[(time >= used.start_min) & (time <= used.end_min)]
+        )
+        corrected_area = float(_trapz(hybrid_values, time))
         self.assertAlmostEqual(corrected_area / true_area, 1.0, delta=0.02)
         self.assertAlmostEqual(
             result.parameters["amplitude_uv"] / amplitude, 1.0, delta=0.02
@@ -1564,6 +1569,11 @@ class AnalysisTests(unittest.TestCase):
         np.testing.assert_array_equal(dataset.intensity_uv, raw_signal)
         self.assertEqual(dataset.peaks[0].raw_area_uv_min, measured_area)
         self.assertEqual(dataset.peaks[0].area_percent, 100.0)
+
+        dataset.fitted_peaks = [fitted]
+        recalculate_dataset_peaks(dataset)
+        self.assertIsNone(dataset.peaks[0].area_percent)
+        self.assertEqual(fitted.area_percent, 100.0)
 
     def test_emg_amplitude_correction_is_exact_given_the_true_shape(self):
         """Isolate the amplitude fix from the grid search's own shape noise.
@@ -1647,6 +1657,12 @@ class AnalysisTests(unittest.TestCase):
         # harder to disentangle once the most informative apex samples are
         # excluded, not from the correction itself -- so this is a generous
         # margin around measured behavior, not the correction's own precision.
+        expected_hybrid_area_ratios = {
+            0.90: 0.9907,
+            0.70: 0.9743,
+            0.50: 0.9954,
+            0.35: 0.9986,
+        }
         started = clock()
         for clip_ratio in (0.90, 0.70, 0.50, 0.35):
             with self.subTest(clip_ratio=clip_ratio):
@@ -1686,7 +1702,12 @@ class AnalysisTests(unittest.TestCase):
                 fitted = fitted_peak_from_result(parent, result, dataset, span)
                 self.assertTrue(is_saturation_corrected(fitted))
                 self.assertAlmostEqual(fitted.raw_height_uv, height, places=9)
-                self.assertAlmostEqual(fitted.raw_area_uv_min, area, places=9)
+                true_window_area = float(_trapz(clean, time_axis))
+                self.assertAlmostEqual(
+                    fitted.raw_area_uv_min / true_window_area,
+                    expected_hybrid_area_ratios[clip_ratio],
+                    delta=0.015,
+                )
 
                 # The measurement and the original integration are untouched.
                 np.testing.assert_array_equal(dataset.intensity_uv, raw_signal)
@@ -1812,6 +1833,82 @@ class AnalysisTests(unittest.TestCase):
             [peak.id for peak in dataset.display_peaks()],
             [dataset.peaks[0].id, fitted.id, dataset.peaks[1].id],
         )
+
+    def test_saturation_correction_replaces_parent_share_and_is_quantitated(self):
+        time = np.linspace(0.0, 10.0, 5001)
+        first_clean = 20000.0 * gaussian_profile(time, 3.0, 0.12)
+        second = 8000.0 * gaussian_profile(time, 7.0, 0.10)
+        clipped = np.minimum(first_clean, 10000.0) + second
+        dataset = Dataset(time_min=time.copy(), intensity_uv=clipped.copy())
+        dataset.measurement.wavelength_nm = 214.0
+        dataset.measurement.aux_range_au_per_v = 2.0
+        dataset.measurement.flow_rate_ml_min = 0.5
+        dataset.measurement.cell_path_length_cm = 1.0
+        dataset.measurement.molar_absorptivity_214 = 10000.0
+        dataset.measurement.molecular_weight_g_mol = 50000.0
+        dataset.peaks = [
+            PeakRegion(start_min=2.0, end_min=4.0),
+            PeakRegion(start_min=6.0, end_min=8.0),
+        ]
+        recalculate_dataset_peaks(dataset)
+        parent = dataset.peaks[0]
+        parent_values = (
+            parent.raw_area_uv_min,
+            parent.raw_area_uv_sec,
+            parent.raw_height_uv,
+            parent.retention_time_min,
+        )
+        result, span = fit_saturated_peak(dataset, parent, "gaussian")
+        fitted = fitted_peak_from_result(parent, result, dataset, span)
+        dataset.fitted_peaks = [fitted]
+
+        recalculate_dataset_peaks(dataset)
+        recalculated_parent = dataset.peaks[0]
+
+        self.assertEqual(
+            (
+                recalculated_parent.raw_area_uv_min,
+                recalculated_parent.raw_area_uv_sec,
+                recalculated_parent.raw_height_uv,
+                recalculated_parent.retention_time_min,
+            ),
+            parent_values,
+        )
+        self.assertIsNone(recalculated_parent.area_percent)
+        self.assertIsNotNone(fitted.area_percent)
+        self.assertAlmostEqual(
+            fitted.area_percent + dataset.peaks[1].area_percent, 100.0, places=9
+        )
+        self.assertIsNotNone(fitted.amount_nmol)
+        self.assertIsNotNone(fitted.amount_ug)
+
+        # A correction saved by an older build is recalculated from its stored
+        # model/span the next time the application recalculates the dataset.
+        corrected_area = fitted.raw_area_uv_min
+        fitted.raw_area_uv_min = -1.0
+        fitted.raw_area_uv_sec = -60.0
+        fitted.area_percent = 12.0
+        recalculate_dataset_peaks(dataset)
+        self.assertAlmostEqual(fitted.raw_area_uv_min, corrected_area, places=9)
+
+        required_cases = (
+            ("molar_absorptivity_214", None),
+            ("aux_range_au_per_v", None),
+            ("flow_rate_ml_min", None),
+            ("cell_path_length_cm", None),
+        )
+        for field_name, missing in required_cases:
+            with self.subTest(missing=field_name):
+                original = getattr(dataset.measurement, field_name)
+                setattr(dataset.measurement, field_name, missing)
+                recalculate_dataset_peaks(dataset)
+                self.assertIsNone(fitted.amount_nmol)
+                self.assertIsNone(fitted.amount_ug)
+                setattr(dataset.measurement, field_name, original)
+        dataset.measurement.molecular_weight_g_mol = None
+        recalculate_dataset_peaks(dataset)
+        self.assertIsNotNone(fitted.amount_nmol)
+        self.assertIsNone(fitted.amount_ug)
 
     def test_manual_baseline_is_saved_and_used(self):
         dataset = self.synthetic_dataset()

@@ -488,6 +488,19 @@ def analysis_report_figures(
             color="#6b7280",
             ha="left",
         )
+        if any(is_saturation_corrected(peak) for peak in display_peaks):
+            figure.text(
+                0.105,
+                0.037,
+                (
+                    "飽和補正: 積分範囲内の実測値＋飽和区間のみフィット値（推定）"
+                    if language == "ja"
+                    else "Saturation correction: measured values + fitted saturated span within the integration range (estimated)"
+                ),
+                fontsize=5.5,
+                color="#6b7280",
+                ha="left",
+            )
         _apply_report_fonts(figure)
         figures.append(figure)
 

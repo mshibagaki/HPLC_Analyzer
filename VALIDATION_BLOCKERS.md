@@ -1,6 +1,6 @@
 # External blockers and deferred physical validation
 
-Updated: 2026-09-06
+Updated: 2026-09-06 (code signing decided against)
 
 This file records work that source changes and automated CI cannot complete alone. An unavailable physical or external gate is `BLOCKED — evidence required`; it is never treated as passed or silently marked not applicable. Release execution remains governed by `.github/RELEASE_PROCESS.md` and `.github/RELEASE_CHECKLIST.md`.
 
@@ -10,9 +10,40 @@ Version context: latest published Stable is `1.2.4`; current main development li
 
 | Area | Status | Why source work cannot finish it | Evidence or decision required |
 |---|---|---|---|
-| Public code-signing identity | BLOCKED — external account and identity required | Authenticode can be probed in code, but the project has no approved production certificate, subject, thumbprint, or timestamp service | Select Microsoft Artifact Signing where available, otherwise a public-CA OV Authenticode certificate; complete organization/identity verification; record expected signer subject/thumbprint and timestamp policy |
-| Updater installer launch | BLOCKED — signing identity and signed fixture required | Download, SHA-256, and Authenticode foundations exist, but launch is intentionally always disabled | Verify a signed installer and manifest produced by the release pipeline; pin the approved signer identity; approve the user-confirmed launch workflow |
 | Stable GitHub Release publication | BLOCKED — human release approval required | Tags and Releases are external publication actions and require completed evidence | Human approval of the exact verified commit, annotated tag, final assets, checksums, release notes, and signing status. The distribution channel is no longer open: Issue #190 selected public Releases plus offline media, recorded in `DISTRIBUTION.md`. Making the repository or its Releases public is itself part of this approval |
+
+### Decided against: code signing and updater launch (2026-09-06)
+
+**The project ships unsigned installers.** This is a decision, not an open gate.
+Do not reopen it, and do not record either item as blocking a release.
+
+Why. A publicly trusted Authenticode certificate cannot be obtained free, and the
+cheap managed route is unavailable from this project's location: Azure Artifact
+Signing (formerly Trusted Signing) serves organizations in the USA, Canada, the
+EU and the UK, and individual developers only in the USA and Canada. A commercial
+OV or EV certificate costs roughly 30,000-70,000 JPY per year, additionally
+requires a FIPS 140-2 Level 2 hardware token or HSM for the private key since
+June 2023, and since 1 March 2026 expires after about 15 months rather than 39.
+For a laboratory-internal tool distributed to a handful of machines, that cost
+and renewal burden was judged not worth it.
+
+What this means in practice.
+
+- Release notes must state that installers are unsigned and that Windows may warn
+  on first run. `.github/RELEASE_PROCESS.md` already requires this, and the
+  requirement is now permanent rather than temporary.
+- `.github/RELEASE_CHECKLIST.md` "Signing state is explicit" is satisfied by
+  recording *unsigned*.
+- The updater keeps its current shape: `Help → Check for updates…` reads public
+  Release metadata and opens the Releases page in a browser. Download, SHA-256 and
+  Authenticode probing stay in the code, unused; **installer launch stays disabled
+  permanently**. Do not connect it to an end-user action.
+- A self-signed certificate installed into the laboratory machines' trust store
+  remains available as a free option if first-run warnings become a nuisance
+  there. It was not adopted and needs its own decision.
+
+If the project is later distributed beyond the laboratory, revisit the cost
+question first; nothing in the source needs to change until a certificate exists.
 
 ## Mandatory physical release gates not yet satisfied for the current candidate
 

@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-06 (Issue #252 delivery; spectrum-domain row withdrawn)
+Updated: 2026-09-06 (Issue #252 delivery; spectrum-domain and signed-updater rows withdrawn)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -30,9 +30,17 @@ This tracked file is the source of truth for the original product requests. Upda
 
 ## Remaining source work
 
-| Priority | Requirement | Current boundary | Next coherent delivery |
-|---|---|---|---|
-| Medium | Activate signed updater workflow | Check UI, non-launching verified-download API, background Qt worker, and bilingual progress/cancel/error dialog exist; the application deliberately exposes no installer download or execution. Issue #190 settled the distribution channel the check depends on — public GitHub Releases plus offline media, recorded in `DISTRIBUTION.md` — without changing any application behavior | Configure an approved signer identity and validate signed fixtures before connecting the component to the end-user action; launch still requires an explicit confirmation design and physical validation |
+**None.** Every requirement from the original request list is either implemented
+on `main` or explicitly withdrawn below. What remains before a Stable release is
+physical and external evidence, recorded in `VALIDATION_BLOCKERS.md`, not source
+work.
+
+**Withdrawn 2026-09-06: "Activate signed updater workflow".** The project ships
+unsigned installers by decision; `VALIDATION_BLOCKERS.md` records why and what it
+means. The update path is complete without it: `Help → Check for updates…` reads
+public Release metadata and opens the Releases page in a browser. The download,
+SHA-256 and Authenticode components stay in the code, unused, and installer launch
+stays disabled permanently. Revisit only if a signing certificate is ever obtained.
 
 **Withdrawn 2026-09-06: "Spectrum-domain selection and retention labels".** The
 requester confirmed that the word "spectrum" in the original request list was a

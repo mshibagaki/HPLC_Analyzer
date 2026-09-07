@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from .analysis import _fwhm, _trapz, calculate_baseline
+from .analysis import _fwhm, _trapz, amount_from_trace, calculate_baseline
 from .models import Dataset, PeakRegion
 
 
@@ -24,6 +24,7 @@ SATURATION_TOLERANCE_RATIO = 1.0e-3
 # one part per thousand for about 4% of its width at half height; a clipped top
 # covers far more, so a tenth of that width separates the two cleanly.
 SATURATION_MIN_WIDTH_RATIO = 0.10
+LIMITED_FLANK_NOTE = "Saturation correction warning: limited unsaturated flanks."
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,46 @@ def fitted_area_uv_min(result: PeakFitResult) -> float:
     tau = max(float(parameters["tau_min"]), 1.0e-12)
     grid = _model_grid(center, sigma, tau)
     return float(_trapz(evaluate_fit_profile(grid, result), grid))
+
+
+def saturation_corrected_trace(
+    dataset: Dataset,
+    region: PeakRegion,
+    result: PeakFitResult,
+    saturated: SaturatedSpan,
+):
+    """Return the within-window signal used by a saturation correction.
+
+    Samples outside the clipped interval remain the measured,
+    baseline-corrected signal. Only samples inside that interval are replaced
+    by the fitted model. This keeps the correction on the same integration
+    bounds as every measured peak instead of counting the model's tails beyond
+    the selected range.
+    """
+
+    start, end = sorted((float(region.start_min), float(region.end_min)))
+    window = (dataset.time_min >= start) & (dataset.time_min <= end)
+    if int(np.count_nonzero(window)) < 3:
+        raise ValueError("Integration range contains fewer than three data points")
+    time = np.asarray(dataset.time_min[window], dtype=float)
+    raw = np.asarray(dataset.intensity_uv[window], dtype=float)
+    baseline, _start, _end = calculate_baseline(raw, region)
+    corrected = raw - baseline
+    clipped = (time >= saturated.start_min) & (time <= saturated.end_min)
+    corrected[clipped] = evaluate_fit_profile(time[clipped], result)
+    return time, corrected
+
+
+def saturation_fit_has_limited_flanks(
+    region: PeakRegion, saturated: SaturatedSpan
+) -> bool:
+    """Flag a correction when either measured flank is shorter than the gap."""
+
+    start, end = sorted((float(region.start_min), float(region.end_min)))
+    clipped_width = max(0.0, float(saturated.end_min - saturated.start_min))
+    left_width = max(0.0, float(saturated.start_min - start))
+    right_width = max(0.0, float(end - saturated.end_min))
+    return clipped_width > 0 and min(left_width, right_width) < clipped_width
 
 
 def fitted_apex_min(model: str, parameters: Dict[str, float]) -> float:
@@ -210,13 +251,18 @@ def apply_fit_result(
     fitted_peak.fit_rmse_uv = result.rmse_uv
     fitted_peak.fit_r_squared = result.r_squared
     fitted_peak.fit_aic = result.aic
-    # Issue #181 blanked these because a fitted row is not another integration.
-    # Issue #218 fills them from the fitted curve instead: the area of the model
-    # is the whole point of correcting a clipped peak, and it cannot be read off
-    # the samples. They stay derived, estimated values -- every surface that
-    # shows them marks the row as fitted, and %Area keeps its measured meaning
-    # because dataset.fitted_peaks never enters the integration total.
+    # Ordinary fitted rows retain the complete model area introduced by #218.
+    # A saturation correction instead uses the measured signal within the
+    # integration window and replaces only its clipped interval with the model.
+    # Both values remain derived estimates and are marked as such by every
+    # display/export surface.
     area_uv_min = fitted_area_uv_min(result)
+    corrected_time = corrected_uv = None
+    if saturated is not None and dataset is not None:
+        corrected_time, corrected_uv = saturation_corrected_trace(
+            dataset, parent_peak, result, saturated
+        )
+        area_uv_min = float(_trapz(corrected_uv, corrected_time))
     height_uv = float(result.parameters["amplitude_uv"])
     aux = None
     if dataset is not None:
@@ -232,17 +278,21 @@ def apply_fit_result(
         if fitted_peak.area_mau_min is not None
         else None
     )
-    # %Area stays a property of the measured integrations only.
+    # recalculate_dataset_peaks assigns %Area after replacing the clipped
+    # parent's contribution with this corrected row.
     fitted_peak.area_percent = None
     fitted_peak.fwhm_min = fitted_fwhm_min(result)
     fitted_peak.gradient_a_pct = None
     fitted_peak.gradient_b_pct = None
     fitted_peak.gradient_c_pct = None
     fitted_peak.gradient_d_pct = None
-    # Quantitation stays blank: an amount derived from an estimated area would
-    # be indistinguishable from a measured one in the same column.
     fitted_peak.amount_nmol = None
     fitted_peak.amount_ug = None
+    note_lines = [
+        line for line in fitted_peak.notes.splitlines()
+        if line != LIMITED_FLANK_NOTE
+    ]
+    fitted_peak.notes = "\n".join(note_lines)
     if saturated is not None:
         fitted_peak.integration_source = "saturation_fit"
         fitted_peak.fit_parameters["saturated_start_min"] = float(
@@ -252,7 +302,45 @@ def apply_fit_result(
         fitted_peak.fit_parameters["saturated_point_count"] = float(
             saturated.point_count
         )
+        limited_flanks = saturation_fit_has_limited_flanks(parent_peak, saturated)
+        fitted_peak.fit_parameters["limited_unsaturated_flanks"] = float(
+            limited_flanks
+        )
+        if limited_flanks:
+            note_lines.append(LIMITED_FLANK_NOTE)
+        fitted_peak.notes = "\n".join(note_lines)
+        if dataset is not None and corrected_time is not None:
+            corrected_mau = corrected_uv * scale if scale is not None else None
+            fitted_peak.amount_nmol, fitted_peak.amount_ug = amount_from_trace(
+                dataset,
+                corrected_time,
+                corrected_mau,
+                fitted_peak.area_mau_sec,
+            )
     return fitted_peak
+
+
+def refresh_saturation_corrected_peak(
+    dataset: Dataset, parent_peak: PeakRegion, fitted_peak: PeakRegion
+) -> PeakRegion:
+    """Recalculate a saved correction from its existing fit and span."""
+
+    parameters = dict(fitted_peak.fit_parameters)
+    span = SaturatedSpan(
+        float(parameters["saturated_start_min"]),
+        float(parameters["saturated_end_min"]),
+        int(parameters.get("saturated_point_count", 0)),
+    )
+    result = PeakFitResult(
+        fitted_peak.fit_model,
+        parameters,
+        float(fitted_peak.fit_retention_time_min or fitted_peak.retention_time_min),
+        float(fitted_peak.fit_rmse_uv or 0.0),
+        float(fitted_peak.fit_r_squared or 0.0),
+        float(fitted_peak.fit_aic or 0.0),
+        int(parameters.get("fit_point_count", 0)),
+    )
+    return apply_fit_result(fitted_peak, parent_peak, result, dataset, span)
 
 
 def fitted_peak_from_result(

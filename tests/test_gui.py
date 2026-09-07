@@ -85,6 +85,7 @@ from hplc_app.report import ReportOptions, analysis_report_figures
 from hplc_app.plot3d import ThreeDPlotOptions, gradient_colors
 from hplc_app.peak_fitting import (
     PeakFitResult,
+    SaturatedSpan,
     fitted_peak_from_result,
     mirror_fitted_peak_for_legacy,
     gaussian_profile,
@@ -7176,6 +7177,8 @@ class GuiTests(unittest.TestCase):
         self.assertIn("分子量", help_text)
         self.assertIn("mAU·sec", help_text)
         self.assertIn("60", help_text)
+        self.assertIn("飽和区間だけ", help_text)
+        self.assertIn("推定値", help_text)
         self.assertNotIn("mAU·min", help_text)
         help_dialog.reject()
         window.project.dirty = False
@@ -9820,6 +9823,7 @@ class GuiTests(unittest.TestCase):
 
         self.assertEqual(len(dataset.fitted_peaks), 1)
         fitted = dataset.fitted_peaks[0]
+        recalculated_parent = dataset.peaks[0]
         self.assertTrue(is_saturation_corrected(fitted))
         self.assertEqual(fitted.parent_peak_id, parent.id)
         self.assertAlmostEqual(fitted.raw_area_uv_min / true_area, 1.0, delta=0.02)
@@ -9827,17 +9831,19 @@ class GuiTests(unittest.TestCase):
         self.assertAlmostEqual(fitted.retention_time_min, 5.0, delta=0.01)
         self.assertIn("saturated_point_count", fitted.fit_parameters)
 
-        # The measurement and its share are untouched by the estimate.
+        # The measurement stays untouched; its clipped share is replaced by
+        # the explicitly estimated correction row.
         np.testing.assert_array_equal(dataset.intensity_uv, raw_signal)
         self.assertEqual(
             (
-                parent.raw_area_uv_min,
-                parent.raw_height_uv,
-                parent.retention_time_min,
-                parent.area_percent,
+                recalculated_parent.raw_area_uv_min,
+                recalculated_parent.raw_height_uv,
+                recalculated_parent.retention_time_min,
             ),
-            measured,
+            measured[:3],
         )
+        self.assertIsNone(recalculated_parent.area_percent)
+        self.assertEqual(fitted.area_percent, 100.0)
         self.assertGreater(fitted.raw_area_uv_min, parent.raw_area_uv_min)
 
         # The table names the row and marks every estimated cell.
@@ -9849,7 +9855,7 @@ class GuiTests(unittest.TestCase):
         self.assertIn(
             "飽和補正", window.peak_table.item(row, PEAK_TYPE_COLUMN).text()
         )
-        for column in (3, 4, 5, 6, 7, 9):
+        for column in (3, 4, 5, 6, 7, 8, 9, 14, 15):
             with self.subTest(column=column):
                 item = window.peak_table.item(row, column)
                 self.assertEqual(
@@ -9858,13 +9864,40 @@ class GuiTests(unittest.TestCase):
                 self.assertEqual(
                     item.toolTip(), window.translator("estimated_from_fit")
                 )
-        # %Area keeps its measured meaning and is left blank on the fitted row.
-        self.assertEqual(window.peak_table.item(row, 8).text(), "")
+        self.assertEqual(window.peak_table.item(row, 8).text(), "100")
 
         window.undo()
         self.assertEqual(dataset.fitted_peaks, [])
+        self.assertEqual(dataset.peaks[0].area_percent, 100.0)
         window.redo()
         self.assertEqual(len(dataset.fitted_peaks), 1)
+        self.assertEqual(dataset.fitted_peaks[0].area_percent, 100.0)
+        window.project.dirty = False
+        window.close()
+
+    def test_saturation_correction_warns_when_unsaturated_flanks_are_limited(self):
+        window, dataset = self._saturated_window()
+        parent = dataset.peaks[0]
+        result = PeakFitResult(
+            "gaussian",
+            {"amplitude_uv": 20000.0, "center_min": 5.0, "sigma_min": 0.06},
+            5.0,
+            1.0,
+            0.99,
+            1.0,
+            20,
+        )
+        span = SaturatedSpan(4.2, 5.8, 12)
+        with patch.object(
+            QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ), patch("hplc_app.gui.fit_saturated_peak", return_value=(result, span)), patch.object(
+            QtWidgets.QMessageBox, "warning"
+        ) as warning:
+            window.correct_saturated_peak()
+
+        warning.assert_called_once()
+        self.assertIn("裾", warning.call_args.args[2])
+        self.assertIn("limited unsaturated flanks", dataset.fitted_peaks[0].notes)
         window.project.dirty = False
         window.close()
 
@@ -9934,7 +9967,10 @@ class GuiTests(unittest.TestCase):
         body = {row[1]: row for row in rows[1:]}
         self.assertEqual(body["1"][source_column], "measured")
         self.assertEqual(body["1"][kind_column], "integrated")
-        self.assertEqual(body["F1"][source_column], "fitted_curve")
+        self.assertEqual(
+            body["F1"][source_column],
+            "measured_plus_fitted_saturated_span",
+        )
         self.assertEqual(body["F1"][kind_column], "fitted_saturation_corrected")
         self.assertAlmostEqual(
             float(body["F1"][area_column]), fitted.raw_area_uv_sec, places=6
@@ -9963,6 +9999,12 @@ class GuiTests(unittest.TestCase):
             any("estimated" in str(label) for label in legend_labels),
             "the report legend must mark the fitted curve as an estimate",
         )
+        report_text = [
+            text.get_text()
+            for figure in figures
+            for text in figure.texts
+        ]
+        self.assertTrue(any("fitted saturated span" in value for value in report_text))
         for figure in figures:
             figure.clear()
         window.project.dirty = False
@@ -10038,8 +10080,12 @@ class GuiTests(unittest.TestCase):
     def test_fitted_peak_recalculates_and_deletes_independently(self):
         window = self.make_window()
         dataset = window.project.datasets[0]
-        parent = dataset.peaks[0]
-        original_area = parent.raw_area_uv_sec
+        parent_id = dataset.peaks[0].id
+        original_area = dataset.peaks[0].raw_area_uv_sec
+
+        def current_parent():
+            return next(peak for peak in dataset.peaks if peak.id == parent_id)
+
         first_result = PeakFitResult(
             "gaussian",
             {"amplitude_uv": 900.0, "center_min": 7.0, "sigma_min": 0.4},
@@ -10070,14 +10116,16 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(len(dataset.fitted_peaks), 1)
         self.assertEqual(dataset.fitted_peaks[0].id, child_id)
         self.assertEqual(dataset.fitted_peaks[0].retention_time_min, 7.2)
-        self.assertEqual(parent.raw_area_uv_sec, original_area)
+        # Fitting a child recalculates the dataset, so the parent identified by
+        # id -- not the object captured above -- carries the measured area.
+        self.assertEqual(current_parent().raw_area_uv_sec, original_area)
 
         window.peak_table.selectRow(1)
         window.delete_peak()
         self.assertEqual(len(dataset.peaks), 1)
         self.assertEqual(dataset.fitted_peaks, [])
-        self.assertEqual(parent.raw_area_uv_sec, original_area)
-        self.assertEqual(parent.fit_model, "")
+        self.assertEqual(current_parent().raw_area_uv_sec, original_area)
+        self.assertEqual(current_parent().fit_model, "")
         window.undo()
         self.assertEqual(len(window.project.datasets[0].fitted_peaks), 1)
         window.project.dirty = False

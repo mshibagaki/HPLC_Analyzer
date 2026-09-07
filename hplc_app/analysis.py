@@ -348,10 +348,42 @@ def recalculate_dataset_peaks(dataset: Dataset) -> None:
             peak.end_min,
         )
     )
-    total = sum(max(0.0, peak.raw_area_uv_sec or 0.0) for peak in recalculated)
+    # Saturation-corrected fitted rows are the authoritative area for their
+    # clipped parent. Ordinary fitted rows remain display-only estimates and
+    # do not enter %Area, preserving their established behavior.
+    from .peak_fitting import (
+        is_saturation_corrected,
+        refresh_saturation_corrected_peak,
+    )
+
+    parents = {peak.id: peak for peak in recalculated}
+    corrections = {}
+    for fitted_peak in dataset.fitted_peaks:
+        fitted_peak.area_percent = None
+        parent = parents.get(fitted_peak.parent_peak_id)
+        if parent is None or not is_saturation_corrected(fitted_peak):
+            continue
+        try:
+            refresh_saturation_corrected_peak(dataset, parent, fitted_peak)
+        except (KeyError, TypeError, ValueError):
+            # Incomplete legacy/stale fit metadata cannot safely replace a
+            # measured integration. Keep the parent authoritative instead.
+            continue
+        corrections[parent.id] = fitted_peak
+
+    contributors = [
+        corrections.get(peak.id, peak) for peak in recalculated
+    ]
+    total = sum(max(0.0, peak.raw_area_uv_sec or 0.0) for peak in contributors)
     for peak in recalculated:
-        positive = max(0.0, peak.raw_area_uv_sec or 0.0)
-        peak.area_percent = positive / total * 100.0 if total > 0 else None
+        contributor = corrections.get(peak.id)
+        if contributor is not None:
+            peak.area_percent = None
+            positive = max(0.0, contributor.raw_area_uv_sec or 0.0)
+            contributor.area_percent = positive / total * 100.0 if total > 0 else None
+        else:
+            positive = max(0.0, peak.raw_area_uv_sec or 0.0)
+            peak.area_percent = positive / total * 100.0 if total > 0 else None
     dataset.peaks = recalculated
 
 

@@ -119,7 +119,11 @@ def export_peak_csv(path: str, datasets: Iterable[Dataset]) -> None:
                         ),
                         # The area column now carries estimated values on fitted
                         # rows, so every row states where its area came from.
-                        "fitted_curve" if peak.is_fitted else "measured",
+                        (
+                            "measured_plus_fitted_saturated_span"
+                            if is_saturation_corrected(peak)
+                            else "fitted_curve"
+                        ) if peak.is_fitted else "measured",
                     )
                 )
 

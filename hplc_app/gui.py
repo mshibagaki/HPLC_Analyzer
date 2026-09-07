@@ -1248,6 +1248,22 @@ class MainWindow(QtWidgets.QMainWindow):
             painter.drawLine(21, 4, 15, 10)
             painter.setPen(QtGui.QPen(ink, 1.2))
             painter.drawLine(3, 20, 21, 20)
+        elif kind == "annotation":
+            # Draw the serif T as geometry rather than text so the icon does
+            # not depend on Times New Roman (or any other installed font).
+            painter.setPen(QtGui.QPen(ink, 2.0))
+            glyph = QtGui.QPainterPath()
+            glyph.moveTo(4, 5)
+            glyph.lineTo(20, 5)
+            glyph.moveTo(6, 5)
+            glyph.lineTo(6, 8)
+            glyph.moveTo(18, 5)
+            glyph.lineTo(18, 8)
+            glyph.moveTo(12, 5)
+            glyph.lineTo(12, 19)
+            glyph.moveTo(8, 19)
+            glyph.lineTo(16, 19)
+            painter.drawPath(glyph)
         painter.end()
         return QtGui.QIcon(pixmap)
 
@@ -1305,9 +1321,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pointer_action.toggled.connect(self._toggle_pointer_mode)
         self.pointer_toolbar_button = QtWidgets.QToolButton()
         self.pointer_toolbar_button.setDefaultAction(self.pointer_action)
-        self.pointer_toolbar_button.setToolButtonStyle(self._text_beside_icon_style())
+        icon_only = (
+            QtCore.Qt.ToolButtonStyle.ToolButtonIconOnly
+            if QT_API == 6
+            else QtCore.Qt.ToolButtonIconOnly
+        )
+        self.pointer_toolbar_button.setToolButtonStyle(icon_only)
         self.pointer_toolbar_button.setIconSize(QtCore.QSize(18, 18))
-        self.pointer_toolbar_button.setMinimumWidth(145)
         toolbar_actions = self.toolbar.actions()
         if toolbar_actions:
             self.pointer_toolbar_widget_action = self.toolbar.insertWidget(
@@ -1790,6 +1810,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # annotation_action is a QAction already (shared with the edit menu
         # and the "表示" panel button), so it is placed in the toolbar
         # directly rather than bound to a duplicate.
+        self.annotation_action.setIcon(self._mode_glyph_icon("annotation"))
         if insert_before is not None:
             self.toolbar.insertAction(insert_before, self.annotation_action)
         else:
@@ -1816,8 +1837,40 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         actions = getattr(self.toolbar, "_actions", {}) or {}
         customize_action = actions.get("edit_parameters")
-        if customize_action is not None:
-            self.toolbar.removeAction(customize_action)
+        mode_actions = {
+            "normal": actions.get("pan"),
+            "zoom": actions.get("zoom"),
+            "pointer": self.pointer_toolbar_widget_action,
+            "select": self.select_toolbar_action,
+            "integrate": self.integrate_toolbar_action,
+            "edit_peak": self.edit_peak_toolbar_action,
+            "split_peak": self.split_peak_toolbar_action,
+            "move_trace": self.move_trace_toolbar_action,
+            "annotation": self.annotation_action,
+        }
+        current_actions = list(self.toolbar.actions())
+        mouse_actions = {action for action in mode_actions.values() if action is not None}
+        utility_actions = [
+            action
+            for action in current_actions
+            if not action.isSeparator()
+            and action not in mouse_actions
+            and action is not customize_action
+        ]
+
+        # Rebuild from the shared mode order instead of individually inserting
+        # before a fixed action. Any future mode added to MOUSE_MODE_IDS has one
+        # obvious mapping point and cannot silently drift from the dropdown.
+        for action in current_actions:
+            self.toolbar.removeAction(action)
+        for mode_id in MOUSE_MODE_IDS:
+            action = mode_actions.get(mode_id)
+            if action is not None:
+                self.toolbar.addAction(action)
+        if utility_actions:
+            self.toolbar.addSeparator()
+            for action in utility_actions:
+                self.toolbar.addAction(action)
 
     def _select_toolbar_toggled(self, checked: bool):
         """Route the select toolbar icon through the combo.
@@ -4422,6 +4475,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._mouse_mode == "select" and mode != "select":
             self._clear_selected_time_range()
         self._mouse_mode = mode
+        if self.select_toolbar_action.isChecked() != (mode == "select"):
+            self.select_toolbar_action.setChecked(mode == "select")
         controls = {
             "pointer": self.pointer_action,
             "integrate": self.integrate_button,
@@ -4432,8 +4487,6 @@ class MainWindow(QtWidgets.QMainWindow):
         }
         selected_control = controls.get(mode)
         if selected_control is not None:
-            if self.select_toolbar_action.isChecked():
-                self.select_toolbar_action.setChecked(False)
             selected_control.setChecked(True)
             return
         for control in controls.values():
@@ -4444,8 +4497,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if mode != "zoom":
             self._cancel_overview_zoom_drag()
         if mode == "normal":
-            if self.select_toolbar_action.isChecked():
-                self.select_toolbar_action.setChecked(False)
             self.statusBar().clearMessage()
             self._ensure_normal_mode_navigation()
             return
@@ -4464,8 +4515,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 )
                 self._set_mouse_mode_display("normal")
                 return
-            if not self.select_toolbar_action.isChecked():
-                self.select_toolbar_action.setChecked(True)
             self.statusBar().showMessage(self.translator("selection_hint"))
             self._install_span_selector("select")
             self._ensure_interaction_cursor()

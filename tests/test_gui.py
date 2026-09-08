@@ -3754,6 +3754,116 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_preview_zoom_double_click_back_and_axis_only_drags(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("split_y_axes")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("zoom")
+            )
+            preview = window._screen_preview
+            initial = window._screen_view_state()
+            narrowed = replace(
+                initial, x=(5.0, 25.0), y1=(50.0, 550.0),
+                y2=(100.0, 900.0),
+            )
+
+            def event(region, role, x, y, pixel_x, pixel_y, **kwargs):
+                return ScreenPointerEvent(
+                    button=1, axis_role=role, hit_region=region,
+                    canvas_x=pixel_x, canvas_y=pixel_y,
+                    data_coordinates=((role, x, y),), **kwargs
+                )
+
+            window._view_history.clear()
+            window._view_history.ensure_home(initial)
+            preview.navigation._record_and_apply(narrowed)
+            window._apply_view_state(preview.consumer.capture_view_state())
+            preview.handle_event(
+                "button_press_event",
+                event("plot_y1", "y1", 10.0, 200.0, 100.0, 100.0,
+                      double_click=True),
+            )
+            self.assertEqual(window._screen_view_state(), initial)
+
+            # Normal mode continues to use the navigation controller's Back.
+            window._view_history.clear()
+            window._view_history.ensure_home(initial)
+            preview.navigation._record_and_apply(narrowed)
+            window._apply_view_state(preview.consumer.capture_view_state())
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("normal")
+            )
+            preview.handle_event(
+                "button_press_event",
+                event("plot_y1", "y1", 10.0, 200.0, 100.0, 100.0,
+                      double_click=True),
+            )
+            self.assertEqual(window._screen_view_state(), initial)
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("zoom")
+            )
+
+            # With no older entry, double-click is a defined no-op.
+            window._view_history.clear()
+            window._view_history.ensure_home(initial)
+            preview.handle_event(
+                "button_press_event",
+                event("plot_y1", "y1", 10.0, 200.0, 100.0, 100.0,
+                      double_click=True),
+            )
+            self.assertEqual(window._screen_view_state(), initial)
+
+            for region, role, configured, expected in (
+                ("x", "y1", "y", "x"),
+                ("y1", "y1", "x", "y1"),
+                ("y2", "y2", "x", "y2"),
+            ):
+                with self.subTest(region=region):
+                    window._apply_view_state(initial)
+                    window.zoom_axis_combo.setCurrentIndex(
+                        window.zoom_axis_combo.findData(configured)
+                    )
+                    start = event(region, role, 10.0, 100.0, 100.0, 100.0)
+                    end = (
+                        ScreenPointerEvent(
+                            button=1, axis_role="outside", hit_region="",
+                            canvas_x=300.0, canvas_y=300.0,
+                            data_coordinates=((role, 20.0, 500.0),),
+                        )
+                        if expected == "y2"
+                        else event(region, role, 20.0, 500.0, 300.0, 300.0)
+                    )
+                    preview.handle_event("button_press_event", start)
+                    self.assertEqual(
+                        preview._zoom_drag["mode"],
+                        "x" if expected == "x" else "y",
+                    )
+                    preview.handle_event("motion_notify_event", end)
+                    self.assertTrue(preview.consumer.zoom_rectangle.isVisible())
+                    preview.handle_event("button_release_event", end)
+                    changed = window._screen_view_state()
+                    self.assertEqual(
+                        changed.x, (10.0, 20.0) if expected == "x" else initial.x
+                    )
+                    self.assertEqual(
+                        changed.y1,
+                        (100.0, 500.0) if expected == "y1" else initial.y1,
+                    )
+                    self.assertEqual(
+                        changed.y2,
+                        (100.0, 500.0) if expected == "y2" else initial.y2,
+                    )
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_overview_drag_zooms_and_click_still_recenters(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")

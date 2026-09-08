@@ -52,6 +52,17 @@ class ExperimentalScreenPreview:
                          ) + tuple(layer[0] for layer in self.consumer.gradient_layers):
                 view.setMenuEnabled(False)
             owner.plot_stack.addWidget(self.consumer.widget)
+            self.consumer.overview_ratio_changed = (
+                lambda ratio: setattr(owner, "_overview_split_ratio", ratio)
+            )
+            self.consumer.overview_action_handler = self._handle_overview_action
+            self.consumer.set_overview_tooltips(
+                owner.translator("overview_scrollbar_tooltip"),
+                owner.translator("overview_zoom_in_tooltip"),
+                owner.translator("overview_zoom_out_tooltip"),
+                owner.translator("overview_home_tooltip"),
+            )
+            self.consumer.set_overview_ratio(owner._overview_split_ratio)
             self.refresh()
             self.navigation = PyQtGraphNavigationController(self.consumer)
             # One history across backend changes and existing toolbar actions.
@@ -124,7 +135,7 @@ class ExperimentalScreenPreview:
             state = owner._screen_view_state()
             overview_state = compose_overview_state(
                 method.view_mode == "overview_detail",
-                owner._full_x_bounds(), state.x,
+                owner._current_overview_x(), state.x,
             )
             if (scene is not self._scene or (self._span_drag is not None
                     and self._span_drag["view"] != owner._screen_view_state())):
@@ -143,6 +154,8 @@ class ExperimentalScreenPreview:
                 show_retention=method.show_retention_labels,
                 show_gradient=method.show_gradient_b,
             )
+            if not self.consumer._overview_drag_active:
+                self.consumer.set_overview_ratio(owner._overview_split_ratio)
             self._update_legend(scene)
             primary = self.consumer.primary
             lower = self.consumer.secondary_plot
@@ -189,13 +202,10 @@ class ExperimentalScreenPreview:
                     font.setFamily(owner.project.method.tick_label_font_family)
                 font.setPointSizeF(owner.project.method.tick_label_font_size)
                 axis.setStyle(tickFont=font)
-                if axis.orientation in ("left", "right"):
-                    metrics = self.consumer.qt_gui.QFontMetricsF(font)
-                    axis.setWidth(max(80, metrics.horizontalAdvance("-12345.6789")
-                                      + metrics.height() + 16))
             # AxisItem.setTextPen also changes its title color. Reapply title
             # styles after setting the independent tick-label pen.
             self._apply_axis_labels(primary, lower, scene)
+            self._apply_vertical_axis_widths(primary, lower, font)
             if lower is not None:
                 # Both panels have equally sized B% axes; no placeholder margin.
                 for plot in (primary, lower):
@@ -223,6 +233,59 @@ class ExperimentalScreenPreview:
 
     def set_peak_selection(self, selected_peak_ids):
         self.consumer.set_peak_selection(selected_peak_ids)
+
+    def _handle_overview_action(self, command, value=None):
+        owner = self.owner
+        if command == "zoom_in":
+            owner._zoom_overview(0.8)
+        elif command == "zoom_out":
+            owner._zoom_overview(1.25)
+        elif command == "home":
+            owner._overview_full_x = None
+            owner._set_overview_x(owner._full_x_bounds())
+        elif command == "detail":
+            state = self.consumer.capture_view_state()
+            owner._push_view_history()
+            owner._apply_view_state(replace(state, x=tuple(value)))
+            owner.toolbar.set_history_buttons()
+
+    def _vertical_axis_width(self, axis, view, font):
+        metrics = self.consumer.qt_gui.QFontMetricsF(font)
+        lower, upper = view.viewRange()[1]
+        pixels = max(100, int(view.height()))
+        strings = []
+        try:
+            for spacing, values in axis.tickValues(lower, upper, pixels):
+                strings.extend(axis.tickStrings(values, axis.scale, spacing))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            strings = []
+        tick_width = max(
+            [metrics.horizontalAdvance(str(value)) for value in strings] or [0.0]
+        )
+        title_space = metrics.height() + 8 if axis.labelText else 4
+        return int(max(36.0, tick_width + title_space + 8.0))
+
+    def _apply_vertical_axis_widths(self, primary, lower, font):
+        left_pairs = [(primary.getAxis("left"), primary.vb)]
+        if lower is not None:
+            left_pairs.append((lower.getAxis("left"), lower.vb))
+        left_width = max(
+            self._vertical_axis_width(axis, view, font)
+            for axis, view in left_pairs
+        )
+        for axis, _view in left_pairs:
+            axis.setWidth(left_width)
+        if lower is None and self.owner.axes_right is not None:
+            right = primary.getAxis("right")
+            right.setWidth(self._vertical_axis_width(
+                right, self.consumer.secondary, font
+            ))
+        gradient_width = max(
+            self._vertical_axis_width(axis, view, font)
+            for view, axis, _host in self.consumer.gradient_layers
+        )
+        for _view, axis, _host in self.consumer.gradient_layers:
+            axis.setWidth(gradient_width)
 
     def _apply_axis_labels(self, primary, lower, scene):
         owner = self.owner
@@ -292,7 +355,7 @@ class ExperimentalScreenPreview:
         if outside and not self._legend_outside:
             legend.setParentItem(None)
             self.consumer.widget.ci.addItem(
-                legend, row=1, col=1,
+                legend, row=2, col=1,
                 rowspan=3 if self.consumer.split_y_axes else 1,
             )
         elif not outside and self._legend_outside:
@@ -394,6 +457,9 @@ class ExperimentalScreenPreview:
                     )
                     owner._apply_view_state(self.consumer.capture_view_state())
                     owner.toolbar.set_history_buttons()
+                return True
+            if role == "overview_y1":
+                owner._set_overview_x((drag["start"][0], values[0]))
                 return True
             changes = {}
             if mode in ("x", "both"):

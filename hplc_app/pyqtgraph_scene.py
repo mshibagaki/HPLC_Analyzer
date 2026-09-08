@@ -53,53 +53,66 @@ class PyQtGraphSceneConsumer:
             self.application = qt_widgets.QApplication([])
         self.widget = self.pg.GraphicsLayoutWidget(show=False)
         self.widget.resize(int(size[0]), int(size[1]))
+        qt_core = self.qt_core
+        qt_gui = self.qt_gui
+
+        class SplitHandle(self.pg.GraphicsWidget):
+            def __init__(self):
+                super().__init__()
+                self.setMinimumHeight(8.0)
+                self.setMaximumHeight(8.0)
+                cursor = getattr(
+                    getattr(qt_core.Qt, "CursorShape", qt_core.Qt),
+                    "SplitVCursor",
+                )
+                self.setCursor(cursor)
+
+            def paint(self, painter, *_args):
+                painter.fillRect(self.boundingRect(), qt_gui.QColor("#d1d5db"))
+
         self.overview = self.widget.addPlot(row=0, col=0)
-        self.overview.setMaximumHeight(140)
         self.overview.setMouseEnabled(x=False, y=False)
         self.overview.hideAxis("left")
         self.overview.hideAxis("bottom")
         self.overview.setTitle("Overview", color="#4b5563", size="8pt")
+        self.overview.vb.setBorder(self.pg.mkPen("#6b7280", width=0.8))
         self.overview_region = qt_widgets.QGraphicsRectItem()
         self.overview_region.setPen(self.pg.mkPen("#1d4ed8", width=0.8))
         self.overview_region.setBrush(self._brush("#2563eb", 0.14))
         self.overview_region.setZValue(10.0)
         self.overview.vb.addItem(self.overview_region, ignoreBounds=True)
+        self.overview_secondary_region = qt_widgets.QGraphicsRectItem()
+        self.overview_secondary_region.setPen(
+            self.pg.mkPen("#ca8a04", width=0.8)
+        )
+        self.overview_secondary_region.setBrush(self._brush("#eab308", 0.12))
+        self.overview_secondary_region.setZValue(11.0)
         self.overview.setVisible(False)
         self.overview_secondary = self.pg.ViewBox()
         self.overview.scene().addItem(self.overview_secondary)
         self.overview_secondary.setXLink(self.overview)
         self.overview_secondary.setMouseEnabled(x=False, y=False)
+        self.overview_secondary.addItem(
+            self.overview_secondary_region, ignoreBounds=True
+        )
         self.overview_secondary.setVisible(False)
         self.overview.vb.sigResized.connect(self._sync_overview_view)
-        self.primary = self.widget.addPlot(row=1, col=0)
+        self.overview_handle = SplitHandle()
+        self.widget.ci.addItem(self.overview_handle, row=1, col=0)
+        self.primary = self.widget.addPlot(row=2, col=0)
         self.split_y_axes = bool(split_y_axes)
         self.secondary_plot = None
         self.split_handle = None
         self.split_ratio = 0.5
+        self.overview_ratio = 0.25
+        self.overview_ratio_changed = None
+        self.overview_action_handler = None
         self._split_drag_active = False
+        self._overview_drag_active = False
         if self.split_y_axes:
-            qt_core = self.qt_core
-            qt_gui = self.qt_gui
-
-            class SplitHandle(self.pg.GraphicsWidget):
-                def __init__(self):
-                    super().__init__()
-                    self.setMinimumHeight(8.0)
-                    self.setMaximumHeight(8.0)
-                    cursor = getattr(
-                        getattr(qt_core.Qt, "CursorShape", qt_core.Qt),
-                        "SplitVCursor",
-                    )
-                    self.setCursor(cursor)
-
-                def paint(self, painter, *_args):
-                    painter.fillRect(
-                        self.boundingRect(), qt_gui.QColor("#d1d5db")
-                    )
-
             self.split_handle = SplitHandle()
-            self.widget.ci.addItem(self.split_handle, row=2, col=0)
-            self.secondary_plot = self.widget.addPlot(row=3, col=0)
+            self.widget.ci.addItem(self.split_handle, row=3, col=0)
+            self.secondary_plot = self.widget.addPlot(row=4, col=0)
             self.secondary = self.secondary_plot.vb
             self.primary.getAxis("bottom").setStyle(showValues=False)
             self.set_split_ratio(self.split_ratio)
@@ -175,7 +188,35 @@ class PyQtGraphSceneConsumer:
         self._closed = False
         self._pointer_handler = None
         self.overview_state = ScreenOverviewState(False, (0.0, 1.0), (0.0, 1.0))
+        self._overview_scroll_sync = False
+        orientation = getattr(
+            getattr(self.qt_core.Qt, "Orientation", self.qt_core.Qt),
+            "Horizontal",
+        )
+        self.overview_scrollbar = qt_widgets.QScrollBar(
+            orientation, self.widget.viewport()
+        )
+        self.overview_scrollbar.setToolTip("Visible detail range")
+        self.overview_scrollbar.valueChanged.connect(
+            self._overview_scrollbar_changed
+        )
+        self.overview_buttons = []
+        for text, command, tooltip in (
+            ("+", "zoom_in", "Zoom overview in"),
+            ("−", "zoom_out", "Zoom overview out"),
+            ("⌂", "home", "Reset overview"),
+        ):
+            button = qt_widgets.QToolButton(self.widget.viewport())
+            button.setText(text)
+            button.setToolTip(tooltip)
+            button.clicked.connect(
+                lambda _checked=False, value=command: self._overview_action(value)
+            )
+            self.overview_buttons.append(button)
+        self._set_overview_controls_visible(False)
         self._install_pointer_filter()
+        if not self.split_y_axes:
+            self.set_overview_ratio(self.overview_ratio)
 
     # A right-oriented AxisItem draws its rotated title 5 px past its own right
     # edge, so with no spacing the Y2 title lands on top of the B% axis line.
@@ -193,9 +234,9 @@ class PyQtGraphSceneConsumer:
         self.split_ratio = min(0.85, max(0.15, float(ratio)))
         layout = self.widget.ci.layout
         scale = 1000
-        layout.setRowStretchFactor(1, int(round(self.split_ratio * scale)))
+        layout.setRowStretchFactor(2, int(round(self.split_ratio * scale)))
         layout.setRowStretchFactor(
-            3, int(round((1.0 - self.split_ratio) * scale))
+            4, int(round((1.0 - self.split_ratio) * scale))
         )
         layout.invalidate()
         layout.activate()
@@ -203,13 +244,111 @@ class PyQtGraphSceneConsumer:
             self._sync_auxiliary_views()
         self.widget.update()
 
+    def set_overview_ratio(self, ratio):
+        """Resize overview/detail without persisting the session-only ratio."""
+
+        self.overview_ratio = min(0.85, max(0.15, float(ratio)))
+        layout = self.widget.ci.layout
+        scale = 1000
+        layout.setRowStretchFactor(0, int(round(self.overview_ratio * scale)))
+        layout.setRowStretchFactor(2, int(round((1.0 - self.overview_ratio) * scale)))
+        layout.invalidate()
+        layout.activate()
+        self.widget.update()
+        if callable(self.overview_ratio_changed):
+            self.overview_ratio_changed(self.overview_ratio)
+
+    def _overview_action(self, command, value=None):
+        if callable(self.overview_action_handler):
+            self.overview_action_handler(command, value)
+
+    def set_overview_tooltips(self, scrollbar, zoom_in, zoom_out, home):
+        self.overview_scrollbar.setToolTip(scrollbar)
+        for button, tooltip in zip(
+            self.overview_buttons, (zoom_in, zoom_out, home)
+        ):
+            button.setToolTip(tooltip)
+
+    def _set_overview_controls_visible(self, visible):
+        self.overview_scrollbar.setVisible(bool(visible))
+        for button in self.overview_buttons:
+            button.setVisible(bool(visible))
+
+    def _layout_overview_controls(self):
+        if not getattr(self, "overview_state", None) or not self.overview_state.enabled:
+            return
+        rectangle = self.overview.vb.sceneBoundingRect()
+        top_left = self.widget.mapFromScene(rectangle.topLeft())
+        bottom_right = self.widget.mapFromScene(rectangle.bottomRight())
+        left, right = int(top_left.x()), int(bottom_right.x())
+        bottom = int(bottom_right.y())
+        size, gap, margin = 22, 2, 4
+        buttons_width = len(self.overview_buttons) * size + 2 * gap
+        button_left = max(left + margin, right - margin - buttons_width)
+        for index, button in enumerate(self.overview_buttons):
+            button.setGeometry(
+                button_left + index * (size + gap), bottom - margin - size,
+                size, size,
+            )
+            button.raise_()
+        scroll_width = max(0, button_left - left - 2 * margin)
+        self.overview_scrollbar.setGeometry(
+            left + margin, bottom - margin - 18, scroll_width, 18
+        )
+        self.overview_scrollbar.raise_()
+
+    def _sync_overview_scrollbar(self):
+        full_left, full_right = self.overview_state.full_x
+        detail_left, detail_right = self.overview_state.detail_x
+        full_span = full_right - full_left
+        detail_span = min(detail_right - detail_left, full_span)
+        scale = 10000
+        page = scale if full_span <= 0 else max(
+            1, int(round(scale * detail_span / full_span))
+        )
+        maximum = max(0, scale - page)
+        movable = max(full_span - detail_span, 0.0)
+        value = 0 if movable <= 0 else int(round(
+            maximum * (detail_left - full_left) / movable
+        ))
+        self._overview_scroll_sync = True
+        try:
+            self.overview_scrollbar.setRange(0, maximum)
+            self.overview_scrollbar.setPageStep(page)
+            self.overview_scrollbar.setValue(min(max(value, 0), maximum))
+        finally:
+            self._overview_scroll_sync = False
+
+    def _overview_scrollbar_changed(self, value):
+        if self._overview_scroll_sync or not self.overview_state.enabled:
+            return
+        full_left, full_right = self.overview_state.full_x
+        detail_left, detail_right = self.overview_state.detail_x
+        span = detail_right - detail_left
+        maximum = self.overview_scrollbar.maximum()
+        movable = max((full_right - full_left) - span, 0.0)
+        offset = 0.0 if maximum <= 0 else movable * float(value) / maximum
+        self._overview_action(
+            "detail", (full_left + offset, full_left + offset + span)
+        )
+
     def _split_drag_event(self, event_name, event, scene_position):
-        if self.split_handle is None or event_name == "scroll_event":
+        if event_name == "scroll_event":
             return False
         buttons = getattr(self.qt_core.Qt, "MouseButton", self.qt_core.Qt)
         if event_name == "button_press_event":
             if (
-                event.button() == buttons.LeftButton
+                self.overview.isVisible()
+                and event.button() == buttons.LeftButton
+                and self._point_in_rect(
+                    scene_position, self.overview_handle.sceneBoundingRect(), 3.0
+                )
+            ):
+                self._overview_drag_active = True
+                return True
+            if (
+                self.split_handle is not None
+                and event.button() == buttons.LeftButton
                 and self._point_in_rect(
                     scene_position,
                     self.split_handle.sceneBoundingRect(),
@@ -217,6 +356,19 @@ class PyQtGraphSceneConsumer:
                 )
             ):
                 self._split_drag_active = True
+                return True
+            return False
+        if self._overview_drag_active:
+            if event_name == "motion_notify_event":
+                top = float(self.overview.vb.sceneBoundingRect().top())
+                bottom = float(self.primary.vb.sceneBoundingRect().bottom())
+                if bottom > top:
+                    self.set_overview_ratio(
+                        (float(scene_position.y()) - top) / (bottom - top)
+                    )
+                return True
+            if event_name == "button_release_event":
+                self._overview_drag_active = False
                 return True
             return False
         if not self._split_drag_active:
@@ -372,9 +524,19 @@ class PyQtGraphSceneConsumer:
         if not self.split_y_axes:
             self.secondary.setGeometry(self.primary.vb.sceneBoundingRect())
         self.secondary.linkedViewChanged(self.primary.vb, self.secondary.XAxis)
+        primary_rectangle = self.primary.vb.sceneBoundingRect()
         for view, _axis, host in self.gradient_layers:
-            view.setGeometry(host.vb.sceneBoundingRect())
+            host_rectangle = host.vb.sceneBoundingRect()
+            view.setGeometry(self.qt_core.QRectF(
+                primary_rectangle.left(), host_rectangle.top(),
+                primary_rectangle.width(), host_rectangle.height(),
+            ))
             view.linkedViewChanged(self.primary.vb, view.XAxis)
+            self.primary.vb.blockLink(True)
+            try:
+                view.setXRange(*self.primary.viewRange()[0], padding=0.0)
+            finally:
+                self.primary.vb.blockLink(False)
 
     def pan_rectangle(self, target):
         view = self.secondary if target in ("y2", "plot_y2") else self.primary.vb
@@ -383,6 +545,7 @@ class PyQtGraphSceneConsumer:
     def _sync_overview_view(self):
         self.overview_secondary.setGeometry(self.overview.vb.sceneBoundingRect())
         self.overview_secondary.linkedViewChanged(self.overview.vb, self.overview_secondary.XAxis)
+        self._layout_overview_controls()
 
     def _view(self, axis_id):
         return self.secondary if axis_id == "y2" else self.primary
@@ -1146,8 +1309,13 @@ class PyQtGraphSceneConsumer:
             self.gradient.setYRange(*view_state.gradient, padding=0.0)
 
         self.overview.setVisible(overview_state.enabled)
+        self.overview_handle.setVisible(overview_state.enabled)
         self.overview_secondary.setVisible(overview_state.enabled and self._has_y2)
         self.overview_region.setVisible(overview_state.enabled)
+        self.overview_secondary_region.setVisible(
+            overview_state.enabled and self._has_y2
+        )
+        self._set_overview_controls_visible(overview_state.enabled)
         if overview_state.enabled:
             self.overview.setXRange(*overview_state.full_x, padding=0.0)
             left, right = overview_state.detail_x
@@ -1156,11 +1324,22 @@ class PyQtGraphSceneConsumer:
                 min(left, right), min(bottom, top),
                 abs(right - left), abs(top - bottom),
             ))
+            if view_state.y2 is not None:
+                y2_bottom, y2_top = view_state.y2
+                self.overview_secondary_region.setRect(self.qt_core.QRectF(
+                    min(left, right), min(y2_bottom, y2_top),
+                    abs(right - left), abs(y2_top - y2_bottom),
+                ))
+            self._sync_overview_scrollbar()
 
         self._sync_auxiliary_views()
         self._sync_overview_view()
         if process_events:
             self.application.processEvents()
+            # Visibility and dynamic axis-width changes settle during event
+            # processing. Re-align linked overlays to the final plot geometry.
+            self._sync_auxiliary_views()
+            self._sync_overview_view()
         primary_range = self.primary.viewRange()
         secondary_range = self.secondary.viewRange()
         gradient_range = self.gradient.viewRange()

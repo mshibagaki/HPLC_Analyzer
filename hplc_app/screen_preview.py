@@ -396,24 +396,40 @@ class ExperimentalScreenPreview:
                 return False
             in_plot = event.hit_region in ("plot", "plot_y1", "plot_y2")
             in_overview = event.axis_role == "overview_y1"
+            on_axis = event.hit_region in ("x", "y1", "y2")
+            managed = in_plot or in_overview or on_axis
             role = (event.axis_role if event.axis_role in
                     ("y1", "y2", "overview_y1") else "y1")
+            if (
+                name == "button_press_event"
+                and event.button == 1
+                and event.double_click
+                and managed
+            ):
+                self.navigation.navigate("back")
+                owner._apply_view_state(self.consumer.capture_view_state())
+                owner.toolbar.set_history_buttons()
+                return True
             values = event.data_for(role)
-            valid = ((in_plot or in_overview)
+            valid = (managed
                      and all(value is not None and isfinite(value) for value in values)
                      and event.canvas_x is not None and event.canvas_y is not None)
             if (name == "button_press_event" and event.button == 1
                     and valid and not event.double_click):
                 configured = owner.project.method.zoom_axis
-                mode = ("x" if in_overview else
-                        "both" if configured == "auto" else configured)
+                mode = (
+                    "x" if in_overview or event.hit_region == "x"
+                    else "y" if on_axis
+                    else "both" if configured == "auto"
+                    else configured
+                )
                 self._zoom_drag = {
                     "start": values, "role": role, "mode": mode,
                     "pixel": (event.canvas_x, event.canvas_y),
                 }
                 self.consumer.set_zoom_rectangle(values, values, role, mode)
                 return True
-            return name == "button_press_event" and (in_plot or in_overview)
+            return name == "button_press_event" and managed
         role = drag["role"]
         values = event.data_for(role)
         if name == "scroll_event":

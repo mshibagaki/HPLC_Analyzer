@@ -1,6 +1,6 @@
 # Windows 11 実機フィードバック 対応ワークフロー
 
-Updated: 2026-09-08 (レ・ロ・ワ) rev.13 — #280-#282 の発注／Win11 実機ゲート 5 件が合格
+Updated: 2026-09-08 (レ・ロ・ワ) rev.14 — #280-#282 の発注／Win11 実機ゲート 5 件が合格／CI の GUI テスト 1 件のハングを記録（第 18.8 節）
 
 Windows 11 実機での動作確認によって提出された修正要求を、Claude と Codex の
 どちらが担当しても同じ手順・同じ粒度で実装できるようにするための計画文書です。
@@ -3606,6 +3606,52 @@ figure.savefig(path, dpi=self.project.method.dpi, bbox_inches="tight")
 
 `_save_static_figure` は **2D の図と共有**です。触る場合は 2D の出力が退行しない
 ことを確認してください。
+
+### 18.8 CI の GUI テストが 1 件、まれにハングします（実測）
+
+**#283 の CI（Markdown のみの差分）で、Windows ジョブが 25 分の
+`timeout-minutes` に達して cancelled になりました。** テストが落ちたのではなく、
+**出力が止まったまま戻ってこない**という形です。
+
+観測した事実（[Actions run 34222608254](https://github.com/mshibagaki/HPLC_Analyzer/actions/runs/34222608254) の attempt 1）:
+
+| 時刻 (UTC) | 出来事 |
+|---|---|
+| 11:49:31 | テストステップ開始 |
+| 11:54:04 | `test_preview_peak_range_invalid_range_rolls_back ... ok` |
+| — | **19 分間、出力なし** |
+| 12:13:34 | `##[error]The operation was canceled.` |
+
+**ハングしているのは `GuiTests.test_preview_peak_range_target_and_cancellation_guards`
+と判断しています。** ただしこれは**推定**です。`unittest -v` はテスト名を改行なしで
+書くため、ハングした本人の名前はログに出ません。`GuiTests` の 237 メソッドを
+アルファベット順に並べ、最後に `ok` を出した
+`test_preview_peak_range_invalid_range_rolls_back` の次に来るものとして特定しました。
+
+**これが同じコードで再現しないことは確認済みです。**
+
+- #283 の差分は Markdown 4 ファイルのみで、Python を 1 行も含みません
+- 同一の Python（親コミット `f3f3725`）が同日 04:59〜05:12 に約 13 分で合格しています
+- 同一コミットの attempt 2 が 12:17〜12:27 に約 11 分で合格しました
+- テスト本体は 2026-09-02 以降変更されていません
+
+つまり**再現性のない停止**で、1 回の再実行で解消しました。原因は特定していません。
+
+#### なぜ レ(#280) に関係するか
+
+このテストが動かしているのは `screen_preview` の span-drag 経路
+（`preview.handle_event("button_press_event", ...)` と対応する release）で、
+**レ(#280) が触るオーバービューの操作コードと同じ領域です。**
+
+- #280 の作業中に同じ症状が出たら、**まず自分の変更を疑ってください。**
+  今回の記録は「無関係だと決めつけてよい」という意味ではありません
+- 判別の材料は、**落ちるのではなく無言で止まる**という形と、止まる位置です。
+  自分の変更が原因なら、多くの場合アサーション失敗として出ます
+- 再実行は **1 回だけ**。2 回目も同じ位置で止まったら、それは実在するハングです。
+  再実行を重ねて緑を引き当てないでください（`AGENTS.md`）
+
+このテストは `QT_QPA_PLATFORM=offscreen` の windows-2022 ランナーで動きます。
+ジョブの `timeout-minutes` は 25 で、通常の所要は 11〜13 分です。
 
 ---
 

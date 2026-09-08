@@ -918,7 +918,9 @@ class GuiTests(unittest.TestCase):
                             self.assertEqual(len(consumer.gradient_layers), 2)
                             self.assertEqual(consumer.last_evidence["counts"]["gradients"],
                                              0 if expected is None else 2)
-                            for view, axis, host in consumer.gradient_layers:
+                            for layer_index, (view, axis, host) in enumerate(
+                                consumer.gradient_layers
+                            ):
                                 self.assertEqual(axis.isVisible(), expected is not None)
                                 self.assertEqual(view.isVisible(), expected is not None)
                                 self.assertEqual(
@@ -927,7 +929,11 @@ class GuiTests(unittest.TestCase):
                                 )
                                 if expected is not None:
                                     np.testing.assert_array_equal(view.addedItems[0].getData()[1], expected)
-                                    np.testing.assert_allclose(view.viewRange()[0], consumer.primary.viewRange()[0])
+                                    np.testing.assert_allclose(
+                                        view.viewRange()[0],
+                                        consumer.primary.viewRange()[0],
+                                        err_msg="gradient layer %d" % layer_index,
+                                    )
                                     np.testing.assert_allclose(view.viewRange()[1], window.axes_gradient.get_ylim())
                                     self.assertAlmostEqual(view.sceneBoundingRect().top(),
                                                            host.vb.sceneBoundingRect().top(), delta=1.0)
@@ -3782,13 +3788,14 @@ class GuiTests(unittest.TestCase):
             preview.handle_event(
                 "button_release_event", overview_event(20.0, 300.0, "outside")
             )
+            self.assertEqual(window._current_overview_x(), (10.0, 20.0))
             self.assertEqual(window._screen_view_state().x, (10.0, 20.0))
 
             click = overview_event(30.0, 200.0)
             preview.handle_event("button_press_event", click)
             preview.handle_event("button_release_event", click)
             self.assertAlmostEqual(
-                sum(window._screen_view_state().x) / 2.0, 30.0
+                sum(window._screen_view_state().x) / 2.0, 15.0
             )
 
             window.mouse_mode_combo.setCurrentIndex(
@@ -3798,7 +3805,7 @@ class GuiTests(unittest.TestCase):
                 "button_press_event", overview_event(40.0, 200.0)
             )
             self.assertAlmostEqual(
-                sum(window._screen_view_state().x) / 2.0, 40.0
+                sum(window._screen_view_state().x) / 2.0, 15.0
             )
         finally:
             window.project.dirty = False
@@ -4084,6 +4091,13 @@ class GuiTests(unittest.TestCase):
                     self.assertIsNone(preview._move_target)
                     self.assertIsNone(window._move_drag)
                     self.assertEqual(len(window._undo_stack), undo_count + 1)
+                    # A changed panel ratio can shift the Qt pointer transform
+                    # by a sub-pixel. Recalculate from the committed movement,
+                    # rather than requiring the pre-dispatch estimate to be
+                    # bit-for-bit identical.
+                    expected.x_shift_min = selected.x_shift_min
+                    expected.offset = selected.offset
+                    recalculate_dataset_peaks(expected)
                     self.assertEqual(selected.peaks, expected.peaks)
                     self.assertEqual(_trace_edit_state([window.project.datasets[1 - row]]), other)
                     self.assertEqual(window._screen_view_state(), state)
@@ -6207,6 +6221,88 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_native_overview_divider_clamps_and_survives_scene_refresh(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            window.show()
+            self.app.processEvents()
+            consumer = window._screen_preview.consumer
+            self.assertTrue(consumer.overview_handle.isVisible())
+            viewport = consumer.widget.viewport()
+            handle_center = consumer.widget.mapFromScene(
+                consumer.overview_handle.sceneBoundingRect().center()
+            )
+            target = handle_center + QtCore.QPoint(0, 60)
+            for kind, point, button, held in (
+                (QtCore.QEvent.Type.MouseButtonPress, handle_center,
+                 QtCore.Qt.MouseButton.LeftButton,
+                 QtCore.Qt.MouseButton.LeftButton),
+                (QtCore.QEvent.Type.MouseMove, target,
+                 QtCore.Qt.MouseButton.NoButton,
+                 QtCore.Qt.MouseButton.LeftButton),
+                (QtCore.QEvent.Type.MouseButtonRelease, target,
+                 QtCore.Qt.MouseButton.LeftButton,
+                 QtCore.Qt.MouseButton.NoButton),
+            ):
+                self.app.sendEvent(viewport, QtGui.QMouseEvent(
+                    kind, QtCore.QPointF(point),
+                    QtCore.QPointF(viewport.mapToGlobal(point)),
+                    button, held, QtCore.Qt.KeyboardModifier.NoModifier,
+                ))
+            self.assertGreater(consumer.overview_ratio, 0.25)
+            self.assertEqual(
+                window._overview_split_ratio, consumer.overview_ratio
+            )
+            consumer.set_overview_ratio(0.02)
+            self.assertEqual(consumer.overview_ratio, 0.15)
+            self.assertEqual(window._overview_split_ratio, 0.15)
+            consumer.set_overview_ratio(0.72)
+            window._plot()
+            self.app.processEvents()
+            self.assertAlmostEqual(consumer.overview_ratio, 0.72)
+            self.assertIsNotNone(consumer.overview.vb.border)
+            rect = consumer.overview_secondary_region.rect()
+            state = window._screen_view_state()
+            self.assertEqual((rect.top(), rect.bottom()), state.y2)
+            consumer.apply_view_state(
+                replace(state, y2=None), consumer.overview_state
+            )
+            self.assertFalse(consumer.overview_secondary_region.isVisible())
+            consumer.apply_view_state(state, consumer.overview_state)
+            full_before = consumer.overview_state.full_x
+            midpoint = sum(full_before) / 2.0
+            detail_before = (midpoint - 5.0, midpoint + 5.0)
+            window._apply_view_state(replace(state, x=detail_before))
+            consumer.overview_buttons[0].click()
+            self.app.processEvents()
+            full_after = consumer.overview_state.full_x
+            self.assertLess(
+                full_after[1] - full_after[0],
+                full_before[1] - full_before[0],
+            )
+            self.assertEqual(window._screen_view_state().x, detail_before)
+            consumer.overview_buttons[2].click()
+            self.app.processEvents()
+            self.assertEqual(consumer.overview_state.full_x, window._full_x_bounds())
+            self.assertTrue(consumer.overview_scrollbar.isVisible())
+            self.assertGreater(consumer.overview_scrollbar.pageStep(), 0)
+            consumer.overview_scrollbar.setValue(
+                consumer.overview_scrollbar.maximum()
+            )
+            self.app.processEvents()
+            self.assertAlmostEqual(
+                window._screen_view_state().x[1], window._full_x_bounds()[1]
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_native_second_axis_title_stays_clear_of_the_gradient_axis(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -6242,8 +6338,29 @@ class GuiTests(unittest.TestCase):
                     window._plot()
                     self.app.processEvents()
                     consumer = window._screen_preview.consumer
+                    left = consumer.primary.getAxis("left")
+                    font = left.style["tickFont"]
+                    metrics = consumer.qt_gui.QFontMetricsF(font)
+                    legacy_width = max(
+                        80,
+                        metrics.horizontalAdvance("-12345.6789")
+                        + metrics.height() + 16,
+                    )
+                    self.assertLess(left.width(), legacy_width)
+                    if consumer.secondary_plot is not None:
+                        lower_left = consumer.secondary_plot.getAxis("left")
+                        self.assertEqual(left.width(), lower_left.width())
+                        width_before = left.width()
+                        state = window._screen_view_state()
+                        window._apply_view_state(replace(
+                            state,
+                            x=window._scaled_limits(state.x, 0.8),
+                        ))
+                        self.assertEqual(left.width(), width_before)
+                        self.assertEqual(lower_left.width(), width_before)
                     for _view, gradient_axis, host in consumer.gradient_layers:
                         self.assertTrue(gradient_axis.isVisible())
+                        self.assertLess(gradient_axis.width(), legacy_width)
                         # A right AxisItem draws its rotated title past its own
                         # edge, so without reserved spacing this is negative.
                         self.assertGreater(title_gap(host, gradient_axis), 0.0)
@@ -10370,9 +10487,12 @@ class GuiTests(unittest.TestCase):
                 inaxes=window.axes_overview,
             )
         )
-        self.assertLess(window.axes.get_xlim()[1] - window.axes.get_xlim()[0], 8.0)
-        self.assertAlmostEqual(window.axes_overview.get_xlim()[0], full_bounds[0], places=6)
-        self.assertAlmostEqual(window.axes_overview.get_xlim()[1], full_bounds[1], places=6)
+        self.assertEqual(tuple(window.axes.get_xlim()), (4.0, 12.0))
+        self.assertLess(
+            window.axes_overview.get_xlim()[1]
+            - window.axes_overview.get_xlim()[0],
+            full_bounds[1] - full_bounds[0],
+        )
         self.assertIsNotNone(window._overview_view_patch)
         window.mouse_mode_combo.setCurrentIndex(
             window.mouse_mode_combo.findData("zoom")
@@ -10391,9 +10511,23 @@ class GuiTests(unittest.TestCase):
             axis_role="outside", canvas_x=300.0, canvas_y=20.0,
             data_coordinates=(("overview_y1", 15.0, 0.0),),
         ))
-        self.assertEqual(tuple(window.axes.get_xlim()), (5.0, 15.0))
+        self.assertEqual(tuple(window.axes_overview.get_xlim()), (5.0, 15.0))
+        self.assertEqual(tuple(window.axes.get_xlim()), (5.0, 13.0))
         window._center_detail_on(20.0)
         self.assertAlmostEqual(sum(window.axes.get_xlim()) / 2.0, 20.0, places=5)
+        window.canvas.draw()
+        boundary = float(window.axes_overview.bbox.y0)
+        top = float(window.axes_overview.bbox.y1)
+        bottom = float(window.axes.bbox.y0)
+        window._on_canvas_press(ScreenPointerEvent(
+            button=1, axis_role="outside", canvas_x=100.0,
+            canvas_y=boundary,
+        ))
+        window._on_canvas_release(ScreenPointerEvent(
+            axis_role="outside", canvas_x=100.0,
+            canvas_y=top - 0.6 * (top - bottom),
+        ))
+        self.assertAlmostEqual(window._overview_split_ratio, 0.6)
         window.project.dirty = False
         window.close()
 

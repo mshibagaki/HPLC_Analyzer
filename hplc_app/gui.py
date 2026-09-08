@@ -643,6 +643,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._overview_view_patch = None
         self._overview_zoom_drag = None
         self._overview_zoom_patch = None
+        self._overview_split_ratio = 0.25
+        self._overview_split_drag = None
+        self._overview_full_x = None
+        self._overview_secondary_view_patch = None
         self._overview_window_state = ScreenOverviewState(
             enabled=False,
             full_x=(0.0, 1.0),
@@ -2376,6 +2380,13 @@ class MainWindow(QtWidgets.QMainWindow):
     def _retranslate(self):
         t = self.translator
         self._update_screen_preview_notice()
+        if self._screen_preview is not None:
+            self._screen_preview.consumer.set_overview_tooltips(
+                t("overview_scrollbar_tooltip"),
+                t("overview_zoom_in_tooltip"),
+                t("overview_zoom_out_tooltip"),
+                t("overview_home_tooltip"),
+            )
         self.file_menu.setTitle(t("file"))
         action_texts = (
             (self.new_action, "new"),
@@ -3621,14 +3632,58 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_overview_window(self):
         self._overview_window_state = compose_overview_state(
             enabled=self.axes_overview is not None,
-            full_x=self._full_x_bounds(),
+            full_x=self._current_overview_x(),
             detail_x=tuple(self.axes.get_xlim()),
         )
         self._apply_matplotlib_overview_window(self._overview_window_state)
 
+    def _current_overview_x(self):
+        """Return the session-only overview range clamped to loaded data."""
+
+        data_left, data_right = self._full_x_bounds()
+        if self._overview_full_x is None:
+            return data_left, data_right
+        left, right = sorted(float(value) for value in self._overview_full_x)
+        span = min(right - left, data_right - data_left)
+        if span <= 0.0:
+            return data_left, data_right
+        left = min(max(left, data_left), data_right - span)
+        return left, left + span
+
+    def _set_overview_x(self, limits):
+        """Change only the overview X window; clamp detail if it falls outside."""
+
+        data_left, data_right = self._full_x_bounds()
+        left, right = sorted(float(value) for value in limits)
+        minimum_span = max((data_right - data_left) * 1e-6, 1e-9)
+        span = min(max(right - left, minimum_span), data_right - data_left)
+        left = min(max(left, data_left), data_right - span)
+        self._overview_full_x = (left, left + span)
+        overview = compose_overview_state(
+            self.axes_overview is not None,
+            self._overview_full_x,
+            tuple(self.axes.get_xlim()),
+        )
+        if overview.detail_x != tuple(self.axes.get_xlim()):
+            self.axes.set_xlim(*overview.detail_x)
+        self._overview_window_state = overview
+        self._apply_matplotlib_overview_window(overview)
+        if self._screen_preview is not None:
+            self._screen_preview.consumer.apply_view_state(
+                self._screen_view_state(), overview
+            )
+        self._request_canvas_draw(throttled=True, refresh_series=True)
+
+    def _zoom_overview(self, factor, center=None):
+        limits = self._current_overview_x()
+        if center is None:
+            center = sum(limits) / 2.0
+        self._set_overview_x(self._scaled_limits(limits, factor, center))
+
     def _apply_matplotlib_overview_window(self, state):
         if not state.enabled or self.axes_overview is None:
             self._overview_view_patch = None
+            self._overview_secondary_view_patch = None
             return
         self.axes_overview.set_xlim(*state.full_x)
         if self._overview_view_patch is not None:
@@ -3638,22 +3693,40 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._overview_view_patch.set_bounds(
                     left, min(bottom, top), right - left, abs(top - bottom)
                 )
-                return
             except (ValueError, AttributeError, RuntimeError):
                 self._overview_view_patch = None
+        if self._overview_view_patch is None:
+            left, right = state.detail_x
+            bottom, top = self.axes.get_ylim()
+            self._overview_view_patch = Rectangle(
+                (left, min(bottom, top)),
+                right - left,
+                abs(top - bottom),
+                facecolor="#2563eb",
+                edgecolor="#1d4ed8",
+                linewidth=0.8,
+                alpha=0.14,
+                zorder=10,
+            )
+            self.axes_overview.add_patch(self._overview_view_patch)
+        if self.axes_overview_right is None or self.axes_right is None:
+            self._overview_secondary_view_patch = None
+            return
         left, right = state.detail_x
-        bottom, top = self.axes.get_ylim()
-        self._overview_view_patch = Rectangle(
-            (left, min(bottom, top)),
-            right - left,
-            abs(top - bottom),
-            facecolor="#2563eb",
-            edgecolor="#1d4ed8",
-            linewidth=0.8,
-            alpha=0.14,
-            zorder=10,
-        )
-        self.axes_overview.add_patch(self._overview_view_patch)
+        bottom, top = self.axes_right.get_ylim()
+        if self._overview_secondary_view_patch is None:
+            self._overview_secondary_view_patch = Rectangle(
+                (left, min(bottom, top)), right - left, abs(top - bottom),
+                facecolor="#eab308", edgecolor="#ca8a04",
+                linewidth=0.8, alpha=0.12, zorder=11,
+            )
+            self.axes_overview_right.add_patch(
+                self._overview_secondary_view_patch
+            )
+        else:
+            self._overview_secondary_view_patch.set_bounds(
+                left, min(bottom, top), right - left, abs(top - bottom)
+            )
 
     def _annotation_axis(self, annotation: TextAnnotation):
         if annotation.y_axis == 2 and self.axes_right is not None:
@@ -3901,7 +3974,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._connect_axes_callbacks()
         self._overview_window_state = compose_overview_state(
             enabled=self.axes_overview is not None,
-            full_x=self._full_x_bounds(),
+            full_x=self._current_overview_x(),
             detail_x=tuple(self.axes.get_xlim()),
         )
         self._view_initialized = has_times
@@ -3921,6 +3994,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._screen_preview.cancel_annotation_drag()
             self._screen_preview.cancel_zoom_drag()
         view_state = self._capture_view_state() if preserve_view else None
+        self._overview_split_drag = None
         self._cancel_overview_zoom_drag()
         self._clear_span_selector()
         self._interaction_cursor = None
@@ -3930,11 +4004,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._vertical_marker_label_artists = {}
         self._vertical_marker_drag = None
         self._overview_view_patch = None
+        self._overview_secondary_view_patch = None
         self.figure.clear()
         self._split_y_axes = self.project.method.view_mode == "split_y_axes"
         split_axis = None
         if self.project.method.view_mode == "overview_detail":
-            grid = self.figure.add_gridspec(2, 1, height_ratios=(1.0, 3.0))
+            grid = self.figure.add_gridspec(
+                2,
+                1,
+                height_ratios=(
+                    self._overview_split_ratio,
+                    1.0 - self._overview_split_ratio,
+                ),
+                hspace=0.08,
+            )
             self.axes_overview = self.figure.add_subplot(grid[0, 0])
             self.axes = self.figure.add_subplot(grid[1, 0])
             self.axes_overview.set_navigate(False)
@@ -3945,6 +4028,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 color="#4b5563",
             )
             self.axes_overview.tick_params(axis="x", labelbottom=False)
+            for spine in self.axes_overview.spines.values():
+                spine.set_visible(True)
+                spine.set_color("#6b7280")
+                spine.set_linewidth(0.8)
         elif self._split_y_axes:
             self.axes_overview = None
             grid = self.figure.add_gridspec(2, 1, hspace=0.08)
@@ -5167,6 +5254,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if event.button != 1:
             return
         if (
+            self.axes_overview is not None
+            and event.canvas_y is not None
+            and abs(float(event.canvas_y) - float(self.axes_overview.bbox.y0)) <= 6.0
+        ):
+            self._overview_split_drag = True
+            return
+        if (
             self._mouse_mode == "zoom"
             and event.axis_role == "overview_y1"
             and self.axes_overview is not None
@@ -5305,6 +5399,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(event)
         self._update_pointer_coordinates(event)
+        if self._overview_split_drag is not None:
+            return
         if self._overview_zoom_drag is not None:
             x_value, _y_value = event.data_for("overview_y1")
             if x_value is not None and math.isfinite(float(x_value)):
@@ -5425,6 +5521,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_canvas_release(self, event):
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(event)
+        if self._overview_split_drag is not None:
+            self._overview_split_drag = None
+            if event.canvas_y is not None and self.axes_overview is not None:
+                top = float(self.axes_overview.bbox.y1)
+                bottom = float(self.axes.bbox.y0)
+                if top > bottom:
+                    ratio = (top - float(event.canvas_y)) / (top - bottom)
+                    self._overview_split_ratio = min(0.85, max(0.15, ratio))
+                    self._plot()
+            return
         if self._overview_zoom_drag is not None:
             drag = self._overview_zoom_drag
             x_value, _y_value = event.data_for("overview_y1")
@@ -5437,12 +5543,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if abs(float(pixel) - drag["pixel"]) < 3.0 or current == drag["start"]:
                 self._center_detail_on(current)
                 return
-            self._push_view_history()
-            state = self._screen_view_state()
-            self._apply_view_state(replace(
-                state, x=tuple(sorted((drag["start"], current)))
-            ))
-            self.toolbar.set_history_buttons()
+            self._set_overview_x((drag["start"], current))
             return
         if self._vertical_marker_drag is not None:
             drag = self._vertical_marker_drag
@@ -5759,6 +5860,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if event.button not in ("up", "down"):
             return
         factor = 0.8 if event.button == "up" else 1.25
+        if event.axis_role == "overview_y1":
+            center_x, _unused = event.data_for("overview_y1")
+            self._zoom_overview(factor, center_x)
+            return
         configured_mode = self.project.method.zoom_axis
         if configured_mode != "auto":
             source_axis = {

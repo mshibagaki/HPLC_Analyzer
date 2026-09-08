@@ -115,6 +115,7 @@ from hplc_app.report import (
     render_analysis_report_pages,
 )
 from hplc_app.rendering import (
+    CHANNEL_COLOR_PALETTES,
     HIGH_QUALITY,
     LIGHTWEIGHT,
     ScreenRendererCapabilities,
@@ -1032,6 +1033,19 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(scene.text_annotations[0].annotation_id, shown_annotation.id)
         self.assertEqual(scene.text_annotations[0].axis_id, "y2")
 
+        solo_scene = compose_base_screen_scene(
+            project,
+            solo_dataset_id=hidden.id,
+            color_resolver=lambda _dataset, _index: "#000000",
+        )
+        self.assertEqual(
+            [trace.dataset_id for trace in solo_scene.traces], [hidden.id]
+        )
+        self.assertEqual(
+            [item.annotation_id for item in solo_scene.text_annotations],
+            [hidden_annotation.id],
+        )
+
     def test_renderer_benchmark_is_deterministic_and_non_mutating(self):
         workload = RendererWorkload(trace_count=2, point_count=200, repeats=1)
         first_x, first_traces = synthetic_chromatograms(workload)
@@ -1413,10 +1427,39 @@ class AnalysisTests(unittest.TestCase):
             normalize_signer_thumbprints(["not-a-certificate"])
 
     def test_default_trace_colors_follow_channel_families(self):
-        self.assertEqual(default_trace_color(1, 0), "#1f77b4")
+        def contrast_on_white(color):
+            channels = [int(color[index:index + 2], 16) / 255.0
+                        for index in (1, 3, 5)]
+            linear = [
+                value / 12.92 if value <= 0.04045
+                else ((value + 0.055) / 1.055) ** 2.4
+                for value in channels
+            ]
+            luminance = (
+                0.2126 * linear[0]
+                + 0.7152 * linear[1]
+                + 0.0722 * linear[2]
+            )
+            return 1.05 / (luminance + 0.05)
+
+        self.assertEqual(default_trace_color(1, 0), "#1d4ed8")
         self.assertEqual(default_trace_color(1, 1), "#2563eb")
-        self.assertEqual(default_trace_color(2, 0), "#d62728")
-        self.assertEqual(default_trace_color(2, 1), "#ef4444")
+        self.assertEqual(default_trace_color(2, 0), "#a16207")
+        self.assertEqual(default_trace_color(2, 1), "#b45309")
+        self.assertEqual(len(CHANNEL_COLOR_PALETTES[1]), 8)
+        self.assertEqual(len(CHANNEL_COLOR_PALETTES[2]), 8)
+        self.assertEqual(len(set(CHANNEL_COLOR_PALETTES[1])), 8)
+        self.assertEqual(len(set(CHANNEL_COLOR_PALETTES[2])), 8)
+        self.assertTrue(all(
+            contrast_on_white(color) >= 3.0
+            for color in CHANNEL_COLOR_PALETTES[2]
+        ))
+        self.assertEqual(
+            default_trace_color(1, 8), default_trace_color(1, 0)
+        )
+        self.assertEqual(
+            default_trace_color(2, 8), default_trace_color(2, 0)
+        )
         self.assertIsNone(default_trace_color(3, 0))
 
     def test_new_projects_default_to_overview_detail_without_migrating_saved_mode(self):
@@ -5176,7 +5219,7 @@ class ApplicationSettingsTests(unittest.TestCase):
 
         self.assertEqual(
             ApplicationSettings(backend).get(DATASET_COLUMN_ORDER),
-            [column for column in legacy_order if column != "source"],
+            [column for column in legacy_order if column != "source"] + ["solo"],
         )
 
     def test_write_and_sync_failures_are_non_fatal_and_reported(self):

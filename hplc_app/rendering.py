@@ -21,8 +21,14 @@ HIGH_QUALITY = "high_quality"
 LIGHTWEIGHT = "lightweight"
 RENDER_QUALITIES = (HIGH_QUALITY, LIGHTWEIGHT)
 CHANNEL_COLOR_PALETTES = {
-    1: ("#1f77b4", "#2563eb", "#1d4ed8", "#60a5fa"),
-    2: ("#d62728", "#ef4444", "#b91c1c", "#f87171"),
+    1: (
+        "#1d4ed8", "#2563eb", "#0284c7", "#0891b2",
+        "#0f766e", "#059669", "#16a34a", "#15803d",
+    ),
+    2: (
+        "#a16207", "#b45309", "#c2410c", "#9a3412",
+        "#dc2626", "#b91c1c", "#991b1b", "#7f1d1d",
+    ),
 }
 MATPLOTLIB_LINE_STYLES = {
     "solid": "-",

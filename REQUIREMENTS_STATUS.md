@@ -70,7 +70,7 @@ Windows 11 field use on `36ddb84` found further defects and gaps in rows listed 
 
 Issues #267, #268, #269 and #271 are delivered in the implemented rows above. No confirmed source defect from those four issues remains in this section.
 
-Issue #270 covers a solo-display column, wider per-channel colour ranges, and the reported source-path cell. The colour palettes hold four near-identical blues for channel 1 and four near-identical reds for channel 2, so traces repeat colours from the fifth onward. The source-path symptom is recorded as unreproduced: the delegate, column index, width and tooltip are all correct, and an offscreen measurement of a deep sub-folder path elided to the right-hand end as intended, so the condition has to be pinned on the machine before anything is changed.
+Issue #270 covers a solo-display column, wider per-channel colour ranges, and the reported source-path cell. Its implementation candidate adds session-only Solo state without changing `dataset.visible` or project schema, appends Solo to existing saved column orders, and provides eight fixed colours each for Ch1 (blue to green) and Ch2 (dark yellow to red). Explicit trace colours remain authoritative; previously unset-colour traces consequently adopt the new defaults. Windows 11 x64 automated validation has passed (398 tests, native parity, CI asset contracts, and no raw-array or benchmark regression). The source-path symptom remains unreproduced offscreen: the delegate, column index, width and tooltip are correct and a deep sub-folder path elides to the right-hand end as intended. Its physical reproduction conditions must be recorded before changing that code, so Issue #270 remains undelivered.
 
 ## Project compatibility notes for Issues #181 and #221
 

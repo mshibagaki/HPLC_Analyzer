@@ -230,7 +230,8 @@ DATASET_COLOR_COLUMN = 10
 DATASET_COLUMN_NAME_COLUMN = 11
 DATASET_SOURCE_COLUMN = 12
 DATASET_SELECTED_COLUMN = 13
-DATASET_COLUMN_COUNT = 14
+DATASET_SOLO_COLUMN = 14
+DATASET_COLUMN_COUNT = 15
 
 DATASET_COLUMN_IDS = {
     DATASET_VISIBLE_COLUMN: "visible",
@@ -247,6 +248,7 @@ DATASET_COLUMN_IDS = {
     DATASET_COLUMN_NAME_COLUMN: "column",
     DATASET_SOURCE_COLUMN: "source",
     DATASET_SELECTED_COLUMN: "selected",
+    DATASET_SOLO_COLUMN: "solo",
 }
 DATASET_COLUMNS_BY_ID = {
     column_id: logical_column
@@ -616,6 +618,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._peak_selection_sync_guard = False
         self._integration_list_dialog = None
         self._dataset_column_order = self._settings.get(DATASET_COLUMN_ORDER)
+        self._solo_dataset_id = ""
         self._dataset_header_update_guard = False
         self._dataset_selection_sync_guard = False
         self._dataset_checkbox_press = False
@@ -857,7 +860,10 @@ class MainWindow(QtWidgets.QMainWindow):
         for dataset in self.project.datasets:
             cached = self._plot_source_cache.get(dataset.id)
             line = self._dataset_lines.get(dataset.id)
-            if cached is None or line is None or not dataset.visible:
+            if (
+                cached is None or line is None
+                or not self._dataset_is_screen_visible(dataset)
+            ):
                 continue
             full_x, full_y = cached
             target_axis = (
@@ -2152,7 +2158,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_undo_actions()
 
     def set_all_datasets_visible(self, visible: bool):
-        if not self.project.datasets or all(dataset.visible == visible for dataset in self.project.datasets):
+        had_solo = bool(self._solo_dataset_id)
+        self._solo_dataset_id = ""
+        if not self.project.datasets:
+            return
+        if all(dataset.visible == visible for dataset in self.project.datasets):
+            if had_solo:
+                self._refresh_dataset_table(self.dataset_table.currentRow())
+                self._plot()
             return
         before = self._capture_analysis_state()
         for dataset in self.project.datasets:
@@ -2240,6 +2253,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_dataset_column_order(self, order):
         normalized = [str(column_id) for column_id in order]
         if (
+            len(normalized) == len(DEFAULT_DATASET_COLUMN_ORDER) - 1
+            and set(normalized) == set(DEFAULT_DATASET_COLUMN_ORDER) - {"solo"}
+        ):
+            normalized.append("solo")
+        elif (
             len(normalized) != len(DEFAULT_DATASET_COLUMN_ORDER)
             or set(normalized) != set(DEFAULT_DATASET_COLUMN_ORDER)
         ):
@@ -2445,6 +2463,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 t("column"),
                 t("source"),
                 t("selected"),
+                t("solo"),
             )
         )
         self.import_button.setText(t("add"))
@@ -2647,6 +2666,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_title()
 
     def _refresh_dataset_table(self, selected_row: Optional[int] = None):
+        if self._solo_dataset_id and not any(
+            dataset.id == self._solo_dataset_id
+            for dataset in self.project.datasets
+        ):
+            self._solo_dataset_id = ""
         if selected_row is None:
             selected_row = self.dataset_table.currentRow()
         self._updating_table = True
@@ -2660,6 +2684,12 @@ class MainWindow(QtWidgets.QMainWindow):
             show.setCheckState(CHECKED if dataset.visible else UNCHECKED)
             show.setData(USER_ROLE, dataset.id)
             self.dataset_table.setItem(row, DATASET_VISIBLE_COLUMN, show)
+            solo = _read_only_item("")
+            solo.setCheckState(
+                CHECKED if dataset.id == self._solo_dataset_id else UNCHECKED
+            )
+            solo.setData(USER_ROLE, dataset.id)
+            self.dataset_table.setItem(row, DATASET_SOLO_COLUMN, solo)
             run_id = QtWidgets.QTableWidgetItem(dataset.run_id)
             run_id.setData(USER_ROLE, dataset.run_id)
             run_id.setToolTip(dataset.run_id)
@@ -2722,6 +2752,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dataset_table.resizeColumnsToContents()
         self.dataset_table.setColumnWidth(DATASET_SELECTED_COLUMN, 55)
         self.dataset_table.setColumnWidth(DATASET_VISIBLE_COLUMN, 55)
+        self.dataset_table.setColumnWidth(DATASET_SOLO_COLUMN, 55)
         self.dataset_table.setColumnWidth(DATASET_RUN_ID_COLUMN, 160)
         self.dataset_table.setColumnWidth(DATASET_TIMESTAMP_COLUMN, 150)
         self.dataset_table.setColumnWidth(DATASET_COLUMN_NAME_COLUMN, 180)
@@ -2739,6 +2770,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if 0 <= row < len(self.project.datasets):
             return self.project.datasets[row]
         return None
+
+    def _dataset_is_screen_visible(self, dataset: Dataset) -> bool:
+        if self._solo_dataset_id:
+            return dataset.id == self._solo_dataset_id
+        return bool(dataset.visible)
 
     def _selected_dataset_rows(self):
         selection = self.dataset_table.selectionModel()
@@ -2879,6 +2915,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self._apply_dataset_checkbox_selection(row)
             return
         dataset = self.project.datasets[row]
+        if column == DATASET_SOLO_COLUMN:
+            checked = item.checkState() == CHECKED
+            if checked:
+                self._solo_dataset_id = dataset.id
+            elif self._solo_dataset_id == dataset.id:
+                self._solo_dataset_id = ""
+            self._refresh_dataset_table(row)
+            self._plot()
+            return
         before = self._capture_analysis_state()
         label_changed = False
         shared_run_changed = False
@@ -4086,7 +4131,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 for marker in self.project.vertical_markers
                 if marker.id in self._selected_vertical_marker_ids
             )
-        visible = [dataset for dataset in self.project.datasets if dataset.visible]
+        visible = [
+            dataset for dataset in self.project.datasets
+            if self._dataset_is_screen_visible(dataset)
+        ]
         base_scene = compose_base_screen_scene(
             self.project,
             selected_dataset_id=selected.id if selected is not None else "",
@@ -4095,6 +4143,7 @@ class MainWindow(QtWidgets.QMainWindow):
             selected_vertical_marker_id=self._selected_vertical_marker_id,
             selected_vertical_marker_ids=self._selected_vertical_marker_ids,
             color_resolver=dataset_display_color,
+            solo_dataset_id=self._solo_dataset_id,
             include_hidden_display_items=(
                 self._screen_preview is not None
                 and not self._force_matplotlib_screen_plot
@@ -4363,12 +4412,14 @@ class MainWindow(QtWidgets.QMainWindow):
             handles = [
                 self._dataset_lines[dataset.id]
                 for dataset in self.project.datasets
-                if dataset.visible and dataset.id in self._dataset_lines
+                if self._dataset_is_screen_visible(dataset)
+                and dataset.id in self._dataset_lines
             ]
             labels = [
                 self.project.legend_label_for(dataset)
                 for dataset in self.project.datasets
-                if dataset.visible and dataset.id in self._dataset_lines
+                if self._dataset_is_screen_visible(dataset)
+                and dataset.id in self._dataset_lines
             ]
             for overlay in base_scene.peak_overlays:
                 artist = self._peak_overlay_artists.get(overlay.peak_id, {}).get(
@@ -5636,7 +5687,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._request_canvas_draw(throttled=True)
 
     def _full_x_bounds(self):
-        datasets = [dataset for dataset in self.project.datasets if dataset.visible]
+        datasets = [
+            dataset for dataset in self.project.datasets
+            if self._dataset_is_screen_visible(dataset)
+        ]
         if not datasets:
             datasets = list(self.project.datasets)
         starts = [float(dataset.time_min[0] + dataset.x_shift_min) for dataset in datasets if dataset.time_min.size]
@@ -7211,6 +7265,7 @@ class MainWindow(QtWidgets.QMainWindow):
             condition_presets=deepcopy(self._global_condition_presets),
             gradient_presets=deepcopy(self._global_gradient_presets),
         )
+        self._solo_dataset_id = ""
         self._selected_time_range = None
         self._view_initialized = False
         self._view_history.clear()
@@ -7244,6 +7299,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _open_project_path(self, path: str) -> bool:
         try:
             self.project = load_project(path)
+            self._solo_dataset_id = ""
             self._selected_time_range = None
             self._settings.set(
                 LAST_PROJECT_DIRECTORY, str(Path(path).parent), sync=True

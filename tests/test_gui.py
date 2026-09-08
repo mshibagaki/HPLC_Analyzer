@@ -56,6 +56,7 @@ from hplc_app.gui import (
     DATASET_COLUMN_NAME_COLUMN,
     DATASET_RUN_ID_COLUMN,
     DATASET_SELECTED_COLUMN,
+    DATASET_SOLO_COLUMN,
     DATASET_SOURCE_COLUMN,
     DATASET_TIMESTAMP_COLUMN,
     DATASET_VISIBLE_COLUMN,
@@ -7056,12 +7057,19 @@ class GuiTests(unittest.TestCase):
             option = QtWidgets.QStyleOptionViewItem()
             option.rect = QtCore.QRect(0, 0, width, 24)
             option.widget = dialog.table
-            text = delegate.display_option(
+            displayed_option = delegate.display_option(
                 option, dialog.table.model().index(0, dialog.SOURCE_COLUMN)
-            ).text
+            )
+            text = displayed_option.text
             displayed.append(text)
             self.assertNotEqual(text, source_path)
             self.assertTrue(source_path.endswith(text.lstrip(".…")))
+            no_elide = (
+                QtCore.Qt.TextElideMode.ElideNone
+                if QT_API == 6
+                else QtCore.Qt.ElideNone
+            )
+            self.assertEqual(displayed_option.textElideMode, no_elide)
         self.assertNotEqual(displayed[0], displayed[1])
         dialog.close()
         window.project.dirty = False
@@ -8290,6 +8298,81 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_solo_column_is_session_only_and_preserves_visibility(self):
+        window = self.make_window()
+        try:
+            window.project.datasets[0].visible = False
+            window._refresh_all(0)
+            visibility = [
+                dataset.visible for dataset in window.project.datasets
+            ]
+            dirty = window.project.dirty
+            header = window.dataset_table.horizontalHeader()
+            self.assertEqual(
+                header.visualIndex(DATASET_SOLO_COLUMN),
+                header.visualIndex(DATASET_VISIBLE_COLUMN) + 1,
+            )
+
+            first = window.dataset_table.item(0, DATASET_SOLO_COLUMN)
+            first.setCheckState(CHECKED)
+            self.assertEqual(window._solo_dataset_id, window.project.datasets[0].id)
+            self.assertEqual(
+                [trace.dataset_id for trace in window._screen_scene.traces],
+                [window.project.datasets[0].id],
+            )
+            self.assertEqual(
+                [dataset.visible for dataset in window.project.datasets], visibility
+            )
+            self.assertEqual(window.project.dirty, dirty)
+
+            # Solo is display-only: the project stores the ordinary Show
+            # choices and opening it starts with no temporary solo target.
+            from hplc_app.project_io import save_project
+
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "solo-session-only.hplcproj")
+                save_project(path, window.project)
+                self.assertTrue(window._open_project_path(path))
+            self.assertEqual(window._solo_dataset_id, "")
+            self.assertEqual(
+                [dataset.visible for dataset in window.project.datasets], visibility
+            )
+
+            second = window.dataset_table.item(1, DATASET_SOLO_COLUMN)
+            second.setCheckState(CHECKED)
+            self.assertEqual(window._solo_dataset_id, window.project.datasets[1].id)
+            self.assertEqual(
+                [trace.dataset_id for trace in window._screen_scene.traces],
+                [window.project.datasets[1].id],
+            )
+            self.assertEqual(
+                [dataset.visible for dataset in window.project.datasets], visibility
+            )
+
+            second = window.dataset_table.item(1, DATASET_SOLO_COLUMN)
+            second.setCheckState(UNCHECKED)
+            self.assertEqual(window._solo_dataset_id, "")
+            self.assertEqual(
+                [trace.dataset_id for trace in window._screen_scene.traces],
+                [window.project.datasets[1].id],
+            )
+
+            window.dataset_table.item(0, DATASET_SOLO_COLUMN).setCheckState(CHECKED)
+            window.set_all_datasets_visible(True)
+            self.assertEqual(window._solo_dataset_id, "")
+            self.assertTrue(all(
+                dataset.visible for dataset in window.project.datasets
+            ))
+            window.dataset_table.item(1, DATASET_SOLO_COLUMN).setCheckState(CHECKED)
+            window.set_all_datasets_visible(False)
+            self.assertEqual(window._solo_dataset_id, "")
+            self.assertFalse(any(
+                dataset.visible for dataset in window.project.datasets
+            ))
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_chromatogram_order_buttons_reorder_plot_and_support_undo(self):
         window = self.make_window()
         original_ids = [dataset.id for dataset in window.project.datasets]
@@ -8770,8 +8853,8 @@ class GuiTests(unittest.TestCase):
         # the default colour decision.
         first.measurement.wavelength_nm = 214.0
         second.measurement.wavelength_nm = 280.0
-        self.assertEqual(dataset_display_color(first, 0), "#1f77b4")
-        self.assertEqual(dataset_display_color(second, 0), "#d62728")
+        self.assertEqual(dataset_display_color(first, 0), "#1d4ed8")
+        self.assertEqual(dataset_display_color(second, 0), "#a16207")
         first.color = "#123456"
         self.assertEqual(dataset_display_color(first, 0), "#123456")
         second.y_axis = 3
@@ -8800,7 +8883,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(imported, 2)
         self.assertEqual(
             [dataset.color for dataset in window.project.datasets],
-            ["#1f77b4", "#2563eb"],
+            ["#1d4ed8", "#2563eb"],
         )
         window.project.dirty = False
         window.close()
@@ -8891,8 +8974,11 @@ class GuiTests(unittest.TestCase):
         self.assertTrue(header.sectionsMovable())
         self.assertEqual(visible_order, list(DEFAULT_DATASET_COLUMN_ORDER))
         self.assertEqual(
-            visible_order[:6],
-            ["selected", "visible", "label", "color", "run_id", "timestamp"],
+            visible_order[:7],
+            [
+                "selected", "visible", "solo", "label", "color", "run_id",
+                "timestamp",
+            ],
         )
         self.assertFalse(window.dataset_table.isColumnHidden(DATASET_TIMESTAMP_COLUMN))
         self.assertTrue(window.dataset_table.isColumnHidden(DATASET_GROUP_COLUMN))
@@ -9203,8 +9289,8 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         first, second = window.project.datasets
         resolved = {
-            first.id: "#1f77b4",
-            second.id: "#d62728",
+            first.id: "#1d4ed8",
+            second.id: "#a16207",
         }
         dialog = DisplaySettingsDialog(
             first, [first, second], resolved, "en"

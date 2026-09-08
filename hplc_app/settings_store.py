@@ -46,6 +46,7 @@ AUTO_PEAK_SENSITIVITY_PRESETS = "analysis/auto_peak_sensitivity_presets"
 DEFAULT_DATASET_COLUMN_ORDER = (
     "selected",
     "visible",
+    "solo",
     "label",
     "color",
     "run_id",
@@ -143,16 +144,15 @@ def _dataset_column_order(value: Any, fallback: tuple) -> list:
     if not isinstance(decoded, (list, tuple)):
         return list(fallback)
     normalized = [str(item) for item in decoded]
-    # The source-path column used to be user-orderable on the home table. It is
-    # now available only in the conditions dialog, so retain every surviving
-    # column's relative position when loading that legacy order.
-    legacy_columns = set(fallback) | {"source"}
-    if (
-        len(normalized) == len(fallback) + 1
-        and set(normalized) == legacy_columns
-    ):
-        normalized = [item for item in normalized if item != "source"]
-    if len(normalized) != len(fallback) or set(normalized) != set(fallback):
+    # Source used to be user-orderable and Solo was added later. Preserve the
+    # relative order of every known saved column, then append the new one.
+    normalized = [item for item in normalized if item != "source"]
+    if len(normalized) != len(set(normalized)) or not set(normalized) <= set(fallback):
+        return list(fallback)
+    missing = [item for item in fallback if item not in normalized]
+    if missing == ["solo"]:
+        normalized.append("solo")
+    elif missing:
         return list(fallback)
     return normalized
 

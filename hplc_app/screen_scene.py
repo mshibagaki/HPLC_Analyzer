@@ -179,6 +179,7 @@ def compose_base_screen_scene(
     color_resolver: Optional[Callable[[Dataset, int], str]] = None,
     selected_vertical_marker_ids: Sequence[str] = (),
     include_hidden_display_items: bool = False,
+    solo_dataset_id: str = "",
 ) -> BaseScreenScene:
     """Compose visible base traces and B% data without creating GUI artists."""
 
@@ -193,7 +194,11 @@ def compose_base_screen_scene(
     for index, dataset in enumerate(project.datasets):
         if dataset.id == selected_dataset_id:
             selected = dataset
-        if not dataset.visible:
+        visible_in_scene = (
+            dataset.id == solo_dataset_id
+            if solo_dataset_id else dataset.visible
+        )
+        if not visible_in_scene:
             continue
         if dataset.time_min.size:
             time_candidates.append(float(dataset.time_min[-1] + dataset.x_shift_min))
@@ -381,7 +386,7 @@ def compose_base_screen_scene(
     if (
         (project.method.show_gradient_b or include_hidden_display_items)
         and selected is not None
-        and selected.visible
+        and selected.id in trace_by_id
         and selected.measurement.gradient
     ):
         points = sorted(selected.measurement.gradient, key=lambda point: point.time_min)
@@ -451,7 +456,11 @@ def compose_base_screen_scene(
         if not annotation.text.strip():
             continue
         dataset = datasets.get(annotation.dataset_id)
-        if dataset is not None and not dataset.visible:
+        visible_in_scene = dataset is None or (
+            dataset.id == solo_dataset_id
+            if solo_dataset_id else dataset.visible
+        )
+        if not visible_in_scene:
             continue
         text_annotations.append(
             ScreenTextAnnotationSpec(

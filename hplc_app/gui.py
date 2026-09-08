@@ -3696,7 +3696,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return left, left + span
 
     def _set_overview_x(self, limits):
-        """Change only the overview X window; clamp detail if it falls outside."""
+        """Change only the session-only overview X window."""
 
         data_left, data_right = self._full_x_bounds()
         left, right = sorted(float(value) for value in limits)
@@ -3709,8 +3709,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._overview_full_x,
             tuple(self.axes.get_xlim()),
         )
-        if overview.detail_x != tuple(self.axes.get_xlim()):
-            self.axes.set_xlim(*overview.detail_x)
         self._overview_window_state = overview
         self._apply_matplotlib_overview_window(overview)
         if self._screen_preview is not None:
@@ -5592,9 +5590,13 @@ class MainWindow(QtWidgets.QMainWindow):
             left, right = self._full_x_bounds()
             current = min(max(float(x_value), left), right)
             if abs(float(pixel) - drag["pixel"]) < 3.0 or current == drag["start"]:
-                self._center_detail_on(current)
                 return
-            self._set_overview_x((drag["start"], current))
+            self._push_view_history()
+            state = self._screen_view_state()
+            self._apply_view_state(replace(
+                state, x=tuple(sorted((drag["start"], current)))
+            ))
+            self.toolbar.set_history_buttons()
             return
         if self._vertical_marker_drag is not None:
             drag = self._vertical_marker_drag

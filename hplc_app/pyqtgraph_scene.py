@@ -107,6 +107,7 @@ class PyQtGraphSceneConsumer:
         self.overview_ratio = 0.25
         self.overview_ratio_changed = None
         self.overview_action_handler = None
+        self.overview_bounds_provider = None
         self._split_drag_active = False
         self._overview_drag_active = False
         if self.split_y_axes:
@@ -196,7 +197,7 @@ class PyQtGraphSceneConsumer:
         self.overview_scrollbar = qt_widgets.QScrollBar(
             orientation, self.widget.viewport()
         )
-        self.overview_scrollbar.setToolTip("Visible detail range")
+        self.overview_scrollbar.setToolTip("Move overview range")
         self.overview_scrollbar.valueChanged.connect(
             self._overview_scrollbar_changed
         )
@@ -299,17 +300,21 @@ class PyQtGraphSceneConsumer:
 
     def _sync_overview_scrollbar(self):
         full_left, full_right = self.overview_state.full_x
-        detail_left, detail_right = self.overview_state.detail_x
-        full_span = full_right - full_left
-        detail_span = min(detail_right - detail_left, full_span)
+        data_left, data_right = (
+            self.overview_bounds_provider()
+            if callable(self.overview_bounds_provider) else (full_left, full_right)
+        )
+        data_left, data_right = sorted((float(data_left), float(data_right)))
+        data_span = data_right - data_left
+        full_span = min(full_right - full_left, data_span)
         scale = 10000
-        page = scale if full_span <= 0 else max(
-            1, int(round(scale * detail_span / full_span))
+        page = scale if data_span <= 0 else max(
+            1, int(round(scale * full_span / data_span))
         )
         maximum = max(0, scale - page)
-        movable = max(full_span - detail_span, 0.0)
+        movable = max(data_span - full_span, 0.0)
         value = 0 if movable <= 0 else int(round(
-            maximum * (detail_left - full_left) / movable
+            maximum * (full_left - data_left) / movable
         ))
         self._overview_scroll_sync = True
         try:
@@ -323,13 +328,17 @@ class PyQtGraphSceneConsumer:
         if self._overview_scroll_sync or not self.overview_state.enabled:
             return
         full_left, full_right = self.overview_state.full_x
-        detail_left, detail_right = self.overview_state.detail_x
-        span = detail_right - detail_left
+        data_left, data_right = (
+            self.overview_bounds_provider()
+            if callable(self.overview_bounds_provider) else (full_left, full_right)
+        )
+        data_left, data_right = sorted((float(data_left), float(data_right)))
+        span = full_right - full_left
         maximum = self.overview_scrollbar.maximum()
-        movable = max((full_right - full_left) - span, 0.0)
+        movable = max((data_right - data_left) - span, 0.0)
         offset = 0.0 if maximum <= 0 else movable * float(value) / maximum
         self._overview_action(
-            "detail", (full_left + offset, full_left + offset + span)
+            "overview", (data_left + offset, data_left + offset + span)
         )
 
     def _split_drag_event(self, event_name, event, scene_position):

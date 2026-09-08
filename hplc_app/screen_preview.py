@@ -22,7 +22,9 @@ from .qt_compat import (
     USER_ROLE,
 )
 from .screen_events import ScreenPointerEvent
-from .screen_navigation import compose_overview_state
+from .screen_navigation import (
+    ScreenViewState, axis_pan_view, begin_axis_pan, compose_overview_state,
+)
 from .rendering import safe_manual_x_tick_spacing
 
 
@@ -40,6 +42,7 @@ class ExperimentalScreenPreview:
         self._move_target = None
         self._annotation_target = None
         self._zoom_drag = None
+        self._overview_pan = None
         self._legend = None
         self._legend_outside = False
         try:
@@ -56,6 +59,7 @@ class ExperimentalScreenPreview:
                 lambda ratio: setattr(owner, "_overview_split_ratio", ratio)
             )
             self.consumer.overview_action_handler = self._handle_overview_action
+            self.consumer.overview_bounds_provider = owner._full_x_bounds
             self.consumer.set_overview_tooltips(
                 owner.translator("overview_scrollbar_tooltip"),
                 owner.translator("overview_zoom_in_tooltip"),
@@ -88,6 +92,7 @@ class ExperimentalScreenPreview:
                         preview.cancel_move_drag()
                         preview.cancel_annotation_drag()
                         preview.cancel_zoom_drag()
+                        preview.cancel_overview_pan()
                     if event.type() == EVENT_LEAVE:
                         preview.consumer.set_pointer_cursor()
                         preview.owner._update_pointer_coordinates(
@@ -248,6 +253,41 @@ class ExperimentalScreenPreview:
             owner._push_view_history()
             owner._apply_view_state(replace(state, x=tuple(value)))
             owner.toolbar.set_history_buttons()
+        elif command == "overview":
+            owner._set_overview_x(value)
+
+    def _handle_overview_pan_event(self, name, event):
+        """Pan the overview in X without changing the detail view or history."""
+        owner = self.owner
+        pan = self._overview_pan
+        if pan is not None:
+            if name == "motion_notify_event" and event.button is None:
+                self._overview_pan = None
+                return True
+            if name not in ("motion_notify_event", "button_release_event"):
+                return True
+            try:
+                rectangle = self.consumer.pan_rectangle("x")
+                view = axis_pan_view(pan, event, rectangle.width(), rectangle.height())
+                owner._set_overview_x(view.x)
+            finally:
+                if name == "button_release_event":
+                    self._overview_pan = None
+            return True
+        if (
+            name == "button_press_event" and event.button == 1
+            and event.axis_role == "overview_y1"
+            and bool(owner.toolbar._actions["pan"].isChecked())
+            and not event.double_click
+        ):
+            state = owner._screen_view_state()
+            overview_view = ScreenViewState(
+                x=owner._current_overview_x(), y1=state.y1,
+                y2=state.y2, gradient=state.gradient,
+            )
+            self._overview_pan = begin_axis_pan(event, overview_view)
+            return self._overview_pan is not None
+        return False
 
     def _vertical_axis_width(self, axis, view, font):
         metrics = self.consumer.qt_gui.QFontMetricsF(font)
@@ -387,6 +427,9 @@ class ExperimentalScreenPreview:
             # renderer failure. Clearing the pending interaction is enough.
             pass
 
+    def cancel_overview_pan(self):
+        self._overview_pan = None
+
     def _handle_zoom_event(self, name, event):
         owner = self.owner
         drag = self._zoom_drag
@@ -463,19 +506,14 @@ class ExperimentalScreenPreview:
             )
             if click_only:
                 if role == "overview_y1":
-                    half_span = (state.x[1] - state.x[0]) / 2.0
-                    overview = compose_overview_state(
-                        True, self.consumer.overview_state.full_x,
-                        (values[0] - half_span, values[0] + half_span),
-                    )
-                    self.navigation._record_and_apply(
-                        replace(state, x=overview.detail_x)
-                    )
-                    owner._apply_view_state(self.consumer.capture_view_state())
-                    owner.toolbar.set_history_buttons()
+                    return True
                 return True
             if role == "overview_y1":
-                owner._set_overview_x((drag["start"][0], values[0]))
+                self.navigation._record_and_apply(replace(
+                    state, x=tuple(sorted((drag["start"][0], values[0])))
+                ))
+                owner._apply_view_state(self.consumer.capture_view_state())
+                owner.toolbar.set_history_buttons()
                 return True
             changes = {}
             if mode in ("x", "both"):
@@ -768,6 +806,8 @@ class ExperimentalScreenPreview:
                 return True
             if self._handle_zoom_event(name, event):
                 return True
+            if self._handle_overview_pan_event(name, event):
+                return True
             if self._handle_split_event(name, event):
                 return True
             if self._handle_move_event(name, event):
@@ -821,6 +861,7 @@ class ExperimentalScreenPreview:
 
     def close(self):
         self._span_drag = None
+        self.cancel_overview_pan()
         self.cancel_move_drag()
         self.cancel_annotation_drag()
         self.cancel_zoom_drag()

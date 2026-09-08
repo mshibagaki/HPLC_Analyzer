@@ -45,17 +45,9 @@ def compose_overview_state(
 ) -> ScreenOverviewState:
     full_left, full_right = _ordered_finite_limits(full_x)
     detail_left, detail_right = _ordered_finite_limits(detail_x)
-    full_span = full_right - full_left
-    detail_span = detail_right - detail_left
-    if full_span <= 0.0 or detail_span >= full_span:
-        detail_left, detail_right = full_left, full_right
-    else:
-        if detail_left < full_left:
-            detail_right += full_left - detail_left
-            detail_left = full_left
-        if detail_right > full_right:
-            detail_left -= detail_right - full_right
-            detail_right = full_right
+    # The overview is an independent viewport. Keep the detail rectangle in
+    # its data coordinates even when it lies partly outside the overview; the
+    # renderer clips it naturally at the overview edge.
     return ScreenOverviewState(
         enabled=bool(enabled),
         full_x=(full_left, full_right),

@@ -78,6 +78,8 @@ Issue #267 adds a physical confirmation to that desktop-view gate: drag the over
 
 Issue #268 adds a physical confirmation to that desktop-view gate: in native Zoom mode, double-click after several view changes and compare it with Back; then drag X, Y1 and split-view Y2 axis bands, including releasing outside the plot, and confirm only the indicated axis changes and the rectangle communicates that direction.
 
+Issue #280 adds a physical confirmation to that desktop-view gate: pan, wheel-zoom, and move the overview scrollbar after narrowing the overview range; confirm only the upper range moves and its detail rectangle may clip at the edge. Then use an overview rectangle zoom and confirm it changes only the lower range as one Back-history step, while an overview click makes no change.
+
 Issue #252 adds a physical confirmation to the print-path gate: confirm the wider first-page margins prevent Y-axis-title clipping without making the chromatogram impractically narrow, and that the preview, printed report and PDF share the same reduced columns, fixed-format µV·sec areas, and nmol/µg quantities.
 
 ## Automated or offscreen evidence already available

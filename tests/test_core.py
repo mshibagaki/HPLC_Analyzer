@@ -882,7 +882,7 @@ class AnalysisTests(unittest.TestCase):
         )
         self.assertIsNone(history.navigate("invalid", home))
 
-    def test_overview_state_orders_and_clamps_detail_range(self):
+    def test_overview_state_orders_without_moving_detail_range(self):
         state = compose_overview_state(
             enabled=True,
             full_x=(20.0, 0.0),
@@ -890,7 +890,7 @@ class AnalysisTests(unittest.TestCase):
         )
         self.assertIsInstance(state, ScreenOverviewState)
         self.assertEqual(state.full_x, (0.0, 20.0))
-        self.assertEqual(state.detail_x, (13.0, 20.0))
+        self.assertEqual(state.detail_x, (18.0, 25.0))
         self.assertTrue(state.enabled)
         with self.assertRaises(ValueError):
             compose_overview_state(True, (0.0, float("nan")), (1.0, 2.0))

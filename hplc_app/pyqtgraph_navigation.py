@@ -49,8 +49,6 @@ class PyQtGraphNavigationController:
     def _bounded_state(self, state):
         previous = self.consumer.overview_state
         overview = compose_overview_state(previous.enabled, previous.full_x, state.x)
-        if overview.enabled:
-            state = replace(state, x=overview.detail_x)
         return state, overview
 
     def _apply(self, state):
@@ -134,15 +132,9 @@ class PyQtGraphNavigationController:
             self._scroll(event)
         elif name == "button_press_event" and event.button == 1:
             if event.axis_role == "overview_y1":
-                center = event.data_for("overview_y1")[0]
-                if center is not None:
-                    state = self.consumer.capture_view_state()
-                    half_span = (state.x[1] - state.x[0]) / 2.0
-                    overview = compose_overview_state(
-                        True, self.consumer.overview_state.full_x,
-                        (center - half_span, center + half_span),
-                    )
-                    self._record_and_apply(replace(state, x=overview.detail_x))
+                # Overview clicks are reserved for its pan/zoom gestures.
+                # A plain click must not recenter the detail viewport.
+                pass
             elif event.double_click:
                 self.navigate("back")
             elif self.pan_enabled:

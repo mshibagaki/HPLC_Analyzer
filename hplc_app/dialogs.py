@@ -1773,13 +1773,34 @@ class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
     def display_option(self, option, index):
         styled = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(styled, index)
-        mode = (
+        style = (
+            styled.widget.style()
+            if styled.widget is not None
+            else QtWidgets.QApplication.style()
+        )
+        text_element = (
+            QtWidgets.QStyle.SubElement.SE_ItemViewItemText
+            if QT_API == 6
+            else QtWidgets.QStyle.SE_ItemViewItemText
+        )
+        text_rect = style.subElementRect(
+            text_element, styled, styled.widget
+        )
+        left_elide = (
             QtCore.Qt.TextElideMode.ElideLeft
             if QT_API == 6
             else QtCore.Qt.ElideLeft
         )
         styled.text = styled.fontMetrics.elidedText(
-            styled.text, mode, styled.rect.width()
+            styled.text, left_elide, max(0, text_rect.width())
+        )
+        # drawControl otherwise applies the view's default right elision to
+        # this already left-elided text, collapsing a path to little more than
+        # ellipsis characters on some Windows styles.
+        styled.textElideMode = (
+            QtCore.Qt.TextElideMode.ElideNone
+            if QT_API == 6
+            else QtCore.Qt.ElideNone
         )
         return styled
 

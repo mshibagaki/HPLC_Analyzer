@@ -7057,12 +7057,19 @@ class GuiTests(unittest.TestCase):
             option = QtWidgets.QStyleOptionViewItem()
             option.rect = QtCore.QRect(0, 0, width, 24)
             option.widget = dialog.table
-            text = delegate.display_option(
+            displayed_option = delegate.display_option(
                 option, dialog.table.model().index(0, dialog.SOURCE_COLUMN)
-            ).text
+            )
+            text = displayed_option.text
             displayed.append(text)
             self.assertNotEqual(text, source_path)
             self.assertTrue(source_path.endswith(text.lstrip(".…")))
+            no_elide = (
+                QtCore.Qt.TextElideMode.ElideNone
+                if QT_API == 6
+                else QtCore.Qt.ElideNone
+            )
+            self.assertEqual(displayed_option.textElideMode, no_elide)
         self.assertNotEqual(displayed[0], displayed[1])
         dialog.close()
         window.project.dirty = False

@@ -3341,21 +3341,23 @@ Matplotlib は実際の目盛ラベルに合わせて詰めるので、そちら
 - [x] 単独表示の状態がプロジェクトに保存されない（保存・再オープンで解除、同テスト）
 - [x] 保存済みの列順を持つ利用者にも新しい列が出る（末尾へ追加、`test_legacy_dataset_column_order_drops_source_without_reordering`）
 - [x] 列インデックス定数を振り直していない（新しい論理列は末尾、同テスト）
-- [ ] **「元ファイル」の症状が実機で再現し、その条件が Issue に記録されている**
-- [ ] 再現条件に対する修正が入り、フルパスの右端が読める
-- [ ] ツールチップにフルパスが出る
+- [x] **「元ファイル」の症状が実機で再現し、その条件が Issue に記録されている**（2026-09-08 提供画像と Issue コメント）
+- [x] 再現条件に対する修正が入り、フルパスの右端が読める（左省略後の再省略を禁止、`test_batch_dialog_source_path_elides_left_at_resized_widths`）
+- [x] ツールチップにフルパスが出る（`test_hidden_source_path_is_available_in_conditions_input`）
 - [x] ch1 系が青から緑、ch2 系が黄色から赤の範囲で、5 本以上でも色が被りにくい（各8色、`test_default_trace_colors_follow_channel_families`）
 - [x] 黄色系が白背景で読める明度になっている（WCAGコントラスト比 3.0 以上、同テスト）
 - [x] 配色の解決順（明示色 → チャンネル既定 → パレット）が変わっていない（`test_trace_colors_prefer_explicit_values_then_channel_defaults`）
 - [x] 明示色を持つトレースの色が変わらない（同テスト）
-- [ ] 既存プロジェクトの見た目がどう変わるかを PR に書いている
+- [x] 既存プロジェクトの見た目がどう変わるかを PR に書いている（PR #279）
 - [x] `REQUIREMENTS_STATUS.md` を更新する
 
-実装候補の検証: Windows 11 x64/Python 3.11.9 で 398 テスト成功（332.876秒）、
+実装候補の検証: Windows 11 x64/Python 3.11.9 で 398 テスト成功（619.418秒）、
 ネイティブ描画パリティは全11機能 supported、`ci_validate.py --offline-assets auto` は
 成功。統合画面ベンチマークは native 0.1345秒、legacy 0.1375秒（legacy/native 1.022）、
 raw 配列 hash は不変。明示色のない既存トレースは、新しい8色のチャンネル既定色へ変わる。
-元ファイルの実機再現・修正は未着手であり、この Issue は未完了のままとする。
+元ファイル列は、左省略済み文字列へ Qt 標準スタイルが右省略を重ねて `.....` に
+潰していた。実際のセル本文幅で左省略を一度だけ行い、その後に再省略されないよう
+修正した。提供画像の再現条件は Issue #270 に記録済み。
 
 対象ファイル: `hplc_app/gui.py`, `hplc_app/dialogs.py`, `hplc_app/rendering.py`,
 `hplc_app/settings_store.py`, `hplc_app/i18n.py`,

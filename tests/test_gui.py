@@ -9235,7 +9235,7 @@ class GuiTests(unittest.TestCase):
         window = self.make_window()
         self.assertEqual(window.dataset_data_group.title(), "データ")
         self.assertEqual(window.dataset_analysis_group.title(), "解析")
-        self.assertEqual(window.spectrum_display_group.title(), "スペクトル表示")
+        self.assertEqual(window.spectrum_display_group.title(), "クロマトグラム表示")
         data_order = (
             window.import_button,
             window.remove_button,
@@ -9296,7 +9296,13 @@ class GuiTests(unittest.TestCase):
         window.set_language("en")
         self.assertEqual(window.dataset_data_group.title(), "Data")
         self.assertEqual(window.dataset_analysis_group.title(), "Analysis")
-        self.assertEqual(window.spectrum_display_group.title(), "Spectrum display")
+        self.assertEqual(window.spectrum_display_group.title(), "Chromatogram display")
+        japanese = Translator("ja")
+        english = Translator("en")
+        self.assertEqual(japanese("change_color"), "トレース色")
+        self.assertEqual(japanese("mouse_mode_move_trace"), "トレース移動")
+        self.assertEqual(japanese("move_trace"), "トレース移動")
+        self.assertEqual(english("spectrum_display_group"), "Chromatogram display")
         self.assertEqual(
             [button.text() for button in analysis_order[:2]],
             ["Measurement / sample conditions input", "Display settings"],

@@ -242,12 +242,14 @@ class ExperimentalScreenPreview:
     def _handle_overview_action(self, command, value=None):
         owner = self.owner
         if command == "zoom_in":
-            owner._zoom_overview(0.8)
+            owner._zoom_overview_y(0.8)
         elif command == "zoom_out":
-            owner._zoom_overview(1.25)
+            owner._zoom_overview_y(1.25)
         elif command == "home":
             owner._overview_full_x = None
+            owner._overview_full_y = None
             owner._set_overview_x(owner._full_x_bounds())
+            owner._set_overview_y(owner._overview_y_bounds())
         elif command == "detail":
             state = self.consumer.capture_view_state()
             owner._push_view_history()

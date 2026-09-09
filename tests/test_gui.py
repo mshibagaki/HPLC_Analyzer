@@ -5966,7 +5966,7 @@ class GuiTests(unittest.TestCase):
             shortcut.key().toString().lower(): shortcut
             for shortcut in window._view_shortcuts
         }
-        self.assertEqual(sorted(shortcuts), ["w", "x", "y"])
+        self.assertEqual(sorted(shortcuts), ["a", "i", "p", "s", "w", "x", "y", "z"])
 
         def zoom_in():
             window.axes.set_xlim(5.0, 12.0)
@@ -5999,6 +5999,14 @@ class GuiTests(unittest.TestCase):
                     by_button,
                 )
                 self.assertIn(key.upper(), button.toolTip())
+
+        for key, mode in (("i", "integrate"), ("s", "split_peak"),
+                          ("z", "zoom"), ("p", "normal"), ("a", "select")):
+            with self.subTest(key=key), patch.object(
+                window, "_set_mouse_mode_from_shortcut"
+            ) as set_mode:
+                shortcuts[key].activated.emit()
+                set_mode.assert_called_once_with(mode)
 
         # A shortcut consumes its key before the focused widget sees it, so the
         # single letters have to be disabled outright while text is edited.

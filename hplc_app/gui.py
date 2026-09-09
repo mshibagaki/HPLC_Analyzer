@@ -650,6 +650,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._overview_split_ratio = 0.25
         self._overview_split_drag = None
         self._overview_full_x = None
+        self._overview_full_y = None
         self._overview_secondary_view_patch = None
         self._overview_window_state = ScreenOverviewState(
             enabled=False,
@@ -1537,8 +1538,7 @@ class MainWindow(QtWidgets.QMainWindow):
         display_controls.addWidget(self.show_retention_checkbox, 4, 0, 1, 2)
         display_controls.addWidget(self.show_gradient_checkbox, 5, 0, 1, 2)
         display_controls.addWidget(self.show_grid_checkbox, 6, 0, 1, 2)
-        display_controls.addWidget(self.annotation_button, 7, 0, 1, 2)
-        display_controls.setRowStretch(8, 1)
+        display_controls.setRowStretch(7, 1)
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
@@ -2211,8 +2211,32 @@ class MainWindow(QtWidgets.QMainWindow):
         return True
 
     # Single letters, so they must never be swallowed while text is being typed.
-    VIEW_SHORTCUT_KEYS = (("x", "_reset_x_view"), ("y", "_reset_y_view"),
-                          ("w", "_reset_view"))
+    VIEW_SHORTCUT_KEYS = (
+        ("x", "_reset_x_view"), ("y", "_reset_y_view"),
+        ("w", "_reset_view"), ("i", "_shortcut_integrate"),
+        ("s", "_shortcut_split_peak"), ("z", "_shortcut_zoom"),
+        ("p", "_shortcut_pan"), ("a", "_shortcut_select"),
+    )
+
+    def _set_mouse_mode_from_shortcut(self, mode):
+        index = self.mouse_mode_combo.findData(mode)
+        if index >= 0:
+            self.mouse_mode_combo.setCurrentIndex(index)
+
+    def _shortcut_integrate(self):
+        self._set_mouse_mode_from_shortcut("integrate")
+
+    def _shortcut_split_peak(self):
+        self._set_mouse_mode_from_shortcut("split_peak")
+
+    def _shortcut_zoom(self):
+        self._set_mouse_mode_from_shortcut("zoom")
+
+    def _shortcut_pan(self):
+        self._set_mouse_mode_from_shortcut("normal")
+
+    def _shortcut_select(self):
+        self._set_mouse_mode_from_shortcut("select")
 
     def _install_view_shortcuts(self):
         """Bind x / y / w to the existing full-view buttons, both renderers.
@@ -3697,6 +3721,25 @@ class MainWindow(QtWidgets.QMainWindow):
         left = min(max(left, data_left), data_right - span)
         return left, left + span
 
+    def _overview_y_bounds(self):
+        if self.axes_overview is None:
+            return tuple(self.axes.get_ylim())
+        lower, upper = self.axes_overview.dataLim.intervaly
+        if not (math.isfinite(lower) and math.isfinite(upper)) or lower >= upper:
+            return tuple(self.axes.get_ylim())
+        return float(lower), float(upper)
+
+    def _current_overview_y(self):
+        data_low, data_high = self._overview_y_bounds()
+        if self._overview_full_y is None:
+            return data_low, data_high
+        low, high = sorted(float(value) for value in self._overview_full_y)
+        span = min(high - low, data_high - data_low)
+        if span <= 0.0:
+            return data_low, data_high
+        low = min(max(low, data_low), data_high - span)
+        return low, low + span
+
     def _set_overview_x(self, limits):
         """Change only the session-only overview X window."""
 
@@ -3719,11 +3762,33 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         self._request_canvas_draw(throttled=True, refresh_series=True)
 
+    def _set_overview_y(self, limits):
+        """Change only the session-only overview Y window."""
+        data_low, data_high = self._overview_y_bounds()
+        low, high = sorted(float(value) for value in limits)
+        minimum_span = max((data_high - data_low) * 1e-6, 1e-9)
+        span = min(max(high - low, minimum_span), data_high - data_low)
+        low = min(max(low, data_low), data_high - span)
+        self._overview_full_y = (low, low + span)
+        if self.axes_overview is not None:
+            self.axes_overview.set_ylim(*self._overview_full_y)
+        if self._screen_preview is not None:
+            self._screen_preview.consumer.overview.setYRange(
+                *self._overview_full_y, padding=0.0
+            )
+        self._request_canvas_draw(throttled=True, refresh_series=True)
+
     def _zoom_overview(self, factor, center=None):
         limits = self._current_overview_x()
         if center is None:
             center = sum(limits) / 2.0
         self._set_overview_x(self._scaled_limits(limits, factor, center))
+
+    def _zoom_overview_y(self, factor, center=None):
+        limits = self._current_overview_y()
+        if center is None:
+            center = sum(limits) / 2.0
+        self._set_overview_y(self._scaled_limits(limits, factor, center))
 
     def _apply_matplotlib_overview_window(self, state):
         if not state.enabled or self.axes_overview is None:
@@ -3731,6 +3796,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._overview_secondary_view_patch = None
             return
         self.axes_overview.set_xlim(*state.full_x)
+        self.axes_overview.set_ylim(*self._current_overview_y())
         if self._overview_view_patch is not None:
             try:
                 left, right = state.detail_x
@@ -5919,8 +5985,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         factor = 0.8 if event.button == "up" else 1.25
         if event.axis_role == "overview_y1":
-            center_x, _unused = event.data_for("overview_y1")
-            self._zoom_overview(factor, center_x)
+            _unused, center_y = event.data_for("overview_y1")
+            self._zoom_overview_y(factor, center_y)
             return
         configured_mode = self.project.method.zoom_axis
         if configured_mode != "auto":

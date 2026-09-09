@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-09 (Issues #291-#293 delivered; Issue #290 planned)
+Updated: 2026-09-09 (Issues #290-#293 delivered)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -80,7 +80,7 @@ Windows 11 field use on `c1fd86a` produced nine more requests, grouped into four
 
 | Issue | Affected row | What is actually wrong |
 |---|---|---|
-| #290 | Selection and display | The overview panel's plus/minus buttons and wheel both reach one function that scales the X window, and no Y window exists at all, so the panel cannot be zoomed vertically. The x / y / w shortcuts are bound to the window and always act on the detail axes, ignoring where the pointer is. There are no shortcuts for switching mouse mode, and the text-label button appears both in the display panel and on the toolbar |
+| #290 | Selection and display | Delivered: the overview's plus/minus controls and wheel scale a session-only Y window clamped to the existing data bounds; x/y/w reset the overview when its pointer was most recently active while leaving the detail view unchanged; i/s/z/p/a select the existing integration/split/zoom/pan/select modes through the shared combo binding; and the text-label action remains on the toolbar and Edit menu but no longer duplicates in the Display panel. No project schema or scientific data changes |
 
 Issue #291 makes saturated-peak correction request a manual saturated range before every fit, initially showing the selected integration range. The GUI always passes that accepted range to the existing fitter, so automatic saturation detection is not part of the correction execution path; cancelling leaves the project unchanged. `detect_saturated_span` remains available to its direct core callers and tests. An explicitly supplied range may therefore be used on a peak that automatic detection would have considered unsaturated; this intentionally withdraws the earlier automatic-warning requirement. No calculation, project schema, raw data, dependency, or Windows 7 offline-build input changes. Issue #292 keeps its independent 3D typography and preview scaling in `ThreeDPlotOptions` and dialog state only, so opening or exporting 3D plots never writes the 2D method or a project file. Issue #293 gives every default output filename a timestamp through one shared helper, since seven separate save dialogs currently offer fixed names.
 

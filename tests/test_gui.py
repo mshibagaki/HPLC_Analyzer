@@ -3932,6 +3932,33 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_overview_y_zoom_is_session_only_and_leaves_detail_unchanged(self):
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            detail_before = tuple(window.axes.get_ylim())
+            overview_before = window._current_overview_y()
+            window._zoom_overview_y(0.8)
+            self.assertLess(
+                window._current_overview_y()[1] - window._current_overview_y()[0],
+                overview_before[1] - overview_before[0],
+            )
+            self.assertEqual(tuple(window.axes.get_ylim()), detail_before)
+            window._set_overview_y((-1.0e99, 1.0e99))
+            self.assertEqual(window._current_overview_y(), overview_before)
+            window._zoom_overview(0.8)
+            window._zoom_overview_y(0.8)
+            window._overview_shortcut_active = True
+            window._reset_view()
+            self.assertEqual(window._current_overview_x(), window._full_x_bounds())
+            self.assertEqual(window._current_overview_y(), overview_before)
+            self.assertEqual(tuple(window.axes.get_ylim()), detail_before)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_text_label_drag_hit_testing_and_persistence(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
@@ -5966,7 +5993,7 @@ class GuiTests(unittest.TestCase):
             shortcut.key().toString().lower(): shortcut
             for shortcut in window._view_shortcuts
         }
-        self.assertEqual(sorted(shortcuts), ["w", "x", "y"])
+        self.assertEqual(sorted(shortcuts), ["a", "i", "p", "s", "w", "x", "y", "z"])
 
         def zoom_in():
             window.axes.set_xlim(5.0, 12.0)
@@ -5999,6 +6026,14 @@ class GuiTests(unittest.TestCase):
                     by_button,
                 )
                 self.assertIn(key.upper(), button.toolTip())
+
+        for key, mode in (("i", "integrate"), ("s", "split_peak"),
+                          ("z", "zoom"), ("p", "normal"), ("a", "select")):
+            with self.subTest(key=key), patch.object(
+                window, "_set_mouse_mode_from_shortcut"
+            ) as set_mode:
+                shortcuts[key].activated.emit()
+                set_mode.assert_called_once_with(mode)
 
         # A shortcut consumes its key before the focused widget sees it, so the
         # single letters have to be disabled outright while text is edited.

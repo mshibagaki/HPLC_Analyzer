@@ -3959,6 +3959,119 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_view_resets_follow_pointer_after_overview_wheel_in_both_renderers(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            self.app.processEvents()
+            shortcuts = {
+                shortcut.key().toString().lower(): shortcut
+                for shortcut in window._view_shortcuts
+            }
+
+            def narrow_detail():
+                state = window._screen_view_state()
+                narrowed = replace(
+                    state,
+                    x=(5.0, 12.0),
+                    y1=(-10.0, 10.0),
+                    y2=(-20.0, 20.0) if state.y2 is not None else None,
+                )
+                window._apply_view_state(narrowed)
+                return narrowed
+
+            def route_to_detail(renderer):
+                overview_x = sum(window._current_overview_x()) / 2.0
+                overview_y = sum(window._current_overview_y()) / 2.0
+                if renderer == "pyqtgraph":
+                    preview = window._screen_preview
+                    preview.handle_event(
+                        "scroll_event",
+                        ScreenPointerEvent(
+                            button="up",
+                            axis_role="overview_y1",
+                            hit_region="x",
+                            data_coordinates=(
+                                ("overview_y1", overview_x, overview_y),
+                            ),
+                        ),
+                    )
+                    self.assertTrue(window._overview_shortcut_active)
+                    preview.handle_event(
+                        "motion_notify_event",
+                        ScreenPointerEvent(
+                            axis_role="y1",
+                            hit_region="plot",
+                            data_coordinates=(("y1", 8.0, 0.0),),
+                        ),
+                    )
+                    self.assertFalse(window._overview_shortcut_active)
+                    preview.handle_event(
+                        "motion_notify_event", ScreenPointerEvent()
+                    )
+                else:
+                    window._on_scroll(SimpleNamespace(
+                        button="up", inaxes=window.axes_overview,
+                        x=None, y=None, xdata=overview_x, ydata=overview_y,
+                    ))
+                    self.assertTrue(window._overview_shortcut_active)
+                    window._on_canvas_motion(SimpleNamespace(
+                        button=None, inaxes=window.axes,
+                        x=None, y=None, xdata=8.0, ydata=0.0,
+                    ))
+                    self.assertFalse(window._overview_shortcut_active)
+                    window._on_canvas_motion(SimpleNamespace(
+                        button=None, inaxes=None,
+                        x=None, y=None, xdata=None, ydata=None,
+                    ))
+                # Leaving the canvas keeps the last valid destination.
+                self.assertFalse(window._overview_shortcut_active)
+
+            actions = (
+                ("shortcut-x", lambda: shortcuts["x"].activated.emit(), "x"),
+                ("shortcut-y", lambda: shortcuts["y"].activated.emit(), "y"),
+                ("shortcut-w", lambda: shortcuts["w"].activated.emit(), "w"),
+                ("button-x", window.reset_x_view_button.click, "x"),
+                ("button-y", window.reset_y_view_button.click, "y"),
+                ("button-w", window.reset_view_button.click, "w"),
+            )
+            for renderer, preview_enabled in (
+                ("matplotlib", False),
+                ("pyqtgraph", True),
+            ):
+                window.screen_preview_checkbox.setChecked(preview_enabled)
+                self.app.processEvents()
+                for name, action, reset_axis in actions:
+                    with self.subTest(renderer=renderer, action=name):
+                        narrowed = narrow_detail()
+                        route_to_detail(renderer)
+                        action()
+                        self.app.processEvents()
+                        result = window._screen_view_state()
+                        if reset_axis in ("x", "w"):
+                            self.assertEqual(result.x, window._full_x_bounds())
+                        else:
+                            self.assertEqual(result.x, narrowed.x)
+                        if reset_axis in ("y", "w"):
+                            self.assertNotEqual(result.y1, narrowed.y1)
+                        else:
+                            self.assertEqual(result.y1, narrowed.y1)
+
+            # Moving outside directly from the overview also preserves it.
+            window._update_pointer_coordinates(ScreenPointerEvent(
+                axis_role="overview_y1"
+            ))
+            window._update_pointer_coordinates(ScreenPointerEvent())
+            self.assertTrue(window._overview_shortcut_active)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_preview_text_label_drag_hit_testing_and_persistence(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")

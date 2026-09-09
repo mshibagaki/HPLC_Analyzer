@@ -1330,7 +1330,7 @@ class AnalytePresetRegistrationDialog(QtWidgets.QDialog):
 
 
 class SaturatedRangeDialog(QtWidgets.QDialog):
-    """Name the flat top by hand when automatic detection does not find it."""
+    """Name the flat top by hand before saturated-peak correction."""
 
     def __init__(self, start_min, end_min, language="ja", parent=None, initial=None):
         super().__init__(parent)

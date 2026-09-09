@@ -10156,6 +10156,11 @@ class GuiTests(unittest.TestCase):
 
         with patch.object(
             QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ), patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
+            SaturatedRangeDialog,
+            "saturated_range",
+            new_callable=PropertyMock,
+            return_value=(4.94, 5.06),
         ):
             window.correct_saturated_peak()
 
@@ -10228,6 +10233,11 @@ class GuiTests(unittest.TestCase):
         span = SaturatedSpan(4.2, 5.8, 12)
         with patch.object(
             QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ), patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
+            SaturatedRangeDialog,
+            "saturated_range",
+            new_callable=PropertyMock,
+            return_value=(4.2, 5.8),
         ), patch("hplc_app.gui.fit_saturated_peak", return_value=(result, span)), patch.object(
             QtWidgets.QMessageBox, "warning"
         ) as warning:
@@ -10239,7 +10249,7 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
-    def test_saturation_correction_refuses_an_unsaturated_peak(self):
+    def test_saturation_correction_always_requests_a_manual_range(self):
         window = self.make_window()
         dataset = window.project.datasets[0]
         window.peak_table.selectRow(0)
@@ -10247,30 +10257,27 @@ class GuiTests(unittest.TestCase):
 
         with patch.object(
             QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
-        ), patch.object(
-            QtWidgets.QMessageBox,
-            "question",
-            return_value=QtWidgets.QMessageBox.No,
-        ) as question:
+        ), patch("hplc_app.gui.dialog_exec", return_value=False) as dialog_exec_mock, patch.object(
+            SaturatedRangeDialog, "__init__", return_value=None
+        ) as dialog_init, patch("hplc_app.gui.fit_saturated_peak") as fit:
             window.correct_saturated_peak()
 
-        # It stops and offers the manual range instead of inventing a result.
-        question.assert_called_once()
-        self.assertIn(
-            window.translator("not_saturated"), question.call_args.args[2]
+        dialog_exec_mock.assert_called_once()
+        dialog_init.assert_called_once_with(
+            dataset.peaks[0].start_min,
+            dataset.peaks[0].end_min,
+            window._application_language,
+            window,
+            initial=(dataset.peaks[0].start_min, dataset.peaks[0].end_min),
         )
+        fit.assert_not_called()
         self.assertEqual(len(dataset.fitted_peaks), before)
 
-        # Accepting the offer and naming a range does produce one fitted row.
+        # An explicitly named range is used even when automatic detection would
+        # have rejected this otherwise unsaturated peak.
         with patch.object(
             QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
-        ), patch.object(
-            QtWidgets.QMessageBox,
-            "question",
-            return_value=QtWidgets.QMessageBox.Yes,
-        ), patch(
-            "hplc_app.gui.dialog_exec", return_value=True
-        ), patch.object(
+        ), patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
             SaturatedRangeDialog,
             "saturated_range",
             new_callable=PropertyMock,
@@ -10289,6 +10296,11 @@ class GuiTests(unittest.TestCase):
         window, dataset = self._saturated_window()
         with patch.object(
             QtWidgets.QInputDialog, "getItem", return_value=("Gaussian", True)
+        ), patch("hplc_app.gui.dialog_exec", return_value=True), patch.object(
+            SaturatedRangeDialog,
+            "saturated_range",
+            new_callable=PropertyMock,
+            return_value=(4.94, 5.06),
         ):
             window.correct_saturated_peak()
         fitted = dataset.fitted_peaks[0]

@@ -9862,6 +9862,19 @@ class GuiTests(unittest.TestCase):
         after = window.right_splitter.sizes()
         self.assertNotEqual(before, after)
         self.assertGreater(after[0], after[1])
+        self.assertEqual(window.analysis_splitter.count(), 2)
+        self.assertFalse(window.analysis_splitter.childrenCollapsible())
+        analysis_before = window.analysis_splitter.sizes()
+        window.analysis_splitter.setSizes((200, 80))
+        self.app.processEvents()
+        analysis_after = window.analysis_splitter.sizes()
+        self.assertNotEqual(analysis_before, analysis_after)
+        self.assertGreaterEqual(
+            window.analysis_splitter.widget(0).minimumHeight(), 150
+        )
+        self.assertGreaterEqual(
+            window.analysis_splitter.widget(1).minimumHeight(), 80
+        )
         window.project.dirty = False
         window.close()
 

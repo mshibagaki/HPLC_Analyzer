@@ -1,6 +1,6 @@
 # Windows 11 実機フィードバック 対応ワークフロー
 
-Updated: 2026-09-09 (ヲ・ン・2 巡目ア行) rev.15 — #280-#282 完了／かなの記号が一巡
+Updated: 2026-09-09 (ウ²・エ²) rev.16 — #290-#293 完了／#301-#302 完了
 
 Windows 11 実機での動作確認によって提出された修正要求を、Claude と Codex の
 どちらが担当しても同じ手順・同じ粒度で実装できるようにするための計画文書です。
@@ -4309,3 +4309,383 @@ dpi = min(ウィジェット幅 / 出力幅(in), ウィジェット高 / 出力�
 | 上書き | **確認したうえで上書きしてよい**（2026-09-09 利用者判断） |
 | かなの記号 | **一巡したので、ヲ・ン のあとは 2 巡目のア行（ア²・イ²…）を使う** |
 | 今回のスキーマ変更 | **なし**。4 バッチのいずれも `.hplcproj` の形式を変えない |
+
+---
+
+## 24. 事前調査で判明した技術的事実（ウ²・エ²）
+
+`main` = `02008fd` 時点です。**行番号ではなく関数名で探してください。**
+計測環境はこれまでと同じ Windows 11 の `.venv-win11-x64` です。
+
+### 24.1 表示リセットが効かなくなった理由（確定・再現済み）
+
+ヲ(#290) は「カーソルが上部画面にあるとき `x` / `y` / `w` を上部画面に効かせる」
+ために、`_overview_shortcut_active` というフラグを入れました。3 つのリセットが
+先頭でこれを見ます。
+
+```python
+    def _reset_x_view(self):
+        if getattr(self, "_overview_shortcut_active", False):
+            self._overview_full_x = None
+            self._set_overview_x(self._full_x_bounds())
+            return
+        ...
+```
+
+**このフラグを更新する場所は 2 か所しかありません。**
+
+```python
+    def _normalized_pointer_event(self, event, hit_region=""):
+        ...
+        self._overview_shortcut_active = normalized.axis_role == "overview_y1"
+```
+
+```python
+    def _on_scroll(self, event):
+        if not isinstance(event, ScreenPointerEvent):
+            event = self._normalized_pointer_event(...)
+        self._overview_shortcut_active = event.axis_role == "overview_y1"
+```
+
+**問題は 1 つ目が PyQtGraph 経路から届かないことです。** ポインター事象を受ける
+`_on_canvas_press` / `_on_canvas_motion` / `_on_canvas_release` は、いずれも
+
+```python
+        if not isinstance(event, ScreenPointerEvent):
+            event = self._normalized_pointer_event(event)
+```
+
+という形で正規化しています。**`screen_preview` は `ScreenPointerEvent` を
+そのまま渡すので**（`owner._on_canvas_motion(event)`）、この分岐に入らず
+`_normalized_pointer_event` は呼ばれません。**Windows 11 の既定は PyQtGraph なので、
+マウスを動かしてもフラグは一切更新されません。**
+
+残るのは `_on_scroll` の 1 行だけです。ここは `isinstance` の分岐の**外**にあるので
+両方の経路で走ります。つまり、
+
+- 上部画面でホイールを回す → フラグが **True** になる
+- そのあとマウスをどこへ動かしてもフラグは **True のまま**
+- 以後、全体表示・X軸全体・Y軸全体のボタンも `x` / `y` / `w` も、**すべて上部画面に
+  向かい、詳細表示は動かない**
+
+**「全体+拡大」が既定表示（モ #251）なので、利用者は上部画面でホイールを回します。**
+一度回した時点で、リセット系がまとめて死にます。
+
+オフスクリーンで再現しました。
+
+```text
+view_mode              : overview_detail
+renderer preview active: True
+_overview_shortcut_active (initial): <unset>
+
+initial x  : (0.0, 30.0)
+zoomed x   : (10.0, 14.0)
+after reset: (0.0, 30.0)          ← フラグが未設定なら正常に戻る
+
+with _overview_shortcut_active=True, after reset: (10.0, 14.0)
+=> detail view left untouched（「効かない」ように見える）
+```
+
+対処方針: **フラグの更新をポインター移動でも行えるようにしてください。**
+`_on_canvas_motion` は `ScreenPointerEvent` を受け取るので、
+`isinstance` の分岐の外で `event.axis_role` を見れば済みます
+（`_on_scroll` が既にその形です）。
+
+> **要判断。** そもそもフラグ方式を続けるかどうか。**既定案は「`_on_canvas_motion`
+> でも更新する」**で、変更は最小です。ただし**カーソルが画面の外へ出たときに
+> どうするか**を決める必要があります（既定案は「最後の位置を保つ」）。
+> 「上部画面に入ったときだけ上部画面に効く」という条件をより厳密にしたい場合は、
+> 押した瞬間の位置で決める方式も考えられます。Issue にコメントしてください。
+
+**回帰テストを必ず入れてください。** 「ホイールを上部画面で回したあと、詳細表示で
+`w` が効く」という順序を固定する形が確実です。
+
+### 24.2 上部画面の拡大縮小が第 1 軸にしか効かない理由（確定）
+
+```python
+    def _set_overview_y(self, limits):
+        """Change only the session-only overview Y window."""
+        data_low, data_high = self._overview_y_bounds()
+        ...
+        self._overview_full_y = (low, low + span)
+        if self.axes_overview is not None:
+            self.axes_overview.set_ylim(*self._overview_full_y)
+        if self._screen_preview is not None:
+            self._screen_preview.consumer.overview.setYRange(
+                *self._overview_full_y, padding=0.0
+            )
+```
+
+**触っているのは第 1 軸だけです。** 第 2 軸の器は既にあります
+（`axes_overview_right` と `consumer.overview_secondary`）が、
+ここでは一切操作していません。`_overview_y_bounds` も
+`self.axes_overview.dataLim.intervaly`、つまり**第 1 軸のデータ範囲**しか見ません。
+
+要求は 2 つに分かれます。
+
+1. **上部画面は、第 1 軸と第 2 軸のどちらも「表示領域の最大ピーク」で y を
+   規格化する**
+2. **拡大縮小の操作が、第 1 軸にも第 2 軸にも等しく効く**
+
+対処方針: **拡大率を絶対値（µV）ではなく、各軸のデータ範囲に対する割合として
+持ってください。** 現在の `_overview_full_y` は第 1 軸の絶対値なので、そのまま
+第 2 軸へ渡すと桁が違って意味を成しません。割合で持てば、1 回の操作で両軸に
+同じだけ効き、規格化のルールとも噛み合います。
+
+- 各軸の「表示領域の最大ピーク」は、X 窓（`_current_overview_x()`）の中で
+  各軸のトレースを走査して求めます。**`_scene_y_limits(scene, role, x_range)` が
+  既にあります**（テ #216 で入れたもの）。**新しい走査を書かないでください。**
+- 第 2 軸を持つデータセットが無いときは、第 2 軸側を触らないこと。
+
+### 24.3 表示モードを切り替えても上部画面の行が詰まらない理由（確定）
+
+表示を切り替えるとき、コンシューマは**見えなくするだけ**です。
+
+```python
+        self.overview.setVisible(overview_state.enabled)
+        self.overview_handle.setVisible(overview_state.enabled)
+        self.overview_secondary.setVisible(overview_state.enabled and self._has_y2)
+        ...
+        self._set_overview_controls_visible(overview_state.enabled)
+```
+
+一方、行の取り分は `set_overview_ratio` が決めています。
+
+```python
+    def set_overview_ratio(self, ratio):
+        self.overview_ratio = min(0.85, max(0.15, float(ratio)))
+        layout = self.widget.ci.layout
+        scale = 1000
+        layout.setRowStretchFactor(0, int(round(self.overview_ratio * scale)))
+        layout.setRowStretchFactor(2, int(round((1.0 - self.overview_ratio) * scale)))
+```
+
+**`setVisible(False)` は中身を消すだけで、行の取り分（stretch factor）は
+残ります。** そのため上部が空白のまま空きます。報告と一致します。
+
+対処方針: **オーバービューを無効にするとき、行 0 と仕切り行の取り分を 0 に
+してください。** `layout.setRowStretchFactor(0, 0)` と、必要なら
+`layout.setRowFixedHeight(0, 0)` を併用します。有効に戻すときは
+`set_overview_ratio` の値へ戻すこと。
+
+Matplotlib 側は `_plot` が `add_gridspec` を作り直すので、この問題はありません。
+**PyQtGraph 側だけの修正です。**
+
+### 24.4 スクロールバーは上部の X に 1 本だけ（確定）
+
+ヲ(#290) が入れたのは 1 本です。
+
+```python
+        self.overview_scrollbar = qt_widgets.QScrollBar(...)
+        self.overview_scrollbar.valueChanged.connect(
+            self._overview_scrollbar_changed
+        )
+```
+
+位置はリサイズ時に `setGeometry` で手当てし、表示は
+`_set_overview_controls_visible` が切り替えます。**この作りがそのまま雛形に
+なります。**
+
+要求は 3 本の追加です。
+
+| 追加 | 対象 | 動かすもの |
+|---|---|---|
+| 上部 Y | オーバービュー | `_overview_full_y`（第 24.2 節の割合） |
+| 下部 X | 詳細表示 | `state.x` |
+| 下部 Y | 詳細表示 | `state.y1`（と分割時は `y2`） |
+
+対処方針: **4 本が同じ作りになるよう、1 つのヘルパーにまとめてください。**
+個別に `setGeometry` と `valueChanged` を書くと、位置合わせと再入防止
+（`_overview_scroll_sync` に相当するもの）が 4 通りに散らばります。
+
+- 詳細表示側は `ScreenViewState` の `x` / `y1` / `y2` を動かします。
+  **`_apply_view_state` を通してください。** 直接 `set_xlim` しないこと。
+- 表示範囲を変えるとスクロールバーの位置と長さも更新が要ります。
+  **循環しないよう、既存の `_overview_scroll_sync` と同じ再入ガードを
+  かけてください。**
+- **Matplotlib 描画のときにどうするかを決めてください。** 現在のスクロールバーは
+  PyQtGraph のコンシューマが持っています。**既定案は「PyQtGraph 側のみ。
+  Matplotlib 描画では出さない」**です。
+
+### 24.5 解析欄とピーク表の間には仕切りが無い（確定）
+
+`analysis_panel` は素の `QVBoxLayout` です。
+
+```python
+        analysis_panel = QtWidgets.QWidget()
+        analysis_layout = QtWidgets.QVBoxLayout(analysis_panel)
+        ...
+        analysis_layout.addLayout(controls)        # 表示 / 移動・ズーム / 積分
+        ...
+        analysis_layout.addWidget(self.peak_title)
+        ...
+        analysis_layout.addWidget(self.peak_table, 1)
+        analysis_panel.setMinimumHeight(250)
+        self.right_splitter.addWidget(analysis_panel)
+```
+
+**`controls` と `peak_table` の間に仕切りがありません。**
+
+対処方針: `controls` を `QWidget` に包み、ピーク表側（`peak_title` +
+`peak_table`）も包んで、**縦の `QSplitter` に入れてください。**
+`right_splitter`（描画パネル ↔ 解析パネル）と同じ作りです。**新しい仕組みは
+要りません。**
+
+- 両方に `setMinimumHeight` を与えて、どちらも潰れないようにすること
+- `analysis_panel.setMinimumHeight(250)` との関係を確認すること
+- **比率はセッション限りにします**（テ #216 / ヲ #290 の決定に揃える）。
+  スキーマは触りません。
+
+---
+
+## 25. バッチ定義（ウ²・エ²）
+
+今回は 5 件の要求を 2 バッチにまとめました。**回帰の修正を独立させ、先に
+マージできるようにしています。**
+
+### 25.0 実施順と依存関係
+
+```
+ウ²(#301) ──► エ²(#302)      （ウ² が上部画面への振り分けを直し、エ² がその上に載る）
+```
+
+| 記号 | Issue | 内容 | 優先 | 依存 |
+|---|---|---|---|---|
+| ウ² | #301 | 表示リセットとショートカットの回帰修正 | **最高** | なし |
+| エ² | #302 | 上部画面の第 2 軸ズーム・行の詰め・スクロールバー・解析欄の仕切り | 高 | #301 |
+
+**依存の理由**
+
+- **ウ² → エ²**: ウ² が `_overview_shortcut_active` の更新経路を直します。
+  エ² は上部画面の Y ズームを両軸に広げるので、**振り分けが直っていないと
+  受け入れ条件を実機で確認できません。** また両方とも `gui.py` の上部画面まわりを
+  触るので、並行させると衝突します。
+- **ウ² は単独で小さく、先にマージできる形にしてあります。** 回帰なので
+  他の作業を待たせないでください。
+
+---
+
+### ウ² — 表示リセットとショートカットの回帰修正
+
+**Issue: #301** / **依存なし** / バッチ「エ²」(#302) の前提 / **最優先**
+
+方針: **上部画面への振り分けを、ホイールだけでなくポインター移動でも更新する。**
+
+対象要求
+- 全体表示・X軸全体・Y軸全体、そして `x` / `y` / `w` のショートカットが
+  **まったく効かなくなっている**のを直す
+
+受け入れ条件
+- [ ] 上部画面でホイールを回したあとでも、詳細表示で `w` が全体表示に戻る
+- [ ] `x` / `y` が同様に詳細表示に効く
+- [ ] 全体表示・X軸全体・Y軸全体の**ボタン**も同様に効く
+- [ ] カーソルが上部画面にあるとき、`x` / `y` / `w` が上部画面に効く（ヲ #290 の要求を維持）
+- [ ] カーソルが詳細表示にあるとき、上部画面ではなく詳細表示に効く
+- [ ] **PyQtGraph 描画で確認されている**（既定の描画方式）
+- [ ] Matplotlib 描画でも同じ挙動になる
+- [ ] カーソルが画面の外にあるときの扱いが決まっており、テストで固定されている
+- [ ] **「上部画面でホイール → 詳細表示で `w`」という順序を固定する回帰テストがある**
+- [ ] `REQUIREMENTS_STATUS.md` を更新する
+
+対象ファイル: `hplc_app/gui.py`, `tests/test_gui.py`
+
+注意
+- **第 24.1 節に原因と再現結果があります。確定です。**
+- 原因は「`_overview_shortcut_active` を更新する 1 つ目の経路
+  （`_normalized_pointer_event`）が、PyQtGraph 経路では呼ばれない」ことです。
+  `_on_canvas_press` / `_on_canvas_motion` / `_on_canvas_release` は
+  `if not isinstance(event, ScreenPointerEvent):` で正規化しており、
+  **`screen_preview` は `ScreenPointerEvent` をそのまま渡します。**
+- **`_on_scroll` が既に `isinstance` の分岐の外でフラグを更新しています。**
+  同じ形を `_on_canvas_motion` にも入れるのが最小の変更です。
+- **回帰テストを必ず入れてください。** 合成イベント列で「上部画面のホイール →
+  詳細表示で `w`」の順序を固定する形が確実です。
+- **スキーマは触りません。**
+
+---
+
+### エ² — 上部画面の第 2 軸ズーム・行の詰め・スクロールバー・解析欄の仕切り
+
+**Issue: #302** / **依存: #301（ウ²）**
+
+方針: **上部画面を両軸で扱えるようにし、要らないときは場所を明け渡し、
+表示範囲をスクロールバーでも動かせるようにする。**
+
+対象要求
+- 上部画面の拡大縮小が第 1 軸にしか効いていない。**第 1 軸と第 2 軸のどちらも
+  「表示領域の最大ピーク」で y を規格化するルールに従ったうえで、拡大縮小の操作が
+  第 1 軸にも第 2 軸にも等しく効く**ようにする
+- 表示モードを 1 画面や 2 画面に切り替えたとき、**上部画面の部分が空白になるだけで
+  詰めてくれない**のを直す
+- 上部のスクロールバーは x 軸のみでなく **y 軸のものも追加**。さらに
+  **下部画面にも同様に x / y 軸のスクロールバーを導入**する
+- 「表示・移動・ズーム・積分」と「積分/フィットピーク」の間にも**バーを設置して
+  スペース配分を調整できる**ようにする
+
+受け入れ条件
+- [ ] 上部画面の第 1 軸と第 2 軸が、それぞれ表示範囲内の最大ピークで規格化される
+- [ ] 上部画面の拡大縮小（`+` / `-` とホイール）が第 1 軸と第 2 軸に等しく効く
+- [ ] 第 2 軸を持つデータセットが無いときは、第 2 軸側を触らない
+- [ ] 拡大率が絶対値ではなく各軸のデータ範囲に対する割合で保たれている
+- [ ] 表示モードを 1 画面・2 画面へ切り替えると、上部画面の領域が**詰まる**
+- [ ] 「全体+拡大」へ戻すと、上部画面が元の比率で復帰する
+- [ ] 上部画面の仕切り（ヲ #290）が退行していない
+- [ ] 上部画面に y 軸のスクロールバーがある
+- [ ] 下部画面に x 軸と y 軸のスクロールバーがある
+- [ ] スクロールバーの位置と長さが、現在の表示範囲と一致する
+- [ ] スクロールバーで動かした結果が、パン・ズームの結果と食い違わない
+- [ ] スクロールバーと表示範囲が互いを呼び合って循環しない
+- [ ] Matplotlib 描画でのスクロールバーの扱いが決まっている
+- [ ] 「表示・移動・ズーム・積分」と「積分/フィットピーク」の間をドラッグして比率を変えられる
+- [ ] どちらの領域も潰れない下限がある
+- [ ] 比率がセッション限りで、プロジェクトに保存されない
+- [ ] `REQUIREMENTS_STATUS.md` を更新する
+
+対象ファイル: `hplc_app/gui.py`, `hplc_app/pyqtgraph_scene.py`,
+`hplc_app/screen_preview.py`, `hplc_app/i18n.py`, `tests/test_gui.py`
+
+注意
+- **第 24.2・24.3・24.4・24.5 節に確定した内容があります。**
+- **Y の拡大率は割合で持ってください**（第 24.2 節）。現在の `_overview_full_y` は
+  第 1 軸の絶対値（µV）なので、そのまま第 2 軸へ渡すと桁が違って意味を成しません。
+- **表示範囲内の最大ピークは `_scene_y_limits(scene, role, x_range)` で求まります**
+  （テ #216）。**新しい走査を書かないでください。**
+- 行が詰まらないのは **`setVisible(False)` が行の取り分を消さない**ためです
+  （第 24.3 節）。`setRowStretchFactor(0, 0)` で明け渡し、有効時に
+  `set_overview_ratio` の値へ戻してください。**Matplotlib 側は `add_gridspec` を
+  作り直すので影響ありません。**
+- スクロールバーは **4 本が同じ作りになるよう 1 つのヘルパーにまとめてください**
+  （第 24.4 節）。既存の `overview_scrollbar` と `_overview_scroll_sync` が雛形です。
+  詳細表示側は **`_apply_view_state` を通すこと**（直接 `set_xlim` しない）。
+- 解析欄の仕切りは **`right_splitter` と同じ `QSplitter` の作り**で足ります
+  （第 24.5 節）。**新しい仕組みは要りません。**
+- **比率はいずれもセッション限りです**（テ #216 / ヲ #290 の決定に揃える）。
+  **スキーマは触りません。**
+
+---
+
+## 26. 未決定事項（ウ²・エ²）
+
+| 項目 | 内容 | 既定案 | 判断者 |
+|---|---|---|---|
+| 振り分けの方式 | ウ²節（第 24.1 節）。フラグ方式を続けるか、押した瞬間の位置で決めるか | **フラグ方式のまま。`_on_canvas_motion` でも更新する（変更が最小）** | 実装時に Issue へコメント |
+| カーソルが画面外のとき | ウ²節。ウィンドウの外へ出たあとのショートカットの行き先 | **最後の位置を保つ** | 実装時に決めてテストで固定 |
+| 第 2 軸が無いとき | エ²節（第 24.2 節）。Y2 のデータセットが無い場合の上部画面 | **第 2 軸側を触らない。第 1 軸だけ規格化する** | 実装時に決めてテストで固定 |
+| 上部画面の Y 規格化の基準 | エ²節。「表示領域」は X 窓の中か、詳細表示の X 範囲の中か | **上部画面の X 窓の中**（上部画面が見せている範囲） | 実装時に決めてテストで固定 |
+| 行を明け渡す方法 | エ²節（第 24.3 節）。stretch を 0 にするか、固定高さ 0 も併用するか | **stretch を 0 にし、必要なら `setRowFixedHeight(0, 0)` を併用** | 実装時に決める |
+| Matplotlib でのスクロールバー | エ²節（第 24.4 節）。Matplotlib 描画でも出すか | **出さない。PyQtGraph 側のみ** | 実装時に Issue へコメント |
+| 分割表示でのスクロールバー | エ²節。Y1 / Y2 の 2 画面のとき、Y のスクロールバーを何本にするか | **各パネルに 1 本ずつ** | 実装時に決めてテストで固定 |
+| 解析欄の仕切りの下限 | エ²節（第 24.5 節）。どこまで潰せるようにするか | **既存の分割と同じ考え方で、両方に `setMinimumHeight` を与える** | 実装時に決める |
+
+### 決定済み（ウ²・エ²）
+
+| 項目 | 決定 |
+|---|---|
+| 回帰の優先度 | **最優先**。ウ²(#301) を単独で先にマージする。他の作業を待たせない |
+| 上部画面のズームの対象 | **第 1 軸と第 2 軸の両方に等しく効く**（2026-09-09 利用者判断） |
+| 上部画面の Y 規格化 | **各軸とも表示領域の最大ピークで規格化する**（2026-09-09 利用者判断） |
+| 表示モード切り替え時の上部画面 | **領域を詰める**（2026-09-09 利用者判断）。空白のまま残さない |
+| スクロールバーの本数 | **上部に X・Y、下部にも X・Y の計 4 本**（2026-09-09 利用者判断） |
+| 解析欄とピーク表の仕切り | **設置する**（2026-09-09 利用者判断）。`right_splitter` と同じ作り |
+| 比率の保存 | **保存しない**。上部画面の比率も解析欄の比率もセッション限り |
+| 今回のスキーマ変更 | **なし**。2 バッチとも `.hplcproj` の形式を変えない |

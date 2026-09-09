@@ -80,6 +80,8 @@ Issue #268 adds a physical confirmation to that desktop-view gate: in native Zoo
 
 Issue #280 adds a physical confirmation to that desktop-view gate: pan, wheel-zoom, and move the overview scrollbar after narrowing the overview range; confirm only the upper range moves and its detail rectangle may clip at the edge. Then use an overview rectangle zoom and confirm it changes only the lower range as one Back-history step, while an overview click makes no change.
 
+Issues #301 and #302 add a physical confirmation to that desktop-view gate: after using the overview wheel, move the pointer to the detail plot and confirm x/y/w plus all three reset buttons target the detail again; then confirm overview Y1/Y2 scale together, single/split modes leave no blank overview row, all four native X/Y scrollbars track and move their ranges, and the analysis-controls/peak-table divider remains draggable without collapsing either section.
+
 Issue #252 adds a physical confirmation to the print-path gate: confirm the wider first-page margins prevent Y-axis-title clipping without making the chromatogram impractically narrow, and that the preview, printed report and PDF share the same reduced columns, fixed-format µV·sec areas, and nmol/µg quantities.
 
 ## Automated or offscreen evidence already available

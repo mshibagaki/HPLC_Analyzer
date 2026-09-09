@@ -59,9 +59,9 @@ class ExperimentalScreenPreview:
                 lambda ratio: setattr(owner, "_overview_split_ratio", ratio)
             )
             self.consumer.overview_action_handler = self._handle_overview_action
-            self.consumer.overview_bounds_provider = owner._full_x_bounds
+            self.consumer.scroll_bounds_provider = owner._screen_scroll_bounds
             self.consumer.set_overview_tooltips(
-                owner.translator("overview_scrollbar_tooltip"),
+                owner.translator("navigation_scrollbar_tooltip"),
                 owner.translator("overview_zoom_in_tooltip"),
                 owner.translator("overview_zoom_out_tooltip"),
                 owner.translator("overview_home_tooltip"),
@@ -233,6 +233,7 @@ class ExperimentalScreenPreview:
                 else:
                     self.consumer.set_span_selection()
             self.consumer.apply_view_state(state, overview_state)
+            owner._apply_overview_y_ranges()
         finally:
             self._busy = False
 
@@ -255,8 +256,16 @@ class ExperimentalScreenPreview:
             owner._push_view_history()
             owner._apply_view_state(replace(state, x=tuple(value)))
             owner.toolbar.set_history_buttons()
-        elif command == "overview":
+        elif command == "overview_x":
             owner._set_overview_x(value)
+        elif command == "overview_y":
+            owner._set_overview_y(value)
+        elif command == "detail_x":
+            owner._apply_view_state(replace(
+                self.consumer.capture_view_state(), x=tuple(value)
+            ))
+        elif command == "detail_y":
+            owner._set_detail_y_from_primary(value)
 
     def _handle_overview_pan_event(self, name, event):
         """Pan the overview in X without changing the detail view or history."""

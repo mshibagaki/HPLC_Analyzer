@@ -2440,7 +2440,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_screen_preview_notice()
         if self._screen_preview is not None:
             self._screen_preview.consumer.set_overview_tooltips(
-                t("overview_scrollbar_tooltip"),
+                t("navigation_scrollbar_tooltip"),
                 t("overview_zoom_in_tooltip"),
                 t("overview_zoom_out_tooltip"),
                 t("overview_home_tooltip"),
@@ -3735,24 +3735,95 @@ class MainWindow(QtWidgets.QMainWindow):
         left = min(max(left, data_left), data_right - span)
         return left, left + span
 
-    def _overview_y_bounds(self):
-        if self.axes_overview is None:
-            return tuple(self.axes.get_ylim())
-        lower, upper = self.axes_overview.dataLim.intervaly
-        if not (math.isfinite(lower) and math.isfinite(upper)) or lower >= upper:
-            return tuple(self.axes.get_ylim())
-        return float(lower), float(upper)
+    def _overview_y_bounds(self, role="y1"):
+        """Return one overview axis' data bounds inside its current X window."""
 
-    def _current_overview_y(self):
-        data_low, data_high = self._overview_y_bounds()
+        scene = getattr(self, "_screen_scene", None)
+        limits = (
+            self._scene_y_limits(scene, role, self._current_overview_x())
+            if scene is not None else None
+        )
+        if limits is not None:
+            return tuple(float(value) for value in limits)
+        if role == "y2":
+            return None
+        return tuple(float(value) for value in self.axes.get_ylim())
+
+    def _screen_scroll_bounds(self, name):
+        if name in ("overview_x", "detail_x"):
+            return self._full_x_bounds()
+        if name == "overview_y":
+            return self._overview_y_bounds("y1")
+        if name == "detail_y":
+            scene = getattr(self, "_screen_scene", None)
+            limits = (
+                self._scene_y_limits(scene, "y1", self._full_x_bounds())
+                if scene is not None else None
+            )
+            return limits if limits is not None else tuple(self.axes.get_ylim())
+        return None
+
+    def _set_detail_y_from_primary(self, limits):
+        """Pan detail Y1/Y2 to the same relative data position."""
+
+        state = self._screen_view_state()
+        primary_bounds = self._screen_scroll_bounds("detail_y")
+        low, high = sorted(float(value) for value in limits)
+        primary_span = min(high - low, primary_bounds[1] - primary_bounds[0])
+        primary_movable = max(
+            (primary_bounds[1] - primary_bounds[0]) - primary_span, 0.0
+        )
+        position = (
+            0.0 if primary_movable <= 0.0
+            else min(max((low - primary_bounds[0]) / primary_movable, 0.0), 1.0)
+        )
+        y1_low = primary_bounds[0] + position * primary_movable
+        y2 = state.y2
+        if y2 is not None:
+            scene = getattr(self, "_screen_scene", None)
+            secondary_bounds = (
+                self._scene_y_limits(scene, "y2", self._full_x_bounds())
+                if scene is not None else None
+            )
+            if secondary_bounds is not None:
+                secondary_span = min(
+                    abs(y2[1] - y2[0]),
+                    secondary_bounds[1] - secondary_bounds[0],
+                )
+                secondary_movable = max(
+                    (secondary_bounds[1] - secondary_bounds[0])
+                    - secondary_span,
+                    0.0,
+                )
+                y2_low = secondary_bounds[0] + position * secondary_movable
+                y2 = (y2_low, y2_low + secondary_span)
+        self._apply_view_state(replace(
+            state,
+            y1=(y1_low, y1_low + primary_span),
+            y2=y2,
+        ))
+
+    def _overview_y_fraction(self):
         if self._overview_full_y is None:
-            return data_low, data_high
+            return 0.0, 1.0
         low, high = sorted(float(value) for value in self._overview_full_y)
-        span = min(high - low, data_high - data_low)
+        span = min(high - low, 1.0)
         if span <= 0.0:
-            return data_low, data_high
-        low = min(max(low, data_low), data_high - span)
+            return 0.0, 1.0
+        low = min(max(low, 0.0), 1.0 - span)
         return low, low + span
+
+    def _current_overview_y(self, role="y1"):
+        bounds = self._overview_y_bounds(role)
+        if bounds is None:
+            return None
+        data_low, data_high = bounds
+        low_fraction, high_fraction = self._overview_y_fraction()
+        data_span = data_high - data_low
+        return (
+            data_low + data_span * low_fraction,
+            data_low + data_span * high_fraction,
+        )
 
     def _set_overview_x(self, limits):
         """Change only the session-only overview X window."""
@@ -3774,23 +3845,50 @@ class MainWindow(QtWidgets.QMainWindow):
             self._screen_preview.consumer.apply_view_state(
                 self._screen_view_state(), overview
             )
+            self._apply_overview_y_ranges()
         self._request_canvas_draw(throttled=True, refresh_series=True)
 
-    def _set_overview_y(self, limits):
-        """Change only the session-only overview Y window."""
-        data_low, data_high = self._overview_y_bounds()
+    def _set_overview_y(self, limits, role="y1"):
+        """Set the shared overview Y window from one axis' absolute limits."""
+
+        bounds = self._overview_y_bounds(role)
+        if bounds is None:
+            return
+        data_low, data_high = bounds
         low, high = sorted(float(value) for value in limits)
-        minimum_span = max((data_high - data_low) * 1e-6, 1e-9)
-        span = min(max(high - low, minimum_span), data_high - data_low)
-        low = min(max(low, data_low), data_high - span)
+        data_span = data_high - data_low
+        self._set_overview_y_fraction((
+            (low - data_low) / data_span,
+            (high - data_low) / data_span,
+        ))
+
+    def _set_overview_y_fraction(self, limits):
+        """Change both overview axes by the same session-only range fraction."""
+
+        low, high = sorted(float(value) for value in limits)
+        minimum_span = 1e-6
+        span = min(max(high - low, minimum_span), 1.0)
+        low = min(max(low, 0.0), 1.0 - span)
         self._overview_full_y = (low, low + span)
+        self._apply_overview_y_ranges()
+        self._request_canvas_draw(throttled=True, refresh_series=True)
+
+    def _apply_overview_y_ranges(self):
+        primary = self._current_overview_y("y1")
+        secondary = self._current_overview_y("y2")
         if self.axes_overview is not None:
-            self.axes_overview.set_ylim(*self._overview_full_y)
+            self.axes_overview.set_ylim(*primary)
+        if self.axes_overview_right is not None and secondary is not None:
+            self.axes_overview_right.set_ylim(*secondary)
         if self._screen_preview is not None:
             self._screen_preview.consumer.overview.setYRange(
-                *self._overview_full_y, padding=0.0
+                *primary, padding=0.0
             )
-        self._request_canvas_draw(throttled=True, refresh_series=True)
+            if secondary is not None:
+                self._screen_preview.consumer.overview_secondary.setYRange(
+                    *secondary, padding=0.0
+                )
+            self._screen_preview.consumer.sync_navigation_scrollbars()
 
     def _zoom_overview(self, factor, center=None):
         limits = self._current_overview_x()
@@ -3799,10 +3897,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_overview_x(self._scaled_limits(limits, factor, center))
 
     def _zoom_overview_y(self, factor, center=None):
-        limits = self._current_overview_y()
+        limits = self._overview_y_fraction()
         if center is None:
             center = sum(limits) / 2.0
-        self._set_overview_y(self._scaled_limits(limits, factor, center))
+        else:
+            data_low, data_high = self._overview_y_bounds("y1")
+            center = (float(center) - data_low) / (data_high - data_low)
+        self._set_overview_y_fraction(
+            self._scaled_limits(limits, factor, center)
+        )
 
     def _apply_matplotlib_overview_window(self, state):
         if not state.enabled or self.axes_overview is None:
@@ -3810,7 +3913,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._overview_secondary_view_patch = None
             return
         self.axes_overview.set_xlim(*state.full_x)
-        self.axes_overview.set_ylim(*self._current_overview_y())
+        self.axes_overview.set_ylim(*self._current_overview_y("y1"))
+        secondary_y = self._current_overview_y("y2")
+        if self.axes_overview_right is not None and secondary_y is not None:
+            self.axes_overview_right.set_ylim(*secondary_y)
         if self._overview_view_patch is not None:
             try:
                 left, right = state.detail_x

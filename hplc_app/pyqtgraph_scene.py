@@ -107,7 +107,6 @@ class PyQtGraphSceneConsumer:
         self.overview_ratio = 0.25
         self.overview_ratio_changed = None
         self.overview_action_handler = None
-        self.overview_bounds_provider = None
         self._split_drag_active = False
         self._overview_drag_active = False
         if self.split_y_axes:
@@ -190,17 +189,34 @@ class PyQtGraphSceneConsumer:
         self._pointer_handler = None
         self.overview_state = ScreenOverviewState(False, (0.0, 1.0), (0.0, 1.0))
         self._overview_scroll_sync = False
-        orientation = getattr(
-            getattr(self.qt_core.Qt, "Orientation", self.qt_core.Qt),
-            "Horizontal",
-        )
-        self.overview_scrollbar = qt_widgets.QScrollBar(
-            orientation, self.widget.viewport()
-        )
-        self.overview_scrollbar.setToolTip("Move overview range")
-        self.overview_scrollbar.valueChanged.connect(
-            self._overview_scrollbar_changed
-        )
+        self.scroll_bounds_provider = None
+        orientations = getattr(self.qt_core.Qt, "Orientation", self.qt_core.Qt)
+        horizontal = getattr(orientations, "Horizontal")
+        vertical = getattr(orientations, "Vertical")
+        self.navigation_scrollbars = {}
+        for name, orientation in (
+            ("overview_x", horizontal),
+            ("overview_y", vertical),
+            ("detail_x", horizontal),
+            ("detail_y", vertical),
+        ):
+            scrollbar = qt_widgets.QScrollBar(
+                orientation, self.widget.viewport()
+            )
+            scrollbar.setToolTip("Move visible range")
+            if orientation == vertical:
+                scrollbar.setInvertedAppearance(True)
+            scrollbar.valueChanged.connect(
+                lambda value, target=name: self._scrollbar_changed(
+                    target, value
+                )
+            )
+            self.navigation_scrollbars[name] = scrollbar
+        # Preserve the public name used by the existing overview tests.
+        self.overview_scrollbar = self.navigation_scrollbars["overview_x"]
+        self.overview_y_scrollbar = self.navigation_scrollbars["overview_y"]
+        self.detail_x_scrollbar = self.navigation_scrollbars["detail_x"]
+        self.detail_y_scrollbar = self.navigation_scrollbars["detail_y"]
         self.overview_buttons = []
         for text, command, tooltip in (
             ("+", "zoom_in", "Zoom overview in"),
@@ -215,6 +231,7 @@ class PyQtGraphSceneConsumer:
             )
             self.overview_buttons.append(button)
         self._set_overview_controls_visible(False)
+        self._set_detail_controls_visible(False)
         self._install_pointer_filter()
         if not self.split_y_axes:
             self.set_overview_ratio(self.overview_ratio)
@@ -233,12 +250,8 @@ class PyQtGraphSceneConsumer:
         if not self.split_y_axes:
             return
         self.split_ratio = min(0.85, max(0.15, float(ratio)))
+        self._apply_plot_row_stretches()
         layout = self.widget.ci.layout
-        scale = 1000
-        layout.setRowStretchFactor(2, int(round(self.split_ratio * scale)))
-        layout.setRowStretchFactor(
-            4, int(round((1.0 - self.split_ratio) * scale))
-        )
         layout.invalidate()
         layout.activate()
         if hasattr(self, "gradient_layers"):
@@ -249,22 +262,50 @@ class PyQtGraphSceneConsumer:
         """Resize overview/detail without persisting the session-only ratio."""
 
         self.overview_ratio = min(0.85, max(0.15, float(ratio)))
+        self._apply_plot_row_stretches()
         layout = self.widget.ci.layout
-        scale = 1000
-        layout.setRowStretchFactor(0, int(round(self.overview_ratio * scale)))
-        layout.setRowStretchFactor(2, int(round((1.0 - self.overview_ratio) * scale)))
         layout.invalidate()
         layout.activate()
         self.widget.update()
         if callable(self.overview_ratio_changed):
             self.overview_ratio_changed(self.overview_ratio)
 
+    def _apply_plot_row_stretches(self):
+        """Allocate only visible plot rows while retaining session ratios."""
+
+        enabled = bool(
+            getattr(self, "overview_state", None)
+            and self.overview_state.enabled
+        )
+        scale = 1000
+        overview_share = self.overview_ratio if enabled else 0.0
+        detail_share = 1.0 - overview_share
+        layout = self.widget.ci.layout
+        layout.setRowStretchFactor(0, int(round(overview_share * scale)))
+        layout.setRowStretchFactor(1, 0)
+        if self.split_y_axes:
+            layout.setRowStretchFactor(
+                2, int(round(detail_share * self.split_ratio * scale))
+            )
+            layout.setRowStretchFactor(3, 0)
+            layout.setRowStretchFactor(
+                4,
+                int(round(detail_share * (1.0 - self.split_ratio) * scale)),
+            )
+        else:
+            layout.setRowStretchFactor(2, int(round(detail_share * scale)))
+
+        handle_height = 8.0 if enabled else 0.0
+        self.overview_handle.setMinimumHeight(handle_height)
+        self.overview_handle.setMaximumHeight(handle_height)
+
     def _overview_action(self, command, value=None):
         if callable(self.overview_action_handler):
             self.overview_action_handler(command, value)
 
     def set_overview_tooltips(self, scrollbar, zoom_in, zoom_out, home):
-        self.overview_scrollbar.setToolTip(scrollbar)
+        for control in self.navigation_scrollbars.values():
+            control.setToolTip(scrollbar)
         for button, tooltip in zip(
             self.overview_buttons, (zoom_in, zoom_out, home)
         ):
@@ -272,11 +313,17 @@ class PyQtGraphSceneConsumer:
 
     def _set_overview_controls_visible(self, visible):
         self.overview_scrollbar.setVisible(bool(visible))
+        self.overview_y_scrollbar.setVisible(bool(visible))
         for button in self.overview_buttons:
             button.setVisible(bool(visible))
 
+    def _set_detail_controls_visible(self, visible):
+        self.detail_x_scrollbar.setVisible(bool(visible))
+        self.detail_y_scrollbar.setVisible(bool(visible))
+
     def _layout_overview_controls(self):
         if not getattr(self, "overview_state", None) or not self.overview_state.enabled:
+            self._layout_detail_scrollbars()
             return
         rectangle = self.overview.vb.sceneBoundingRect()
         top_left = self.widget.mapFromScene(rectangle.topLeft())
@@ -292,18 +339,73 @@ class PyQtGraphSceneConsumer:
                 size, size,
             )
             button.raise_()
+        vertical_width = 18
         scroll_width = max(0, button_left - left - 2 * margin)
         self.overview_scrollbar.setGeometry(
             left + margin, bottom - margin - 18, scroll_width, 18
         )
         self.overview_scrollbar.raise_()
-
-    def _sync_overview_scrollbar(self):
-        full_left, full_right = self.overview_state.full_x
-        data_left, data_right = (
-            self.overview_bounds_provider()
-            if callable(self.overview_bounds_provider) else (full_left, full_right)
+        scroll_top = int(top_left.y()) + margin
+        scroll_height = max(0, bottom - scroll_top - size - 2 * margin)
+        self.overview_y_scrollbar.setGeometry(
+            right - margin - vertical_width,
+            scroll_top,
+            vertical_width,
+            scroll_height,
         )
+        self.overview_y_scrollbar.raise_()
+
+        self._layout_detail_scrollbars()
+
+    def _layout_detail_scrollbars(self):
+        if not hasattr(self, "detail_x_scrollbar"):
+            return
+        detail_rectangle = self.primary.vb.sceneBoundingRect()
+        detail_top_left = self.widget.mapFromScene(detail_rectangle.topLeft())
+        detail_bottom_right = self.widget.mapFromScene(
+            detail_rectangle.bottomRight()
+        )
+        detail_left = int(detail_top_left.x())
+        detail_right = int(detail_bottom_right.x())
+        detail_top = int(detail_top_left.y())
+        detail_bottom = int(detail_bottom_right.y())
+        margin = 4
+        vertical_width = 18
+        self.detail_x_scrollbar.setGeometry(
+            detail_left + margin,
+            detail_bottom - margin - 18,
+            max(0, detail_right - detail_left - vertical_width - 3 * margin),
+            18,
+        )
+        self.detail_y_scrollbar.setGeometry(
+            detail_right - margin - vertical_width,
+            detail_top + margin,
+            vertical_width,
+            max(0, detail_bottom - detail_top - 18 - 3 * margin),
+        )
+        self.detail_x_scrollbar.raise_()
+        self.detail_y_scrollbar.raise_()
+
+    def _scrollbar_window_and_bounds(self, name):
+        windows = {
+            "overview_x": self._range_tuple(self.overview.viewRange()[0]),
+            "overview_y": self._range_tuple(self.overview.viewRange()[1]),
+            "detail_x": self._range_tuple(self.primary.viewRange()[0]),
+            "detail_y": self._range_tuple(self.primary.viewRange()[1]),
+        }
+        window = windows[name]
+        bounds = (
+            self.scroll_bounds_provider(name)
+            if callable(self.scroll_bounds_provider) else window
+        )
+        return window, bounds
+
+    def _sync_scrollbar(self, name):
+        (full_left, full_right), bounds = self._scrollbar_window_and_bounds(name)
+        if bounds is None:
+            self.navigation_scrollbars[name].setVisible(False)
+            return
+        data_left, data_right = bounds
         data_left, data_right = sorted((float(data_left), float(data_right)))
         data_span = data_right - data_left
         full_span = min(full_right - full_left, data_span)
@@ -318,27 +420,33 @@ class PyQtGraphSceneConsumer:
         ))
         self._overview_scroll_sync = True
         try:
-            self.overview_scrollbar.setRange(0, maximum)
-            self.overview_scrollbar.setPageStep(page)
-            self.overview_scrollbar.setValue(min(max(value, 0), maximum))
+            scrollbar = self.navigation_scrollbars[name]
+            scrollbar.setRange(0, maximum)
+            scrollbar.setPageStep(page)
+            scrollbar.setValue(min(max(value, 0), maximum))
         finally:
             self._overview_scroll_sync = False
 
-    def _overview_scrollbar_changed(self, value):
-        if self._overview_scroll_sync or not self.overview_state.enabled:
+    def sync_navigation_scrollbars(self):
+        for name in self.navigation_scrollbars:
+            self._sync_scrollbar(name)
+
+    def _scrollbar_changed(self, name, value):
+        if self._overview_scroll_sync:
             return
-        full_left, full_right = self.overview_state.full_x
-        data_left, data_right = (
-            self.overview_bounds_provider()
-            if callable(self.overview_bounds_provider) else (full_left, full_right)
-        )
+        if name.startswith("overview_") and not self.overview_state.enabled:
+            return
+        (full_left, full_right), bounds = self._scrollbar_window_and_bounds(name)
+        if bounds is None:
+            return
+        data_left, data_right = bounds
         data_left, data_right = sorted((float(data_left), float(data_right)))
         span = full_right - full_left
-        maximum = self.overview_scrollbar.maximum()
+        maximum = self.navigation_scrollbars[name].maximum()
         movable = max((data_right - data_left) - span, 0.0)
         offset = 0.0 if maximum <= 0 else movable * float(value) / maximum
         self._overview_action(
-            "overview", (data_left + offset, data_left + offset + span)
+            name, (data_left + offset, data_left + offset + span)
         )
 
     def _split_drag_event(self, event_name, event, scene_position):
@@ -546,6 +654,7 @@ class PyQtGraphSceneConsumer:
                 view.setXRange(*self.primary.viewRange()[0], padding=0.0)
             finally:
                 self.primary.vb.blockLink(False)
+        self._layout_detail_scrollbars()
 
     def pan_rectangle(self, target):
         view = self.secondary if target in ("y2", "plot_y2") else self.primary.vb
@@ -1308,6 +1417,9 @@ class PyQtGraphSceneConsumer:
     ):
         """Apply backend-neutral navigation state to the optional renderer."""
         self.overview_state = overview_state
+        self._apply_plot_row_stretches()
+        self.widget.ci.layout.invalidate()
+        self.widget.ci.layout.activate()
         self._has_y2 = view_state.y2 is not None
         self._has_gradient = view_state.gradient is not None
         self.primary.setXRange(*view_state.x, padding=0.0)
@@ -1325,6 +1437,7 @@ class PyQtGraphSceneConsumer:
             overview_state.enabled and self._has_y2
         )
         self._set_overview_controls_visible(overview_state.enabled)
+        self._set_detail_controls_visible(True)
         if overview_state.enabled:
             self.overview.setXRange(*overview_state.full_x, padding=0.0)
             left, right = overview_state.detail_x
@@ -1339,7 +1452,7 @@ class PyQtGraphSceneConsumer:
                     min(left, right), min(y2_bottom, y2_top),
                     abs(right - left), abs(y2_top - y2_bottom),
                 ))
-            self._sync_overview_scrollbar()
+        self.sync_navigation_scrollbars()
 
         self._sync_auxiliary_views()
         self._sync_overview_view()

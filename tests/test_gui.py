@@ -3959,6 +3959,187 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_overview_y_zoom_uses_the_same_fraction_for_both_axes(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            y1_bounds = window._overview_y_bounds("y1")
+            y2_bounds = window._overview_y_bounds("y2")
+            self.assertIsNotNone(y2_bounds)
+            window._zoom_overview_y(0.8)
+            for role, bounds in (("y1", y1_bounds), ("y2", y2_bounds)):
+                current = window._current_overview_y(role)
+                self.assertAlmostEqual(
+                    (current[1] - current[0]) / (bounds[1] - bounds[0]),
+                    0.8,
+                    places=6,
+                )
+            native_y1 = tuple(
+                window._screen_preview.consumer.overview.viewRange()[1]
+            )
+            native_y2 = tuple(
+                window._screen_preview.consumer.overview_secondary.viewRange()[1]
+            )
+            self.assertTrue(np.allclose(
+                native_y1, window._current_overview_y("y1")
+            ))
+            self.assertTrue(np.allclose(
+                native_y2, window._current_overview_y("y2")
+            ))
+
+            full_x = window._full_x_bounds()
+            window._set_overview_x((full_x[0], sum(full_x) / 2.0))
+            for role in ("y1", "y2"):
+                bounds = window._overview_y_bounds(role)
+                current = window._current_overview_y(role)
+                self.assertAlmostEqual(
+                    (current[1] - current[0]) / (bounds[1] - bounds[0]),
+                    0.8,
+                    places=6,
+                )
+
+            for dataset in window.project.datasets:
+                dataset.y_axis = 1
+            window._plot(preserve_view=False)
+            self.app.processEvents()
+            self.assertIsNone(window._overview_y_bounds("y2"))
+            with patch.object(
+                window._screen_preview.consumer.overview_secondary,
+                "setYRange",
+            ) as set_secondary:
+                window._zoom_overview_y(0.8)
+                set_secondary.assert_not_called()
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_native_overview_rows_and_four_scrollbars_follow_view_state(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.show()
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            consumer = window._screen_preview.consumer
+            controls = consumer.navigation_scrollbars
+            self.assertEqual(
+                set(controls),
+                {"overview_x", "overview_y", "detail_x", "detail_y"},
+            )
+            self.assertTrue(all(control.isVisible() for control in controls.values()))
+            ratio = consumer.overview_ratio
+            self.assertGreater(consumer.widget.ci.layout.rowStretchFactor(0), 0)
+            self.assertEqual(consumer.overview_handle.maximumHeight(), 8.0)
+
+            for view_mode in ("single", "split_y_axes"):
+                window.view_mode_combo.setCurrentIndex(
+                    window.view_mode_combo.findData(view_mode)
+                )
+                self.app.processEvents()
+                consumer = window._screen_preview.consumer
+                self.assertEqual(
+                    consumer.widget.ci.layout.rowStretchFactor(0), 0
+                )
+                self.assertEqual(consumer.overview_handle.maximumHeight(), 0.0)
+                self.assertFalse(consumer.overview_scrollbar.isVisible())
+                self.assertFalse(consumer.overview_y_scrollbar.isVisible())
+                self.assertTrue(consumer.detail_x_scrollbar.isVisible())
+                self.assertTrue(consumer.detail_y_scrollbar.isVisible())
+
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            self.app.processEvents()
+            consumer = window._screen_preview.consumer
+            self.assertAlmostEqual(consumer.overview_ratio, ratio, places=6)
+            self.assertGreater(consumer.widget.ci.layout.rowStretchFactor(0), 0)
+            self.assertEqual(consumer.overview_handle.maximumHeight(), 8.0)
+
+            full_x = window._full_x_bounds()
+            state = window._screen_view_state()
+            narrowed = replace(
+                state,
+                x=(full_x[0], sum(full_x) / 2.0),
+                y1=(state.y1[0], sum(state.y1) / 2.0),
+                y2=(state.y2[0], sum(state.y2) / 2.0),
+            )
+            window._apply_view_state(narrowed)
+            window._zoom_overview(0.8)
+            window._zoom_overview_y(0.8)
+            self.app.processEvents()
+            for name, control in consumer.navigation_scrollbars.items():
+                self.assertGreater(control.pageStep(), 0)
+                self.assertGreater(control.maximum(), 0)
+                rectangle = control.geometry()
+                self.assertGreater(rectangle.width(), 0)
+                self.assertGreater(rectangle.height(), 0)
+                current, bounds = consumer._scrollbar_window_and_bounds(name)
+                expected_fraction = min(
+                    (current[1] - current[0]) / (bounds[1] - bounds[0]),
+                    1.0,
+                )
+                actual_fraction = control.pageStep() / (
+                    control.maximum() + control.pageStep()
+                )
+                self.assertAlmostEqual(
+                    actual_fraction, expected_fraction, places=3
+                )
+            with patch.object(consumer, "_overview_action") as action:
+                consumer.sync_navigation_scrollbars()
+                action.assert_not_called()
+
+            detail_y_before = window._screen_view_state().y1
+            consumer.detail_x_scrollbar.setValue(
+                consumer.detail_x_scrollbar.maximum()
+            )
+            self.app.processEvents()
+            self.assertNotEqual(window._screen_view_state().x, narrowed.x)
+            self.assertEqual(window._screen_view_state().y1, detail_y_before)
+            detail_x_before = window._screen_view_state().x
+            detail_y2_before = window._screen_view_state().y2
+            consumer.detail_y_scrollbar.setValue(
+                consumer.detail_y_scrollbar.maximum()
+            )
+            self.app.processEvents()
+            self.assertEqual(window._screen_view_state().x, detail_x_before)
+            self.assertNotEqual(window._screen_view_state().y1, detail_y_before)
+            self.assertNotEqual(window._screen_view_state().y2, detail_y2_before)
+            self.assertEqual(
+                consumer.detail_x_scrollbar.toolTip(), "表示範囲を移動"
+            )
+
+            overview_x_before = window._current_overview_x()
+            consumer.overview_scrollbar.setValue(
+                consumer.overview_scrollbar.maximum()
+            )
+            self.app.processEvents()
+            self.assertNotEqual(window._current_overview_x(), overview_x_before)
+            overview_y_before = window._current_overview_y()
+            consumer.overview_y_scrollbar.setValue(
+                consumer.overview_y_scrollbar.maximum()
+            )
+            self.app.processEvents()
+            self.assertNotEqual(window._current_overview_y(), overview_y_before)
+
+            window.screen_preview_checkbox.setChecked(False)
+            self.app.processEvents()
+            self.assertIs(window.plot_stack.currentWidget(), window.canvas)
+            self.assertIsNone(window._screen_preview)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_view_resets_follow_pointer_after_overview_wheel_in_both_renderers(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")

@@ -11670,6 +11670,19 @@ class GuiTests(unittest.TestCase):
             "en",
         )
         try:
+            self.assertEqual(
+                tuple(round(value, 6) for value in dialog.figure.get_size_inches()),
+                (
+                    round(window.project.method.figure_width_mm / 25.4, 6),
+                    round(window.project.method.figure_height_mm / 25.4, 6),
+                ),
+            )
+            self.assertTrue(dialog.show_x_label_checkbox.isChecked())
+            self.assertTrue(dialog.show_y_label_checkbox.isChecked())
+            self.assertTrue(dialog.show_z_label_checkbox.isChecked())
+            self.assertTrue(dialog.show_x_tick_labels_checkbox.isChecked())
+            self.assertTrue(dialog.show_y_tick_labels_checkbox.isChecked())
+            self.assertTrue(dialog.show_z_tick_labels_checkbox.isChecked())
             self.assertTrue(dialog.grid_xy_checkbox.isChecked())
             self.assertFalse(dialog.grid_xz_checkbox.isChecked())
             self.assertFalse(dialog.grid_yz_checkbox.isChecked())
@@ -11695,6 +11708,19 @@ class GuiTests(unittest.TestCase):
                 {"hplc-grid-xz", "hplc-grid-yz"},
             )
 
+            dialog.show_x_label_checkbox.setChecked(False)
+            dialog.show_z_tick_labels_checkbox.setChecked(False)
+            self.app.processEvents()
+            self.assertFalse(dialog.plot_options().show_x_label)
+            self.assertFalse(dialog.plot_options().show_z_tick_labels)
+            self.assertFalse(dialog.figure.axes[0].xaxis.label.get_visible())
+            self.assertTrue(
+                all(
+                    not label.get_visible()
+                    for label in dialog.figure.axes[0].get_zticklabels()
+                )
+            )
+
             dialog.reset_view_button.click()
             self.app.processEvents()
             defaults = ThreeDPlotOptions()
@@ -11718,6 +11744,8 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(options.colormap, "Viridis")
             self.assertEqual(options.density_percent, 40)
             self.assertEqual(options.axis_line_width, 3.0)
+            self.assertFalse(options.show_x_label)
+            self.assertFalse(options.show_z_tick_labels)
             self.assertEqual(
                 (options.grid_xy, options.grid_xz, options.grid_yz),
                 (False, True, True),
@@ -11791,9 +11819,16 @@ class GuiTests(unittest.TestCase):
                 QtWidgets.QFileDialog,
                 "getSaveFileName",
                 return_value=(str(destination), "SVG画像 (*.svg)"),
-            ) as chooser:
+            ) as chooser, patch.object(
+                window,
+                "_save_static_figure",
+                wraps=window._save_static_figure,
+            ) as save_figure:
                 window.export_3d_chromatogram(dialog)
             self.assertTrue(destination.exists())
+            save_figure.assert_called_once_with(
+                dialog.figure, str(destination), bbox_inches=None
+            )
             self.assertEqual(
                 chooser.call_args.args[2],
                 str(Path(window._save_directory) / "chromatogram_3d.png"),

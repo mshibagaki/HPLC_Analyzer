@@ -4279,6 +4279,61 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         form.addRow("濃い側" if language == "ja" else "Dense end", density_widget)
         self.axis_width_spin = spin(options.axis_line_width, 0.1, 10.0, 0.1)
         form.addRow("軸線幅" if language == "ja" else "Axis line width", self.axis_width_spin)
+        axis_display_widget = QtWidgets.QWidget()
+        axis_display_layout = QtWidgets.QGridLayout(axis_display_widget)
+        axis_display_layout.setContentsMargins(0, 0, 0, 0)
+        axis_display_layout.addWidget(
+            QtWidgets.QLabel("軸" if language == "ja" else "Axis"), 0, 0
+        )
+        axis_display_layout.addWidget(
+            QtWidgets.QLabel("軸ラベル" if language == "ja" else "Axis labels"), 0, 1
+        )
+        axis_display_layout.addWidget(
+            QtWidgets.QLabel("目盛数値" if language == "ja" else "Tick labels"), 0, 2
+        )
+        self.show_x_label_checkbox = QtWidgets.QCheckBox("X")
+        self.show_y_label_checkbox = QtWidgets.QCheckBox("Y")
+        self.show_z_label_checkbox = QtWidgets.QCheckBox("Z")
+        self.show_x_tick_labels_checkbox = QtWidgets.QCheckBox("X")
+        self.show_y_tick_labels_checkbox = QtWidgets.QCheckBox("Y")
+        self.show_z_tick_labels_checkbox = QtWidgets.QCheckBox("Z")
+        for row, (axis_name, axis_label, tick_label, show_axis, show_ticks) in enumerate(
+            (
+                (
+                    "X",
+                    self.show_x_label_checkbox,
+                    self.show_x_tick_labels_checkbox,
+                    options.show_x_label,
+                    options.show_x_tick_labels,
+                ),
+                (
+                    "Y",
+                    self.show_y_label_checkbox,
+                    self.show_y_tick_labels_checkbox,
+                    options.show_y_label,
+                    options.show_y_tick_labels,
+                ),
+                (
+                    "Z",
+                    self.show_z_label_checkbox,
+                    self.show_z_tick_labels_checkbox,
+                    options.show_z_label,
+                    options.show_z_tick_labels,
+                ),
+            ),
+            start=1,
+        ):
+            axis_display_layout.addWidget(QtWidgets.QLabel(axis_name), row, 0)
+            axis_label.setText("")
+            tick_label.setText("")
+            axis_label.setChecked(bool(show_axis))
+            tick_label.setChecked(bool(show_ticks))
+            axis_display_layout.addWidget(axis_label, row, 1)
+            axis_display_layout.addWidget(tick_label, row, 2)
+        form.addRow(
+            "表示設定" if language == "ja" else "Display settings",
+            axis_display_widget,
+        )
         grid_widget = QtWidgets.QWidget()
         grid_layout = QtWidgets.QVBoxLayout(grid_widget)
         grid_layout.setContentsMargins(0, 0, 0, 0)
@@ -4318,7 +4373,12 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         form.addRow(self.close_button)
         root.addWidget(controls)
 
-        self.figure = Figure(figsize=(8.0, 8.0))
+        self.figure = Figure(
+            figsize=(
+                self.method.figure_width_mm / 25.4,
+                self.method.figure_height_mm / 25.4,
+            )
+        )
         self.canvas = FigureCanvasQTAgg(self.figure)
         root.addWidget(self.canvas, 1)
 
@@ -4337,6 +4397,12 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             self.colormap_combo,
             self.density_slider,
             self.axis_width_spin,
+            self.show_x_label_checkbox,
+            self.show_y_label_checkbox,
+            self.show_z_label_checkbox,
+            self.show_x_tick_labels_checkbox,
+            self.show_y_tick_labels_checkbox,
+            self.show_z_tick_labels_checkbox,
             self.grid_xy_checkbox,
             self.grid_xz_checkbox,
             self.grid_yz_checkbox,
@@ -4374,6 +4440,12 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             colormap=self.colormap_combo.currentText(),
             density_percent=self.density_slider.value(),
             axis_line_width=self.axis_width_spin.value(),
+            show_x_label=self.show_x_label_checkbox.isChecked(),
+            show_y_label=self.show_y_label_checkbox.isChecked(),
+            show_z_label=self.show_z_label_checkbox.isChecked(),
+            show_x_tick_labels=self.show_x_tick_labels_checkbox.isChecked(),
+            show_y_tick_labels=self.show_y_tick_labels_checkbox.isChecked(),
+            show_z_tick_labels=self.show_z_tick_labels_checkbox.isChecked(),
             grid_xy=self.grid_xy_checkbox.isChecked(),
             grid_xz=self.grid_xz_checkbox.isChecked(),
             grid_yz=self.grid_yz_checkbox.isChecked(),

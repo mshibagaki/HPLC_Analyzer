@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-09 (Issue #281 delivery pending merge)
+Updated: 2026-09-09 (Issue #282 delivery pending merge)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -71,6 +71,8 @@ Windows 11 field use on `36ddb84` found further defects and gaps in rows listed 
 Issues #267 through #271 are delivered in the implemented rows above. No confirmed source defect from those five issues remains in this section.
 
 Issue #270 adds session-only Solo state without changing `dataset.visible` or project schema, appends Solo to existing saved column orders, and provides eight fixed colours each for Ch1 (blue to green) and Ch2 (dark yellow to red). Explicit trace colours remain authoritative; previously unset-colour traces consequently adopt the new defaults. The supplied physical screenshot also pinned the source-path defect: the delegate left-elided the path, then the Windows style right-elided that result again until only dots remained. The delegate now sizes against the actual cell text rectangle and disables the second elision, so progressively narrower cells retain the path's right-hand end and the tooltip retains the full path. Windows 11 x64 automated validation passed (398 tests, native parity, CI asset contracts, and no raw-array or benchmark regression), and PR #279 delivered the change.
+
+Issue #282 adds session-only 3D controls for each X/Y/Z axis label and tick-label display, all defaulting to the existing visible state. The 3D preview now uses the configured output figure dimensions and its PNG/SVG/PDF route retains those dimensions without a second tight crop; the shared 2D export path keeps its existing crop unchanged. No project schema, preset, raw chromatogram, numerical calculation, or dependency changes are involved.
 
 ## Project compatibility notes for Issues #181 and #221
 

@@ -1,6 +1,6 @@
 # External blockers and deferred physical validation
 
-Updated: 2026-09-09 (Issue #281 automated evidence added)
+Updated: 2026-09-09 (Issue #282 automated evidence added)
 
 This file records work that source changes and automated CI cannot complete alone. An unavailable physical or external gate is `BLOCKED — evidence required`; it is never treated as passed or silently marked not applicable. Release execution remains governed by `.github/RELEASE_PROCESS.md` and `.github/RELEASE_CHECKLIST.md`.
 
@@ -85,6 +85,8 @@ Issue #252 adds a physical confirmation to the print-path gate: confirm the wide
 ## Automated or offscreen evidence already available
 
 These results reduce implementation risk but do not replace the physical gates above.
+
+- Issue #282 adds six session-only 3D display settings: label and tick-label visibility for X, Y and Z, each defaulting to visible. The 3D dialog now constructs its figure at the same configured output dimensions (`figure_width_mm` × `figure_height_mm`), and the 3D PNG/SVG/PDF path deliberately skips only the shared helper's tight crop so its relative fonts and margins match the preview; the ordinary 2D export retains that crop. Automated tests exercise all default and hidden states, output generation for PNG/SVG/PDF, the unchanged grid, view, aspect, tick, color and raw-array invariants, plus the shared 2D/3D export call distinction. Physical Windows 11 confirmation of the intensity-axis readability setting and preview-to-file visual match remains required; Windows 7 Matplotlib 3.7.5 output remains part of the existing physical gate.
 
 - Issue #281 changes ordinary fitted-row areas from the complete model curve to the copied parent integration interval; the parent baseline fields are already copied and remain identical. On the representative Gaussian fixture (`3.5–6.5 min`), the value changes from `752.145372050` to `752.144936034 µV·min` (`-0.000058%`); parent raw values and %Area remain unchanged. Saturated correction remains the existing within-window measured signal plus fitted clipped span. Automated validation covers Gaussian bounded integration, parent-baseline copying, unchanged saturation correction, top-aligned natural-height one-row tables, first-page 20-row layout, and 48-row continuation layout. Native Windows 11 printer/PDF visual confirmation for one, few, and more than 20 peaks remains required before release evidence is complete.
 

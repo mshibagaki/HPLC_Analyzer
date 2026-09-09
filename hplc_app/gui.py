@@ -7370,14 +7370,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.project_path = path
         return self.save_project()
 
-    def _save_static_figure(self, figure, path: str):
+    def _save_static_figure(self, figure, path: str, bbox_inches="tight"):
         old_size = figure.get_size_inches().copy()
         try:
             figure.set_size_inches(
                 self.project.method.figure_width_mm / 25.4,
                 self.project.method.figure_height_mm / 25.4,
             )
-            figure.savefig(path, dpi=self.project.method.dpi, bbox_inches="tight")
+            figure.savefig(
+                path, dpi=self.project.method.dpi, bbox_inches=bbox_inches
+            )
         finally:
             figure.set_size_inches(old_size)
 
@@ -7477,7 +7479,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not path:
             return
         try:
-            self._save_static_figure(dialog.figure, path)
+            # The dialog already uses the export figure dimensions.  Avoid a
+            # second tight-layout crop so the PNG/SVG/PDF keeps the preview's
+            # relative font size and margins.  The shared 2D export retains
+            # its established tight crop through the default argument.
+            self._save_static_figure(dialog.figure, path, bbox_inches=None)
             self._remember_save_path(path)
             self.statusBar().showMessage(self.translator("saved", path=path), 5000)
         except Exception as exc:

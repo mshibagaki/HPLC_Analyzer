@@ -61,6 +61,12 @@ class ThreeDPlotOptions:
     grid_xy: bool = True
     grid_xz: bool = False
     grid_yz: bool = False
+    show_x_label: bool = True
+    show_y_label: bool = True
+    show_z_label: bool = True
+    show_x_tick_labels: bool = True
+    show_y_tick_labels: bool = True
+    show_z_tick_labels: bool = True
 
 
 def gradient_colors(name: str, density_percent: int, count: int):
@@ -271,7 +277,20 @@ def build_3d_chromatogram_figure(
         label.set_fontfamily(method.axis_label_font_family)
         label.set_fontsize(method.axis_label_font_size)
         label.set_color(axis_color)
+    for label, visible in (
+        (axis.xaxis.label, options.show_x_label),
+        (axis.yaxis.label, options.show_y_label),
+        (axis.zaxis.label, options.show_z_label),
+    ):
+        label.set_visible(bool(visible))
     axis.tick_params(axis="both", labelsize=method.tick_label_font_size, colors=tick_color)
+    for labels, visible in (
+        (axis.get_xticklabels(), options.show_x_tick_labels),
+        (axis.get_yticklabels(), options.show_y_tick_labels),
+        (axis.get_zticklabels(), options.show_z_tick_labels),
+    ):
+        for label in labels:
+            label.set_visible(bool(visible))
     for label in axis.get_xticklabels() + axis.get_yticklabels() + axis.get_zticklabels():
         label.set_fontfamily(method.tick_label_font_family)
         label.set_color(tick_color)

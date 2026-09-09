@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 import re
 from typing import Dict, Iterable
 
@@ -21,6 +22,18 @@ def sanitize_filename_component(value: str, fallback: str) -> str:
         text = fallback
     # Keep the full filename comfortably below common Windows path limits.
     return text[:40].rstrip(" .-") or fallback
+
+
+def timestamped_filename(filename: str, now=None) -> str:
+    """Append one Windows-safe timestamp before a suggested file extension."""
+
+    path = Path(str(filename))
+    moment = now or datetime.now()
+    return "%s_%s%s" % (
+        path.stem,
+        moment.strftime("%Y%m%d_%H%M%S"),
+        path.suffix,
+    )
 
 
 def normalize_analysis_date(value: str) -> str:

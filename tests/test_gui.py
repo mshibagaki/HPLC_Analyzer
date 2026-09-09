@@ -11444,8 +11444,9 @@ class GuiTests(unittest.TestCase):
                 return_value=(str(destination), "PNG画像 (*.png)"),
             ) as chooser:
                 window.export_figure()
-            self.assertEqual(
-                chooser.call_args.args[2], str(Path(directory) / "chromatogram.png")
+            self.assertRegex(
+                Path(chooser.call_args.args[2]).name,
+                r"^chromatogram_\d{8}_\d{6}\.png$",
             )
             self.assertIn("*.png", chooser.call_args.args[3])
             self.assertIn("*.svg", chooser.call_args.args[3])
@@ -11460,9 +11461,9 @@ class GuiTests(unittest.TestCase):
                 "hplc_app.gui.dialog_exec", return_value=True
             ):
                 window.export_report()
-            self.assertEqual(
-                report_chooser.call_args.args[2],
-                str(Path(directory) / "analysis_report_Untitled-project.pdf"),
+            self.assertRegex(
+                Path(report_chooser.call_args.args[2]).name,
+                r"^analysis_report_Untitled-project_\d{8}_\d{6}\.pdf$",
             )
         window.project.dirty = False
         window.close()
@@ -11869,9 +11870,9 @@ class GuiTests(unittest.TestCase):
             save_figure.assert_called_once_with(
                 dialog.figure, str(destination), bbox_inches=None
             )
-            self.assertEqual(
-                chooser.call_args.args[2],
-                str(Path(window._save_directory) / "chromatogram_3d.png"),
+            self.assertRegex(
+                Path(chooser.call_args.args[2]).name,
+                r"^chromatogram_3d_\d{8}_\d{6}\.png$",
             )
             self.assertIn("<svg", destination.read_text(encoding="utf-8")[:500])
         dialog.close()

@@ -6432,15 +6432,18 @@ class GuiTests(unittest.TestCase):
             self.assertFalse(consumer.overview_secondary_region.isVisible())
             consumer.apply_view_state(state, consumer.overview_state)
             full_before = consumer.overview_state.full_x
+            overview_y_before = window._current_overview_y()
             midpoint = sum(full_before) / 2.0
             detail_before = (midpoint - 5.0, midpoint + 5.0)
             window._apply_view_state(replace(state, x=detail_before))
             consumer.overview_buttons[0].click()
             self.app.processEvents()
             full_after = consumer.overview_state.full_x
+            overview_y_after = window._current_overview_y()
+            self.assertEqual(full_after, full_before)
             self.assertLess(
-                full_after[1] - full_after[0],
-                full_before[1] - full_before[0],
+                overview_y_after[1] - overview_y_after[0],
+                overview_y_before[1] - overview_y_before[0],
             )
             self.assertEqual(window._screen_view_state().x, detail_before)
             consumer.overview_buttons[2].click()
@@ -6448,7 +6451,7 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(consumer.overview_state.full_x, window._full_x_bounds())
             self.assertTrue(consumer.overview_scrollbar.isVisible())
             self.assertGreater(consumer.overview_scrollbar.pageStep(), 0)
-            consumer.overview_buttons[0].click()
+            window._zoom_overview(0.8)
             self.app.processEvents()
             detail_before_scroll = window._screen_view_state().x
             history_before_scroll = window._screen_preview.navigation.history.count
@@ -10742,6 +10745,7 @@ class GuiTests(unittest.TestCase):
         self.assertAlmostEqual(window.axes_overview.get_xlim()[1], full_bounds[1], places=6)
         window.axes.set_xlim(4.0, 12.0)
         window.axes.set_ylim(100.0, 500.0)
+        overview_y_before = tuple(window.axes_overview.get_ylim())
         self.assertEqual(window._overview_window_state.detail_x, (4.0, 12.0))
         self.assertEqual(
             tuple(window._overview_view_patch.get_bbox().bounds),
@@ -10756,10 +10760,11 @@ class GuiTests(unittest.TestCase):
             )
         )
         self.assertEqual(tuple(window.axes.get_xlim()), (4.0, 12.0))
+        self.assertEqual(tuple(window.axes_overview.get_xlim()), full_bounds)
         self.assertLess(
-            window.axes_overview.get_xlim()[1]
-            - window.axes_overview.get_xlim()[0],
-            full_bounds[1] - full_bounds[0],
+            window.axes_overview.get_ylim()[1]
+            - window.axes_overview.get_ylim()[0],
+            overview_y_before[1] - overview_y_before[0],
         )
         self.assertIsNotNone(window._overview_view_patch)
         window.mouse_mode_combo.setCurrentIndex(

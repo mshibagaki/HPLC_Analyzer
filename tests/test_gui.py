@@ -11,7 +11,7 @@ import math
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, PropertyMock, patch
+from unittest.mock import Mock, PropertyMock, call, patch
 
 import numpy as np
 from matplotlib.ticker import MultipleLocator
@@ -11495,6 +11495,30 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(
             window._report_pdf_filename(), "analysis_report_2026-run-A.pdf"
         )
+        window.project.dirty = False
+        window.close()
+
+    def test_all_primary_save_dialog_defaults_use_the_timestamp_helper(self):
+        window = self.make_window()
+        filenames = (
+            "20260909_Title_Column_Condition_Author.hplcproj",
+            "chromatogram.png",
+            "chromatogram_3d.pdf",
+            "analysis_report_Title.pdf",
+            "peak_table.csv",
+            "trace.csv",
+            "sample_conditions.csv",
+        )
+        with patch(
+            "hplc_app.gui.timestamped_filename",
+            side_effect=lambda filename: "timestamped_" + filename,
+        ) as timestamped:
+            defaults = [window._default_save_path(filename) for filename in filenames]
+        self.assertEqual(
+            [Path(filename).name for filename in defaults],
+            ["timestamped_" + filename for filename in filenames],
+        )
+        self.assertEqual(timestamped.call_args_list, [call(filename) for filename in filenames])
         window.project.dirty = False
         window.close()
 

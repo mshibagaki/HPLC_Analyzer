@@ -10827,9 +10827,11 @@ class GuiTests(unittest.TestCase):
                 window.import_ascii()
             self.assertEqual(chooser.call_args.args[2], directory)
             window._save_directory = save_directory
-            self.assertEqual(
-                window._default_save_path("project.hplcproj"),
-                str(Path(save_directory) / "project.hplcproj"),
+            suggested = Path(window._default_save_path("project.hplcproj"))
+            self.assertEqual(suggested.parent, Path(save_directory))
+            self.assertRegex(
+                suggested.name,
+                r"^project_\d{8}_\d{6}\.hplcproj$",
             )
         window.project.dirty = False
         window.close()

@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-09 (Issues #290-#293 delivered)
+Updated: 2026-09-09 (Issues #301-#302 planning)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -85,6 +85,15 @@ Windows 11 field use on `c1fd86a` produced nine more requests, grouped into four
 Issue #291 makes saturated-peak correction request a manual saturated range before every fit, initially showing the selected integration range. The GUI always passes that accepted range to the existing fitter, so automatic saturation detection is not part of the correction execution path; cancelling leaves the project unchanged. `detect_saturated_span` remains available to its direct core callers and tests. An explicitly supplied range may therefore be used on a peak that automatic detection would have considered unsaturated; this intentionally withdraws the earlier automatic-warning requirement. No calculation, project schema, raw data, dependency, or Windows 7 offline-build input changes. Issue #292 keeps its independent 3D typography and preview scaling in `ThreeDPlotOptions` and dialog state only, so opening or exporting 3D plots never writes the 2D method or a project file. Issue #293 gives every default output filename a timestamp through one shared helper, since seven separate save dialogs currently offer fixed names.
 
 The reported inability to overwrite an existing output is recorded as unreproduced. All seven save dialogs use `QFileDialog.getSaveFileName`, which confirms an overwrite by default and then performs it; no `DontConfirmOverwrite` flag and no filename-uniquifying logic exist anywhere, including in `naming.py`. The condition has to be pinned on the machine — a file left open in another application would surface as a write permission error — before anything is changed, and the timestamped defaults should largely remove the collision in the first place.
+
+Windows 11 field use on `02008fd` reported five more items, grouped into two issues (#301, #302). One of them is a regression introduced by Issue #290 and is recorded in `WIN11_FEEDBACK_WORKFLOW.md` section 24.1 with a reproduction.
+
+| Issue | Affected row | What is actually wrong |
+|---|---|---|
+| #301 | Selection and display | Issue #290 routes the view resets to the overview through an `_overview_shortcut_active` flag, but the only place that clears it on the default renderer is the wheel handler. The pointer handlers normalize with `if not isinstance(event, ScreenPointerEvent)` and the native preview already passes `ScreenPointerEvent`, so moving the mouse never updates the flag. One wheel turn over the overview therefore latches it, and the full-view, full-X and full-Y buttons together with the x / y / w shortcuts all stop affecting the detail view. Overview-plus-detail is the default layout, so this is reached in normal use |
+| #302 | Selection and display | The overview's Y zoom only touches the first axis: `_set_overview_y` writes `axes_overview` and `consumer.overview` and never the second-axis views that already exist, and `_overview_y_bounds` reads only the first axis's data limits. Hiding the overview leaves its layout row's stretch factor in place, so switching to the single or split layouts leaves blank space instead of reclaiming it. Only one scrollbar exists, for the overview's X range. The analysis panel stacks its control groups and the peak table in a plain vertical layout with no divider between them |
+
+Issue #301 is a one-place fix in `gui.py` plus a regression test and is planned to merge on its own, ahead of #302, which builds on the corrected routing.
 
 ## Project compatibility notes for Issues #181 and #221
 

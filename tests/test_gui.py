@@ -11679,6 +11679,8 @@ class GuiTests(unittest.TestCase):
             colormap="Viridis",
             density_percent=40,
             axis_line_width=3.0,
+            axis_label_font_size=12.5,
+            tick_label_font_size=7.5,
         )
         dialog = ThreeDChromatogramDialog(
             window.project.datasets,
@@ -11695,6 +11697,16 @@ class GuiTests(unittest.TestCase):
                     round(window.project.method.figure_height_mm / 25.4, 6),
                 ),
             )
+            dialog.show()
+            self.app.processEvents()
+            self.assertEqual(
+                tuple(round(value, 6) for value in dialog.figure.get_size_inches()),
+                (
+                    round(window.project.method.figure_width_mm / 25.4, 6),
+                    round(window.project.method.figure_height_mm / 25.4, 6),
+                ),
+            )
+            self.assertGreaterEqual(dialog.figure.get_dpi(), 30.0)
             self.assertTrue(dialog.show_x_label_checkbox.isChecked())
             self.assertTrue(dialog.show_y_label_checkbox.isChecked())
             self.assertTrue(dialog.show_z_label_checkbox.isChecked())
@@ -11702,6 +11714,8 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(dialog.show_y_tick_labels_checkbox.isChecked())
             self.assertTrue(dialog.show_z_tick_labels_checkbox.isChecked())
             self.assertTrue(dialog.grid_xy_checkbox.isChecked())
+            self.assertEqual(dialog.axis_label_font_spin.value(), 12.5)
+            self.assertEqual(dialog.tick_label_font_spin.value(), 7.5)
             self.assertFalse(dialog.grid_xz_checkbox.isChecked())
             self.assertFalse(dialog.grid_yz_checkbox.isChecked())
             self.assertEqual(
@@ -11762,6 +11776,8 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(options.colormap, "Viridis")
             self.assertEqual(options.density_percent, 40)
             self.assertEqual(options.axis_line_width, 3.0)
+            self.assertEqual(options.axis_label_font_size, 12.5)
+            self.assertEqual(options.tick_label_font_size, 7.5)
             self.assertFalse(options.show_x_label)
             self.assertFalse(options.show_z_tick_labels)
             self.assertEqual(
@@ -11800,6 +11816,8 @@ class GuiTests(unittest.TestCase):
         def configure(dialog):
             captured.append(dialog)
             dialog.z_tick_spin.setValue(250.0)
+            dialog.axis_label_font_spin.setValue(8.0)
+            dialog.tick_label_font_spin.setValue(6.5)
             dialog.y_title_edit.setText("Injection order")
             dialog.color_mode_combo.setCurrentIndex(
                 dialog.color_mode_combo.findData("gradient")
@@ -11818,6 +11836,10 @@ class GuiTests(unittest.TestCase):
         dialog = captured[0]
         self.assertEqual(dialog.plot_options(), window._three_d_plot_options)
         self.assertEqual(dialog.plot_options().density_percent, 40)
+        self.assertEqual(dialog.plot_options().axis_label_font_size, 8.0)
+        self.assertEqual(dialog.plot_options().tick_label_font_size, 6.5)
+        self.assertEqual(window.project.method.axis_label_font_size, 10.0)
+        self.assertEqual(window.project.method.tick_label_font_size, 9.0)
         axis = dialog.figure.axes[0]
         self.assertEqual(
             [item.get_text() for item in axis.get_yticklabels()], ["Ch1", "Ch2"]

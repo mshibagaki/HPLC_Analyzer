@@ -4917,6 +4917,8 @@ class ProjectTests(unittest.TestCase):
             x_tick_interval=2.5,
             z_tick_interval=250.0,
             axis_line_width=3.0,
+            axis_label_font_size=8.0,
+            tick_label_font_size=7.0,
         )
         figure = build_3d_chromatogram_figure(
             [second, first], method, (4.0, 12.0), options
@@ -4925,6 +4927,8 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(axis.get_xlabel(), "Existing time title")
         self.assertEqual(axis.get_ylabel(), "Sample order")
         self.assertEqual(axis.get_zlabel(), "Existing intensity title")
+        self.assertEqual(axis.xaxis.label.get_fontsize(), 8.0)
+        self.assertEqual(axis.get_xticklabels()[0].get_fontsize(), 7.0)
         self.assertEqual([item.get_text() for item in axis.get_yticklabels()],
                          ["First in table", "Second in table"])
         self.assertEqual(tuple(round(value, 6) for value in axis.get_xlim()), (4.0, 12.0))

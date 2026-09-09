@@ -4279,6 +4279,16 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         form.addRow("濃い側" if language == "ja" else "Dense end", density_widget)
         self.axis_width_spin = spin(options.axis_line_width, 0.1, 10.0, 0.1)
         form.addRow("軸線幅" if language == "ja" else "Axis line width", self.axis_width_spin)
+        self.axis_label_font_spin = spin(options.axis_label_font_size, 4.0, 72.0, 0.5)
+        form.addRow(
+            "軸ラベル文字サイズ" if language == "ja" else "Axis-label font size",
+            self.axis_label_font_spin,
+        )
+        self.tick_label_font_spin = spin(options.tick_label_font_size, 4.0, 72.0, 0.5)
+        form.addRow(
+            "目盛文字サイズ" if language == "ja" else "Tick-label font size",
+            self.tick_label_font_spin,
+        )
         axis_display_widget = QtWidgets.QWidget()
         axis_display_layout = QtWidgets.QGridLayout(axis_display_widget)
         axis_display_layout.setContentsMargins(0, 0, 0, 0)
@@ -4380,6 +4390,8 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             )
         )
         self.canvas = FigureCanvasQTAgg(self.figure)
+        self._export_figure_size_inches = tuple(self.figure.get_size_inches())
+        self.canvas.installEventFilter(self)
         root.addWidget(self.canvas, 1)
 
         widgets = (
@@ -4397,6 +4409,8 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             self.colormap_combo,
             self.density_slider,
             self.axis_width_spin,
+            self.axis_label_font_spin,
+            self.tick_label_font_spin,
             self.show_x_label_checkbox,
             self.show_y_label_checkbox,
             self.show_z_label_checkbox,
@@ -4440,6 +4454,8 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             colormap=self.colormap_combo.currentText(),
             density_percent=self.density_slider.value(),
             axis_line_width=self.axis_width_spin.value(),
+            axis_label_font_size=self.axis_label_font_spin.value(),
+            tick_label_font_size=self.tick_label_font_spin.value(),
             show_x_label=self.show_x_label_checkbox.isChecked(),
             show_y_label=self.show_y_label_checkbox.isChecked(),
             show_z_label=self.show_z_label_checkbox.isChecked(),
@@ -4463,8 +4479,28 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         self.density_slider.setEnabled(enabled)
         self.density_value_label.setEnabled(enabled)
 
+    def eventFilter(self, watched, event):
+        """Keep the preview figure at the export aspect after Qt resizes its canvas."""
+
+        if watched is self.canvas and event.type() == QtCore.QEvent.Resize:
+            QtCore.QTimer.singleShot(0, self._fit_preview_to_canvas)
+        return super().eventFilter(watched, event)
+
+    def _fit_preview_to_canvas(self):
+        width_in, height_in = self._export_figure_size_inches
+        size = self.canvas.contentsRect().size()
+        if size.width() <= 0 or size.height() <= 0:
+            return
+        preview_dpi = max(
+            30.0,
+            min(size.width() / width_in, size.height() / height_in),
+        )
+        self.figure.set_dpi(preview_dpi)
+        self.figure.set_size_inches(width_in, height_in, forward=False)
+
     def refresh_preview(self, *_args):
         self.density_value_label.setText("%d%%" % self.density_slider.value())
+        self._fit_preview_to_canvas()
         try:
             options = self.plot_options()
             build_3d_chromatogram_figure(

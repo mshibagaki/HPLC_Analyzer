@@ -1697,10 +1697,10 @@ class GuiTests(unittest.TestCase):
             position = consumer.widget.mapFromScene(point)
             send_mouse(types.MouseButtonPress, position, buttons.LeftButton, buttons.LeftButton)
             send_mouse(types.MouseButtonRelease, position, buttons.LeftButton, buttons.NoButton)
-            self.assertEqual(consumer.capture_view_state().x, (40.0, 100.0))
+            self.assertEqual(consumer.capture_view_state().x, initial.x)
             overview_rect = consumer.overview_region.rect()
             self.assertEqual(
-                (overview_rect.left(), overview_rect.right()), (40.0, 100.0)
+                (overview_rect.left(), overview_rect.right()), initial.x
             )
             navigation.navigate("back")
             self.assertEqual(consumer.capture_view_state(), initial)
@@ -1720,6 +1720,9 @@ class GuiTests(unittest.TestCase):
             navigation.handle_event("scroll_event", ScreenPointerEvent(
                 button="down", axis_role="y1", hit_region="x",
             ))
+            self.assertEqual(consumer.capture_view_state().x, (-12.5, 112.5))
+            self.assertFalse(navigation.capabilities()["forward"])
+            navigation.navigate("back")
             self.assertEqual(consumer.capture_view_state(), full)
             self.assertTrue(navigation.capabilities()["forward"])
             with self.assertRaises(RuntimeError):
@@ -3865,7 +3868,7 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
-    def test_preview_overview_drag_zooms_and_click_still_recenters(self):
+    def test_preview_overview_drag_zooms_detail_without_recentering_clicks(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")
         window = self.make_window()
@@ -3899,25 +3902,32 @@ class GuiTests(unittest.TestCase):
             preview.handle_event(
                 "button_release_event", overview_event(20.0, 300.0, "outside")
             )
-            self.assertEqual(window._current_overview_x(), (10.0, 20.0))
+            self.assertEqual(window._current_overview_x(), window._full_x_bounds())
             self.assertEqual(window._screen_view_state().x, (10.0, 20.0))
 
             click = overview_event(30.0, 200.0)
             preview.handle_event("button_press_event", click)
             preview.handle_event("button_release_event", click)
-            self.assertAlmostEqual(
-                sum(window._screen_view_state().x) / 2.0, 15.0
-            )
+            self.assertEqual(window._screen_view_state().x, (10.0, 20.0))
 
             window.mouse_mode_combo.setCurrentIndex(
                 window.mouse_mode_combo.findData("normal")
             )
+            window._zoom_overview(0.8)
+            history_before_pan = preview.navigation.history.count
             preview.handle_event(
                 "button_press_event", overview_event(40.0, 200.0)
             )
-            self.assertAlmostEqual(
-                sum(window._screen_view_state().x) / 2.0, 15.0
+            overview_before_pan = window._current_overview_x()
+            preview.handle_event(
+                "motion_notify_event", overview_event(35.0, 100.0, "outside")
             )
+            preview.handle_event(
+                "button_release_event", overview_event(35.0, 100.0, "outside")
+            )
+            self.assertNotEqual(window._current_overview_x(), overview_before_pan)
+            self.assertEqual(window._screen_view_state().x, (10.0, 20.0))
+            self.assertEqual(preview.navigation.history.count, history_before_pan)
         finally:
             window.project.dirty = False
             window.close()
@@ -6403,12 +6413,21 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(consumer.overview_state.full_x, window._full_x_bounds())
             self.assertTrue(consumer.overview_scrollbar.isVisible())
             self.assertGreater(consumer.overview_scrollbar.pageStep(), 0)
+            consumer.overview_buttons[0].click()
+            self.app.processEvents()
+            detail_before_scroll = window._screen_view_state().x
+            history_before_scroll = window._screen_preview.navigation.history.count
             consumer.overview_scrollbar.setValue(
                 consumer.overview_scrollbar.maximum()
             )
             self.app.processEvents()
             self.assertAlmostEqual(
-                window._screen_view_state().x[1], window._full_x_bounds()[1]
+                consumer.overview_state.full_x[1], window._full_x_bounds()[1]
+            )
+            self.assertEqual(window._screen_view_state().x, detail_before_scroll)
+            self.assertEqual(
+                window._screen_preview.navigation.history.count,
+                history_before_scroll,
             )
         finally:
             window.project.dirty = False
@@ -10707,8 +10726,8 @@ class GuiTests(unittest.TestCase):
             axis_role="outside", canvas_x=300.0, canvas_y=20.0,
             data_coordinates=(("overview_y1", 15.0, 0.0),),
         ))
-        self.assertEqual(tuple(window.axes_overview.get_xlim()), (5.0, 15.0))
-        self.assertEqual(tuple(window.axes.get_xlim()), (5.0, 13.0))
+        self.assertNotEqual(tuple(window.axes_overview.get_xlim()), (5.0, 15.0))
+        self.assertEqual(tuple(window.axes.get_xlim()), (5.0, 15.0))
         window._center_detail_on(20.0)
         self.assertAlmostEqual(sum(window.axes.get_xlim()) / 2.0, 20.0, places=5)
         window.canvas.draw()

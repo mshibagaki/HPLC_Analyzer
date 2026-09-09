@@ -1526,6 +1526,11 @@ class AnalysisTests(unittest.TestCase):
         expected = 12345.0 * 0.08 * math.sqrt(2.0 * math.pi)
         self.assertAlmostEqual(fitted_area_uv_min(gaussian), expected, places=9)
         self.assertAlmostEqual(fitted_area_uv_min(gaussian), 2475.546084, places=6)
+        bounded_expected = expected * math.erf(0.5 / math.sqrt(2.0))
+        self.assertAlmostEqual(
+            fitted_area_uv_min(gaussian, 4.96, 5.04), bounded_expected, places=9
+        )
+        self.assertLess(fitted_area_uv_min(gaussian, 4.96, 5.04), expected)
         self.assertAlmostEqual(
             fitted_fwhm_min(gaussian),
             2.0 * math.sqrt(2.0 * math.log(2.0)) * 0.08,
@@ -1819,11 +1824,15 @@ class AnalysisTests(unittest.TestCase):
         dataset.fitted_peaks = [fitted]
         recalculate_dataset_peaks(dataset)
 
-        # Areas and heights now come from the curve, in both unit families.
+        # The estimated curve is integrated only over the copied parent window,
+        # while its height still comes from the fitted model.
         self.assertIsNotNone(fitted.raw_area_uv_min)
         self.assertAlmostEqual(
-            fitted.raw_area_uv_min, fitted_area_uv_min(result), places=9
+            fitted.raw_area_uv_min,
+            fitted_area_uv_min(result, parent.start_min, parent.end_min),
+            places=9,
         )
+        self.assertLess(fitted.raw_area_uv_min, fitted_area_uv_min(result))
         self.assertAlmostEqual(
             fitted.area_mau_min, fitted.raw_area_uv_min * 2.0 * 1.0e-3, places=12
         )
@@ -1839,6 +1848,17 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual([peak.area_percent for peak in dataset.peaks], shares_before)
         self.assertAlmostEqual(sum(shares_before), 100.0, places=9)
         self.assertFalse(is_saturation_corrected(fitted))
+        self.assertEqual(fitted.baseline_mode, parent.baseline_mode)
+        self.assertEqual(fitted.baseline_start_uv, parent.baseline_start_uv)
+        self.assertEqual(fitted.baseline_end_uv, parent.baseline_end_uv)
+        self.assertEqual(
+            fitted.calculated_baseline_start_uv,
+            parent.calculated_baseline_start_uv,
+        )
+        self.assertEqual(
+            fitted.calculated_baseline_end_uv,
+            parent.calculated_baseline_end_uv,
+        )
 
     def test_explicit_fitted_rows_do_not_enter_integration_denominator(self):
         dataset = self.synthetic_dataset()
@@ -4655,6 +4675,53 @@ class ProjectTests(unittest.TestCase):
             image = matplotlib_image.imread(pages[0])
             self.assertGreater(image.shape[0], image.shape[1])
             self.assertAlmostEqual(image.shape[0] / image.shape[1], 297.0 / 210.0, delta=0.02)
+
+    def test_report_peak_tables_are_top_aligned_without_stretching_short_lists(self):
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        dataset.label = "Natural table height"
+
+        def peak(index):
+            return PeakRegion(
+                start_min=1.0 + index,
+                end_min=1.5 + index,
+                retention_time_min=1.25 + index,
+                raw_area_uv_sec=1000.0 + index,
+                area_mau_sec=1.0 + index / 100.0,
+                area_percent=1.0,
+                fwhm_min=0.2,
+            )
+
+        project = Project(title="Natural table layout", datasets=[dataset])
+        dataset.peaks = [peak(0)]
+        short_figure = analysis_report_figures(project, [dataset], "en")[0]
+        short_canvas = FigureCanvasAgg(short_figure)
+        short_canvas.draw()
+        short_axis = next(axis for axis in short_figure.axes if axis.tables)
+        short_box = short_axis.tables[0].get_window_extent(short_canvas.get_renderer())
+        short_axis_box = short_axis.get_window_extent(short_canvas.get_renderer())
+        self.assertAlmostEqual(short_box.y1, short_axis_box.y1, delta=1.0)
+        self.assertLess(short_box.height, short_axis_box.height * 0.25)
+        short_figure.clear()
+
+        dataset.peaks = [peak(index) for index in range(21)]
+        figures = analysis_report_figures(project, [dataset], "en")
+        self.assertEqual(len(figures), 2)
+        continuation = figures[1]
+        continuation_canvas = FigureCanvasAgg(continuation)
+        continuation_canvas.draw()
+        continuation_axis = continuation.axes[0]
+        continuation_box = continuation_axis.tables[0].get_window_extent(
+            continuation_canvas.get_renderer()
+        )
+        continuation_axis_box = continuation_axis.get_window_extent(
+            continuation_canvas.get_renderer()
+        )
+        self.assertAlmostEqual(continuation_box.y1, continuation_axis_box.y1, delta=1.0)
+        self.assertLess(continuation_box.height, continuation_axis_box.height * 0.25)
+        for figure in figures:
+            figure.clear()
 
     def test_a4_report_keeps_full_first_page_peak_table_below_x_label(self):
         from matplotlib.backends.backend_agg import FigureCanvasAgg

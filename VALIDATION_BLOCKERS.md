@@ -1,6 +1,6 @@
 # External blockers and deferred physical validation
 
-Updated: 2026-09-08 (Windows 11 acceptance sessions 0-4 reported passing)
+Updated: 2026-09-09 (Issue #281 automated evidence added)
 
 This file records work that source changes and automated CI cannot complete alone. An unavailable physical or external gate is `BLOCKED — evidence required`; it is never treated as passed or silently marked not applicable. Release execution remains governed by `.github/RELEASE_PROCESS.md` and `.github/RELEASE_CHECKLIST.md`.
 
@@ -83,6 +83,8 @@ Issue #252 adds a physical confirmation to the print-path gate: confirm the wide
 ## Automated or offscreen evidence already available
 
 These results reduce implementation risk but do not replace the physical gates above.
+
+- Issue #281 changes ordinary fitted-row areas from the complete model curve to the copied parent integration interval; the parent baseline fields are already copied and remain identical. On the representative Gaussian fixture (`3.5–6.5 min`), the value changes from `752.145372050` to `752.144936034 µV·min` (`-0.000058%`); parent raw values and %Area remain unchanged. Saturated correction remains the existing within-window measured signal plus fitted clipped span. Automated validation covers Gaussian bounded integration, parent-baseline copying, unchanged saturation correction, top-aligned natural-height one-row tables, first-page 20-row layout, and 48-row continuation layout. Native Windows 11 printer/PDF visual confirmation for one, few, and more than 20 peaks remains required before release evidence is complete.
 
 - Issue #268 routes a native Zoom-mode double-click into the existing shared `ScreenViewHistory.navigate("back")` path and defines an empty-history double-click as a non-mutating no-op. Axis-band hit regions now participate in the existing rectangle gesture: X forces X-only, while Y1/Y2 force Y-only on the initiating panel, taking priority over the configured plot zoom direction and retaining the #249 outside-release contract. One focused regression covers shared Back, empty history, normal-mode double-click, opposite configured directions, X/Y1/Y2 results, rectangle visibility and outside release; the established plot and overview zoom tests remain passing. All 397 tests pass in the Windows 11 environment (Python 3.12.7 x64). The parity probe reports all 11 features supported; the 800,000-point benchmark reduced display data to 24,640 points, preserved raw SHA-256, and measured 0.139 seconds native versus 0.137 seconds legacy. Syntax compilation of both changed Python files, Level 2 source contracts and the Windows 7 offline manifest/wheelhouse check passed. No schema, dependency pin, scientific calculation, raw chromatogram value or offline-build input changed. Physical pointer confirmation remains required under the desktop-view gate above.
 

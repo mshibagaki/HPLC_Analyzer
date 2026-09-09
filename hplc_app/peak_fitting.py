@@ -67,21 +67,45 @@ def _model_grid(center: float, sigma: float, tau: float):
     return np.linspace(left, right, count)
 
 
-def fitted_area_uv_min(result: PeakFitResult) -> float:
+def fitted_area_uv_min(
+    result: PeakFitResult,
+    start_min: Optional[float] = None,
+    end_min: Optional[float] = None,
+) -> float:
     """Return the area under the fitted model curve in µV·min.
 
-    A Gaussian uses its closed form, ``amplitude * sigma * sqrt(2*pi)``. The EMG
-    profile in this module is normalized to unit height and has no matching
-    closed form, so it is integrated with the same trapezoid helper the
-    measured integration uses, on a grid wide and fine enough that the tail
-    stops contributing. Both are the area of the complete model curve, not of
-    the samples inside the integration window, because the point of a fitted
-    area is the peak the detector would have recorded.
+    With no bounds, this preserves the complete-model result: Gaussian uses
+    ``amplitude * sigma * sqrt(2*pi)`` and EMG is integrated over its full
+    practical tail. Passing both bounds integrates the model only within that
+    interval, matching the parent peak's integration window.
     """
 
     parameters = result.parameters
     amplitude = float(parameters["amplitude_uv"])
     sigma = max(float(parameters["sigma_min"]), 1.0e-12)
+    if (start_min is None) != (end_min is None):
+        raise ValueError("Both fitted-area bounds are required")
+    if start_min is not None:
+        start, end = sorted((float(start_min), float(end_min)))
+        if not (math.isfinite(start) and math.isfinite(end)):
+            raise ValueError("Fitted-area bounds must be finite")
+        if start == end:
+            return 0.0
+        if result.model == "gaussian":
+            center = float(parameters["center_min"])
+            scale = math.sqrt(2.0) * sigma
+            fraction = 0.5 * (
+                math.erf((end - center) / scale)
+                - math.erf((start - center) / scale)
+            )
+            return amplitude * sigma * math.sqrt(2.0 * math.pi) * fraction
+        if result.model != "emg":
+            raise ValueError("Unknown fitted model: %s" % result.model)
+        tau = max(float(parameters.get("tau_min", sigma)), 1.0e-12)
+        step = min(sigma, tau) / 50.0
+        count = int(min(200001, max(2001, math.ceil((end - start) / step) + 1)))
+        grid = np.linspace(start, end, count)
+        return float(_trapz(evaluate_fit_profile(grid, result), grid))
     if result.model == "gaussian":
         return amplitude * sigma * math.sqrt(2.0 * math.pi)
     if result.model != "emg":
@@ -251,12 +275,14 @@ def apply_fit_result(
     fitted_peak.fit_rmse_uv = result.rmse_uv
     fitted_peak.fit_r_squared = result.r_squared
     fitted_peak.fit_aic = result.aic
-    # Ordinary fitted rows retain the complete model area introduced by #218.
-    # A saturation correction instead uses the measured signal within the
+    # Ordinary fitted rows use the copied parent integration range. A
+    # saturation correction instead uses the measured signal within the
     # integration window and replaces only its clipped interval with the model.
     # Both values remain derived estimates and are marked as such by every
     # display/export surface.
-    area_uv_min = fitted_area_uv_min(result)
+    area_uv_min = fitted_area_uv_min(
+        result, parent_peak.start_min, parent_peak.end_min
+    )
     corrected_time = corrected_uv = None
     if saturated is not None and dataset is not None:
         corrected_time, corrected_uv = saturation_corrected_trace(

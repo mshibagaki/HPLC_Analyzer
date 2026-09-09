@@ -5618,6 +5618,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(event)
+        # The native preview sends ordinary motion here directly, while drag
+        # motion arrives through _on_canvas_motion.  Update the shortcut target
+        # at this shared point so either path follows the pointer.
+        self._update_overview_shortcut_target(event)
         axis = {
             "y1": self.axes,
             "y2": self.axes_right,
@@ -5966,7 +5970,7 @@ class MainWindow(QtWidgets.QMainWindow):
             },
             hit_region=hit_region,
         )
-        self._overview_shortcut_active = normalized.axis_role == "overview_y1"
+        self._update_overview_shortcut_target(normalized)
         if self._split_y_axes:
             # A twinx B% overlay receives the Matplotlib mouse event. Editing
             # still belongs to its intensity panel, not the selected trace.
@@ -5977,12 +5981,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 return replace(normalized, axis_role="y2")
         return normalized
 
+    def _update_overview_shortcut_target(self, event):
+        """Remember the last plot under the pointer for view shortcuts."""
+        axis_role = getattr(event, "axis_role", "outside")
+        if axis_role in ("overview_y1", "overview_y2"):
+            self._overview_shortcut_active = True
+        elif axis_role in ("y1", "y2", "gradient"):
+            self._overview_shortcut_active = False
+
     def _on_scroll(self, event):
         if not isinstance(event, ScreenPointerEvent):
             event = self._normalized_pointer_event(
                 event, hit_region=self._scroll_target(event) or ""
             )
-        self._overview_shortcut_active = event.axis_role == "overview_y1"
+        self._update_overview_shortcut_target(event)
         if event.button not in ("up", "down"):
             return
         factor = 0.8 if event.button == "up" else 1.25

@@ -11,7 +11,7 @@ import math
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, PropertyMock, patch
+from unittest.mock import Mock, PropertyMock, call, patch
 
 import numpy as np
 from matplotlib.ticker import MultipleLocator
@@ -10827,9 +10827,11 @@ class GuiTests(unittest.TestCase):
                 window.import_ascii()
             self.assertEqual(chooser.call_args.args[2], directory)
             window._save_directory = save_directory
-            self.assertEqual(
-                window._default_save_path("project.hplcproj"),
-                str(Path(save_directory) / "project.hplcproj"),
+            suggested = Path(window._default_save_path("project.hplcproj"))
+            self.assertEqual(suggested.parent, Path(save_directory))
+            self.assertRegex(
+                suggested.name,
+                r"^project_\d{8}_\d{6}\.hplcproj$",
             )
         window.project.dirty = False
         window.close()
@@ -11444,8 +11446,9 @@ class GuiTests(unittest.TestCase):
                 return_value=(str(destination), "PNG画像 (*.png)"),
             ) as chooser:
                 window.export_figure()
-            self.assertEqual(
-                chooser.call_args.args[2], str(Path(directory) / "chromatogram.png")
+            self.assertRegex(
+                Path(chooser.call_args.args[2]).name,
+                r"^chromatogram_\d{8}_\d{6}\.png$",
             )
             self.assertIn("*.png", chooser.call_args.args[3])
             self.assertIn("*.svg", chooser.call_args.args[3])
@@ -11460,9 +11463,9 @@ class GuiTests(unittest.TestCase):
                 "hplc_app.gui.dialog_exec", return_value=True
             ):
                 window.export_report()
-            self.assertEqual(
-                report_chooser.call_args.args[2],
-                str(Path(directory) / "analysis_report_Untitled-project.pdf"),
+            self.assertRegex(
+                Path(report_chooser.call_args.args[2]).name,
+                r"^analysis_report_Untitled-project_\d{8}_\d{6}\.pdf$",
             )
         window.project.dirty = False
         window.close()
@@ -11494,6 +11497,30 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(
             window._report_pdf_filename(), "analysis_report_2026-run-A.pdf"
         )
+        window.project.dirty = False
+        window.close()
+
+    def test_all_primary_save_dialog_defaults_use_the_timestamp_helper(self):
+        window = self.make_window()
+        filenames = (
+            "20260909_Title_Column_Condition_Author.hplcproj",
+            "chromatogram.png",
+            "chromatogram_3d.pdf",
+            "analysis_report_Title.pdf",
+            "peak_table.csv",
+            "trace.csv",
+            "sample_conditions.csv",
+        )
+        with patch(
+            "hplc_app.gui.timestamped_filename",
+            side_effect=lambda filename: "timestamped_" + filename,
+        ) as timestamped:
+            defaults = [window._default_save_path(filename) for filename in filenames]
+        self.assertEqual(
+            [Path(filename).name for filename in defaults],
+            ["timestamped_" + filename for filename in filenames],
+        )
+        self.assertEqual(timestamped.call_args_list, [call(filename) for filename in filenames])
         window.project.dirty = False
         window.close()
 
@@ -11869,9 +11896,9 @@ class GuiTests(unittest.TestCase):
             save_figure.assert_called_once_with(
                 dialog.figure, str(destination), bbox_inches=None
             )
-            self.assertEqual(
-                chooser.call_args.args[2],
-                str(Path(window._save_directory) / "chromatogram_3d.png"),
+            self.assertRegex(
+                Path(chooser.call_args.args[2]).name,
+                r"^chromatogram_3d_\d{8}_\d{6}\.png$",
             )
             self.assertIn("<svg", destination.read_text(encoding="utf-8")[:500])
         dialog.close()

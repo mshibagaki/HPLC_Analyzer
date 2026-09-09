@@ -63,7 +63,7 @@ from hplc_app.models import (
     VerticalMarker,
     normalize_line_style,
 )
-from hplc_app.naming import build_project_filename, suggest_project_name_parts
+from hplc_app.naming import build_project_filename, suggest_project_name_parts, timestamped_filename
 from hplc_app.gcd_parser import GcdParseError, parse_gcd_bytes, parse_gcd_streams
 from hplc_app.parser import (
     dataset_from_bytes,
@@ -3909,6 +3909,12 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(
             build_project_filename(parts),
             "20260507_LL-37_5C4-AR-300_10-90%-B_M-Shiba.hplcproj",
+        )
+        self.assertEqual(
+            timestamped_filename(
+                "analysis_report_Sample.pdf", datetime(2026, 9, 9, 14, 25, 30)
+            ),
+            "analysis_report_Sample_20260909_142530.pdf",
         )
 
     def test_lab_database_rewrites_same_project_without_peak_results(self):

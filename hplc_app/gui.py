@@ -5966,6 +5966,7 @@ class MainWindow(QtWidgets.QMainWindow):
             },
             hit_region=hit_region,
         )
+        self._overview_shortcut_active = normalized.axis_role == "overview_y1"
         if self._split_y_axes:
             # A twinx B% overlay receives the Matplotlib mouse event. Editing
             # still belongs to its intensity panel, not the selected trace.
@@ -5981,6 +5982,7 @@ class MainWindow(QtWidgets.QMainWindow):
             event = self._normalized_pointer_event(
                 event, hit_region=self._scroll_target(event) or ""
             )
+        self._overview_shortcut_active = event.axis_role == "overview_y1"
         if event.button not in ("up", "down"):
             return
         factor = 0.8 if event.button == "up" else 1.25
@@ -6560,11 +6562,21 @@ class MainWindow(QtWidgets.QMainWindow):
             clear_legacy_fit(parent)
 
     def _reset_view(self):
+        if getattr(self, "_overview_shortcut_active", False):
+            self._overview_full_x = None
+            self._overview_full_y = None
+            self._set_overview_x(self._full_x_bounds())
+            self._set_overview_y(self._overview_y_bounds())
+            return
         self._push_view_history()
         self._view_initialized = False
         self._plot(preserve_view=False)
 
     def _reset_x_view(self):
+        if getattr(self, "_overview_shortcut_active", False):
+            self._overview_full_x = None
+            self._set_overview_x(self._full_x_bounds())
+            return
         if not self._view_initialized:
             return
         self._push_view_history()
@@ -6574,6 +6586,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._request_canvas_draw()
 
     def _reset_y_view(self):
+        if getattr(self, "_overview_shortcut_active", False):
+            self._overview_full_y = None
+            self._set_overview_y(self._overview_y_bounds())
+            return
         if not self._view_initialized:
             return
         view_state = self._capture_view_state()

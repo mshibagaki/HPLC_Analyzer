@@ -228,7 +228,12 @@ def _add_peak_table(
         "colWidths": tuple(width / width_total for width in widths),
     }
     if fit_axis:
-        table_kwargs["bbox"] = (0.0, 0.0, 1.0, 1.0)
+        # Let short lists retain their natural row height, anchored at the top
+        # of the allocated report area.  A fixed full-axis bbox made a single
+        # peak row as tall as a dense page of peaks.  Dense tables still use
+        # the whole available area without overflowing it.
+        height = min(1.0, 0.11 * (len(rows) + 1))
+        table_kwargs["bbox"] = (0.0, 1.0 - height, 1.0, height)
     else:
         table_kwargs["loc"] = "center"
     table = axis.table(**table_kwargs)

@@ -58,6 +58,8 @@ class ThreeDPlotOptions:
     colormap: str = "Blues"
     density_percent: int = 100
     axis_line_width: float = 4.0
+    axis_label_font_size: float = 10.0
+    tick_label_font_size: float = 9.0
     grid_xy: bool = True
     grid_xz: bool = False
     grid_yz: bool = False
@@ -211,6 +213,8 @@ def build_3d_chromatogram_figure(
         raise ValueError("All 3D aspect values must be positive")
     if options.x_tick_interval <= 0 or options.z_tick_interval <= 0:
         raise ValueError("3D tick intervals must be positive")
+    if options.axis_label_font_size <= 0 or options.tick_label_font_size <= 0:
+        raise ValueError("3D font sizes must be positive")
 
     target = figure or Figure(figsize=(8.0, 8.0))
     target.clear()
@@ -275,7 +279,7 @@ def build_3d_chromatogram_figure(
     tick_color = method.tick_label_color or "#000000"
     for label in (axis.xaxis.label, axis.yaxis.label, axis.zaxis.label):
         label.set_fontfamily(method.axis_label_font_family)
-        label.set_fontsize(method.axis_label_font_size)
+        label.set_fontsize(options.axis_label_font_size)
         label.set_color(axis_color)
     for label, visible in (
         (axis.xaxis.label, options.show_x_label),
@@ -283,7 +287,7 @@ def build_3d_chromatogram_figure(
         (axis.zaxis.label, options.show_z_label),
     ):
         label.set_visible(bool(visible))
-    axis.tick_params(axis="both", labelsize=method.tick_label_font_size, colors=tick_color)
+    axis.tick_params(axis="both", labelsize=options.tick_label_font_size, colors=tick_color)
     for labels, visible in (
         (axis.get_xticklabels(), options.show_x_tick_labels),
         (axis.get_yticklabels(), options.show_y_tick_labels),

@@ -4968,6 +4968,46 @@ class ProjectTests(unittest.TestCase):
                 self.assertGreater(path.stat().st_size, 500)
         figure.clear()
 
+    def test_3d_axis_display_options_hide_only_requested_labels_and_ticks(self):
+        from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
+
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        method = Project().method
+        defaults = ThreeDPlotOptions()
+        self.assertTrue(defaults.show_x_label)
+        self.assertTrue(defaults.show_y_label)
+        self.assertTrue(defaults.show_z_label)
+        self.assertTrue(defaults.show_x_tick_labels)
+        self.assertTrue(defaults.show_y_tick_labels)
+        self.assertTrue(defaults.show_z_tick_labels)
+        figure = build_3d_chromatogram_figure(
+            [first, second],
+            method,
+            (4.0, 12.0),
+            ThreeDPlotOptions(
+                show_x_label=False,
+                show_y_label=True,
+                show_z_label=False,
+                show_x_tick_labels=False,
+                show_y_tick_labels=True,
+                show_z_tick_labels=False,
+            ),
+        )
+        axis = figure.axes[0]
+        self.assertFalse(axis.xaxis.label.get_visible())
+        self.assertTrue(axis.yaxis.label.get_visible())
+        self.assertFalse(axis.zaxis.label.get_visible())
+        self.assertTrue(axis.get_yticklabels()[0].get_visible())
+        self.assertTrue(all(not label.get_visible() for label in axis.get_xticklabels()))
+        self.assertTrue(all(not label.get_visible() for label in axis.get_zticklabels()))
+        with tempfile.TemporaryDirectory() as directory:
+            for suffix in ("png", "svg", "pdf"):
+                path = Path(directory) / ("hidden-axis-labels." + suffix)
+                figure.savefig(path, dpi=120)
+                self.assertGreater(path.stat().st_size, 500)
+        figure.clear()
+
     def test_3d_grid_planes_reach_the_figure_and_its_image_output(self):
         from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
 

@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-09 (Issues #290-#293 planning)
+Updated: 2026-09-09 (Issue #291 delivered; Issues #290-#293 planned)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -83,7 +83,7 @@ Windows 11 field use on `c1fd86a` produced nine more requests, grouped into four
 | #290 | Selection and display | The overview panel's plus/minus buttons and wheel both reach one function that scales the X window, and no Y window exists at all, so the panel cannot be zoomed vertically. The x / y / w shortcuts are bound to the window and always act on the detail axes, ignoring where the pointer is. There are no shortcuts for switching mouse mode, and the text-label button appears both in the display panel and on the toolbar |
 | #292 | 3D chromatogram visualization | The 3D figure borrows the project's 2D font sizes, so making 2D axis labels readable also collides the intensity tick numbers with their axis. Separately the preview figure is resized by the Qt canvas to fill its widget while the export resizes it back to the configured millimetres, and point-sized text therefore renders 1.52x larger relative to the plot in the exported file — measured at 7.09x5.51 in configured against 10.78x7.58 in on screen |
 
-Issue #291 removes automatic detection from the saturated-peak correction so the operator always types the clipped range; that withdraws the Issue #218 acceptance criterion requiring a warning when the correction is applied to an unsaturated peak, because an explicitly entered range is the operator's own decision. Issue #293 gives every default output filename a timestamp through one shared helper, since seven separate save dialogs currently offer fixed names.
+Issue #291 makes saturated-peak correction request a manual saturated range before every fit, initially showing the selected integration range. The GUI always passes that accepted range to the existing fitter, so automatic saturation detection is not part of the correction execution path; cancelling leaves the project unchanged. `detect_saturated_span` remains available to its direct core callers and tests. An explicitly supplied range may therefore be used on a peak that automatic detection would have considered unsaturated; this intentionally withdraws the earlier automatic-warning requirement. No calculation, project schema, raw data, dependency, or Windows 7 offline-build input changes. Issue #293 gives every default output filename a timestamp through one shared helper, since seven separate save dialogs currently offer fixed names.
 
 The reported inability to overwrite an existing output is recorded as unreproduced. All seven save dialogs use `QFileDialog.getSaveFileName`, which confirms an overwrite by default and then performs it; no `DontConfirmOverwrite` flag and no filename-uniquifying logic exist anywhere, including in `naming.py`. The condition has to be pinned on the machine — a file left open in another application would surface as a write permission error — before anything is changed, and the timestamped defaults should largely remove the collision in the first place.
 

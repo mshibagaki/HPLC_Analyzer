@@ -6409,47 +6409,34 @@ class MainWindow(QtWidgets.QMainWindow):
         model = self._ask_fit_model()
         if model is None:
             return
-        saturated_range = None
-        while True:
-            try:
-                result, span = fit_saturated_peak(
-                    dataset, parent_peak, model, saturated_range
+        dialog = SaturatedRangeDialog(
+            parent_peak.start_min,
+            parent_peak.end_min,
+            self._application_language,
+            self,
+            initial=(parent_peak.start_min, parent_peak.end_min),
+        )
+        if not dialog_exec(dialog):
+            return
+        try:
+            result, span = fit_saturated_peak(
+                dataset, parent_peak, model, dialog.saturated_range
+            )
+        except ValueError as exc:
+            reason = str(exc)
+            message = (
+                self.translator(reason)
+                if reason in (
+                    "not_saturated",
+                    "saturated_range_outside_peak",
+                    "saturated_range_too_narrow",
                 )
-                break
-            except ValueError as exc:
-                reason = str(exc)
-                if reason == "not_saturated" and saturated_range is None:
-                    answer = QtWidgets.QMessageBox.question(
-                        self,
-                        self.translator("saturation_correction"),
-                        self.translator("not_saturated"),
-                        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                    )
-                    if answer != QtWidgets.QMessageBox.Yes:
-                        return
-                    dialog = SaturatedRangeDialog(
-                        parent_peak.start_min,
-                        parent_peak.end_min,
-                        self._application_language,
-                        self,
-                    )
-                    if not dialog_exec(dialog):
-                        return
-                    saturated_range = dialog.saturated_range
-                    continue
-                message = (
-                    self.translator(reason)
-                    if reason in (
-                        "not_saturated",
-                        "saturated_range_outside_peak",
-                        "saturated_range_too_narrow",
-                    )
-                    else reason
-                )
-                QtWidgets.QMessageBox.warning(
-                    self, self.translator("warning"), message
-                )
-                return
+                else reason
+            )
+            QtWidgets.QMessageBox.warning(
+                self, self.translator("warning"), message
+            )
+            return
         before = self._capture_analysis_state()
         if fitted_peak is None:
             fitted_peak = fitted_peak_from_result(

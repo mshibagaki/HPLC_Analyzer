@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-09 (Issue #265 delivery pending merge)
+Updated: 2026-09-09 (Issue #291 delivery pending merge)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -75,6 +75,16 @@ Issue #270 adds session-only Solo state without changing `dataset.visible` or pr
 Issue #282 adds session-only 3D controls for each X/Y/Z axis label and tick-label display, all defaulting to the existing visible state. The 3D preview now uses the configured output figure dimensions and its PNG/SVG/PDF route retains those dimensions without a second tight crop; the shared 2D export path keeps its existing crop unchanged. No project schema, preset, raw chromatogram, numerical calculation, or dependency changes are involved.
 
 Issue #265 replaces the remaining user-visible spectrum terminology with chromatogram/trace terminology: Japanese uses 「トレース色」「クロマトグラム表示」「トレース移動」, and the English group heading is `Chromatogram display`. Internal identifiers and historical planning records remain unchanged. This is display text only, with no project schema, data, scientific calculation, dependency, or Windows 7 offline-build change.
+
+Issue #291 makes saturated-peak correction request a manual saturated range before
+every fit, initially showing the selected integration range. The GUI always passes
+that accepted range to the existing fitter, so automatic saturation detection is
+not part of the correction execution path; cancelling leaves the project
+unchanged. `detect_saturated_span` remains available to its direct core callers
+and tests. An explicitly supplied range may therefore be used on a peak that
+automatic detection would have considered unsaturated; this intentionally
+withdraws the earlier automatic-warning requirement. No calculation, project
+schema, raw data, dependency, or Windows 7 offline-build input changes.
 
 ## Project compatibility notes for Issues #181 and #221
 

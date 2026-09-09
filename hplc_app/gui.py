@@ -80,6 +80,7 @@ from .naming import (
     build_project_filename,
     sanitize_filename_component,
     suggest_project_name_parts,
+    timestamped_filename,
 )
 from .parser import load_chromatogram_file
 from .peak_fitting import (
@@ -790,6 +791,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._save_global_preset_file()
 
     def _default_save_path(self, filename: str) -> str:
+        filename = timestamped_filename(filename)
         last_directory = self._settings.get(LAST_SAVE_DIRECTORY)
         directory = self._save_directory or last_directory
         if directory and Path(directory).is_dir():

@@ -20,6 +20,23 @@ class OptionalRendererUnavailable(RuntimeError):
     pass
 
 
+# Issue #308/27.8: PyQtGraph drew retention-time labels horizontally while
+# Matplotlib always rotates them 90 degrees (see gui.py/report.py
+# ``rotation=90``). This constant keeps both renderers visually consistent
+# without adding an angle field to ``ScreenPeakOverlaySpec`` -- the plan
+# decided a fixed constant is enough since the goal is renderer parity, not a
+# user-configurable angle.
+RETENTION_LABEL_ANGLE_DEGREES = 90
+# TextItem's anchor fraction is evaluated in the *rotated* frame (measured
+# directly offscreen: an unrotated bottom-center anchor (0.5, 1.0) keeps the
+# label above its point when horizontal, but once angle=90 is applied that
+# same anchor value ends up centering the box on the point instead of
+# sitting below it). (0.0, 0.5) is the rotated-frame equivalent that keeps
+# the label's near edge anchored at the point and the label growing away
+# from it, matching Matplotlib's rotated ``va="bottom", ha="center"`` text.
+RETENTION_LABEL_ANCHOR = (0.0, 0.5)
+
+
 def pyqtgraph_scene_available() -> bool:
     try:
         importlib.import_module("pyqtgraph")
@@ -1369,7 +1386,8 @@ class PyQtGraphSceneConsumer:
                 text = self.pg.TextItem(
                     text=overlay.label_text,
                     color=overlay.label_color,
-                    anchor=(0.5, 1.0),
+                    anchor=RETENTION_LABEL_ANCHOR,
+                    angle=RETENTION_LABEL_ANGLE_DEGREES,
                 )
                 font = self.qt_gui.QFont(overlay.label_font_family)
                 font.setPointSizeF(overlay.label_font_size)

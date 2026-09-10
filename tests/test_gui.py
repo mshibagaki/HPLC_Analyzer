@@ -10604,6 +10604,19 @@ class GuiTests(unittest.TestCase):
         self.assertAlmostEqual(dialog.x_minor_tick.minimum(), 0.1)
         self.assertEqual(dialog.x_major_tick.decimals(), 1)
         self.assertEqual(dialog.x_minor_tick.decimals(), 1)
+        # Issue #308/27.7: the legend frame/fill controls default to
+        # unchecked ("none"), matching every project saved before these
+        # fields existed.
+        self.assertFalse(dialog.legend_frame_checkbox.isChecked())
+        self.assertFalse(dialog.legend_fill_checkbox.isChecked())
+        self.assertFalse(dialog.legend_frame_button.isEnabled())
+        self.assertFalse(dialog.legend_fill_button.isEnabled())
+        dialog.legend_frame_checkbox.setChecked(True)
+        dialog.legend_frame_button.color_name = "#000000"
+        dialog.legend_fill_checkbox.setChecked(True)
+        dialog.legend_fill_button.color_name = "#ffffff"
+        self.assertTrue(dialog.legend_frame_button.isEnabled())
+        self.assertTrue(dialog.legend_fill_button.isEnabled())
         dialog.x_label.setText("Time after injection (min)")
         dialog.tick_mode_combo.setCurrentIndex(
             dialog.tick_mode_combo.findData("manual")
@@ -10625,6 +10638,15 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window.axes.xaxis.label.get_color(), "#123456")
         self.assertTrue(window.axes.texts)
         self.assertTrue(all(text.get_color() == "#000000" for text in window.axes.texts))
+        self.assertEqual(window.project.method.legend_frame_color, "#000000")
+        self.assertEqual(window.project.method.legend_fill_color, "#ffffff")
+        legend = window.axes.get_legend()
+        self.assertIsNotNone(legend)
+        frame = legend.get_frame()
+        self.assertTrue(frame.get_visible())
+        import matplotlib
+        self.assertEqual(matplotlib.colors.to_hex(frame.get_edgecolor()), "#000000")
+        self.assertEqual(matplotlib.colors.to_hex(frame.get_facecolor()), "#ffffff")
         self.assertAlmostEqual(window.project.method.line_width, 2.4)
         self.assertTrue(
             any(abs(line.get_linewidth() - 2.4) < 1.0e-9 for line in window.axes.lines)
@@ -10838,6 +10860,8 @@ class GuiTests(unittest.TestCase):
             method.legend_font_family = "Arial"
             method.legend_font_size = 11.0
             method.legend_font_color = "#abcdef"
+            method.legend_frame_color = "#000000"
+            method.legend_fill_color = "#ffffff"
             method.x_tick_mode = "manual"
             method.x_major_tick_min = 2.0
             method.x_minor_tick_min = 0.5
@@ -10861,8 +10885,35 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(gradient_axis.labelText, "Configured B (%)")
             self.assertEqual(gradient_axis.labelStyle["font-family"], "Arial")
             self.assertTrue(preview._legend_outside)
-            self.assertIn(preview._legend, consumer.widget.ci.items)
+            # Issue #308/27.6: the legend itself is never a direct
+            # GraphicsLayout item any more (that stretched it to the cell
+            # and spread its entries down the plot); a fixed-size host
+            # reserves the cell instead, while the legend keeps its own
+            # natural size as the host's child.
+            self.assertIn(preview._legend_host, consumer.widget.ci.items)
+            self.assertNotIn(preview._legend, consumer.widget.ci.items)
+            self.assertIs(preview._legend.parentItem(), preview._legend_host)
+            natural_size = (
+                preview._legend.boundingRect().width(),
+                preview._legend.boundingRect().height(),
+            )
+            self.assertGreater(natural_size[1], 0.0)
+            # The legend (a child of the host) must stay pinned to the
+            # host's own top-left corner in the scene, not drift away from
+            # the reserved cell (a prior version of this host offset the
+            # legend by the cell's position a second time).
+            self.assertEqual(preview._legend.scenePos(), preview._legend_host.scenePos())
             self.assertFalse(window._current_view_pixmap().isNull())
+            # Issue #308/27.7: an explicit frame/fill color is reflected on
+            # the PyQtGraph legend.
+            self.assertTrue(preview._legend.frame)
+            self.assertEqual(preview._legend.pen().color().name(), "#000000")
+            self.assertEqual(preview._legend.brush().color().name(), "#ffffff")
+
+            method.legend_frame_color = ""
+            method.legend_fill_color = ""
+            window._plot()
+            self.assertFalse(window._screen_preview._legend.frame)
             for _sample, label in preview._legend.items:
                 self.assertEqual(label.opts["family"], "Arial")
                 self.assertEqual(label.opts["size"], "11pt")
@@ -10896,7 +10947,7 @@ class GuiTests(unittest.TestCase):
             window._plot()
             self.assertTrue(window._screen_preview._legend_outside)
             self.assertIn(
-                window._screen_preview._legend,
+                window._screen_preview._legend_host,
                 window._screen_preview.consumer.widget.ci.items,
             )
             method.x_tick_mode = "auto"
@@ -10909,7 +10960,24 @@ class GuiTests(unittest.TestCase):
             )
             split = window._screen_preview.consumer
             self.assertTrue(window._screen_preview._legend_outside)
-            self.assertIn(window._screen_preview._legend, split.widget.ci.items)
+            self.assertIn(window._screen_preview._legend_host, split.widget.ci.items)
+            # Issue #308/27.6: the legend host now spans the split view's
+            # primary/split-handle/secondary rows (rowspan=3) instead of a
+            # single row -- a much taller reserved cell than before -- yet
+            # the legend itself keeps exactly the same natural size as it
+            # had in single-panel mode. Before this fix, placing the
+            # LegendItem directly in the cell stretched it to fill whatever
+            # rowspan it was given, so this size would have changed with the
+            # layout instead of staying fixed.
+            split_size = (
+                window._screen_preview._legend.boundingRect().width(),
+                window._screen_preview._legend.boundingRect().height(),
+            )
+            self.assertEqual(split_size, natural_size)
+            self.assertEqual(
+                window._screen_preview._legend.scenePos(),
+                window._screen_preview._legend_host.scenePos(),
+            )
             self.assertEqual(split.primary.getAxis("bottom").labelText, "")
             self.assertEqual(split.secondary_plot.getAxis("bottom").labelText,
                              "Configured X")
@@ -10947,6 +11015,39 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(window._selected_dataset_rows(), [0, 1])
         window.project.dirty = False
         window.close()
+
+    def test_pyqtgraph_retention_labels_are_rotated_to_match_matplotlib(self):
+        # Issue #308/27.8: PyQtGraph drew retention labels horizontally while
+        # Matplotlib always rotated them 90 degrees; both renderers must now
+        # agree.
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            dataset = window.project.datasets[0]
+            peak = dataset.peaks[0]
+            window.project.method.show_retention_labels = True
+            window._plot()
+            window.screen_preview_checkbox.setChecked(True)
+            preview = window._screen_preview
+            consumer = preview.consumer
+            label = consumer.peak_overlay_items[peak.id]["retention_label"]
+            self.assertIsNotNone(label)
+            self.assertEqual(label.angle, 90)
+            self.assertEqual(tuple(label.anchor), (0.0, 0.5))
+            self.assertTrue(label.isVisible())
+
+            window.project.method.show_retention_labels = False
+            window._plot()
+            # Toggling visibility alone is handled by
+            # ``set_display_options`` without rebuilding the scene (Issue
+            # #250); the item persists but is hidden.
+            label = consumer.peak_overlay_items[peak.id]["retention_label"]
+            self.assertIsNotNone(label)
+            self.assertFalse(label.isVisible())
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_gradient_legend_can_hide_or_show_chromatogram_name(self):
         window = self.make_window()

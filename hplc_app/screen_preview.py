@@ -44,6 +44,7 @@ class ExperimentalScreenPreview:
         self._zoom_drag = None
         self._overview_pan = None
         self._legend = None
+        self._legend_host = None
         self._legend_outside = False
         try:
             self.consumer.widget.setBackground("w")
@@ -368,6 +369,39 @@ class ExperimentalScreenPreview:
             },
         )
 
+    def _make_legend_host(self, legend):
+        """Reserve grid space for an outside legend without stretching it.
+
+        Placing a ``LegendItem`` directly into ``GraphicsLayout.addItem``
+        makes the outer ``QGraphicsGridLayout`` call ``setGeometry()`` on it
+        with the whole cell rect; the legend's own internal
+        ``QGraphicsGridLayout`` then stretches every entry to fill that
+        rect, which is the "legend spreads down the plot" symptom (Issue
+        #308/27.6). This host reparents the legend as an ordinary child
+        instead (the pattern the LegendItem docstring itself recommends) and
+        only repositions -- never resizes -- it on ``setGeometry``, so the
+        legend keeps its own natural, top-anchored size while the grid
+        layout still reserves the cell's width/height for it.
+        """
+
+        pg = self.consumer.pg
+
+        class _LegendHost(pg.GraphicsWidget):
+            def setGeometry(self, rect):
+                super().setGeometry(rect)
+                # ``rect`` is this host's own new geometry in its PARENT's
+                # coordinates; ``super().setGeometry`` already moves/sizes
+                # the host to it. The legend is a CHILD of the host, so its
+                # position must stay in the host's *local* coordinates
+                # (top-left corner, 0, 0) rather than being offset by
+                # ``rect`` again -- doing that double-applied the offset and
+                # walked the legend away from the reserved cell (measured
+                # offscreen: host at (9, 9) left the legend at (18, 18)
+                # instead of (9, 9)).
+                legend.setPos(0.0, 0.0)
+
+        return _LegendHost()
+
     def _update_legend(self, scene):
         method = self.owner.project.method
         if self._legend is None:
@@ -376,6 +410,7 @@ class ExperimentalScreenPreview:
             # Preserve PlotItem.addLegend's public access pattern for existing
             # preview consumers while allowing outside-layout reparenting.
             self.consumer.primary.legend = self._legend
+            self._legend_host = self._make_legend_host(self._legend)
         legend = self._legend
         legend.clear()
         for trace in scene.traces:
@@ -401,20 +436,45 @@ class ExperimentalScreenPreview:
         legend.setLabelTextSize(size)
         for _sample, label in legend.items:
             label.setText(label.text, color=color, size=size, family=family)
+        # Issue #308/27.7: an explicit frame/fill color makes the legend
+        # visible with that border/background; "" (the existing
+        # Dataset.color "none" convention) keeps it unframed and unfilled,
+        # matching every project saved before these fields existed.
+        frame_color = method.legend_frame_color or ""
+        fill_color = method.legend_fill_color or ""
+        legend.setPen(frame_color or None)
+        legend.setBrush(fill_color or None)
+        legend.frame = bool(frame_color or fill_color)
+        legend.update()
         location = method.legend_location
         outside = location == "outside right"
+        host = self._legend_host
         if outside and not self._legend_outside:
-            legend.setParentItem(None)
+            legend.setParentItem(host)
+            legend.setPos(0.0, 0.0)
             self.consumer.widget.ci.addItem(
-                legend, row=2, col=1,
+                host, row=2, col=1,
                 rowspan=3 if self.consumer.split_y_axes else 1,
             )
         elif not outside and self._legend_outside:
-            self.consumer.widget.ci.removeItem(legend)
+            self.consumer.widget.ci.removeItem(host)
             legend.setParentItem(self.consumer.primary.vb)
         self._legend_outside = outside
+        layout = self.consumer.widget.ci.layout
         if outside:
+            legend.updateSize()
+            host_width = legend.boundingRect().width() + 8.0
+            layout.setColumnFixedWidth(1, host_width)
+            # Commit the new column/row geometry immediately rather than
+            # waiting for the next paint cycle, so callers reading
+            # ``host.geometry()`` right after this call (screenshots,
+            # pixmap capture, tests) see the reserved cell already sized.
+            layout.invalidate()
+            layout.activate()
             return
+        layout.setColumnFixedWidth(1, 0.0)
+        layout.invalidate()
+        layout.activate()
         anchors = {
             "upper left": ((0, 0), (0, 0), (10, 10)),
             "lower left": ((0, 1), (0, 1), (10, -10)),

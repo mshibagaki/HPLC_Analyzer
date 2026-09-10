@@ -516,6 +516,11 @@ class AnalysisMethod:
     legend_font_family: str = "Arial"
     legend_font_size: float = 9.0
     legend_font_color: str = "#000000"
+    # Empty string means "none", matching the existing Dataset.color
+    # convention (Issue #308). The default keeps the legend unframed and
+    # unfilled, matching every project saved before this field existed.
+    legend_frame_color: str = ""
+    legend_fill_color: str = ""
     legend_components: List[str] = field(
         default_factory=lambda: ["label", "wavelength"]
     )

@@ -120,6 +120,7 @@ from hplc_app.rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
     ScreenRendererCapabilities,
+    apply_legend_frame_and_fill,
     default_render_quality,
     default_trace_color,
     matplotlib_line_style,
@@ -2302,6 +2303,31 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(migrated["datasets"][0]["line_style"], "solid")
         self.assertEqual(migrate_project_manifest(migrated), migrated)
 
+    def test_schema_108_migrates_to_unframed_unfilled_legend(self):
+        # Issue #308/27.7: the legend frame/fill fields are new. An existing
+        # (pre-#308) project must reopen as unframed and unfilled, matching
+        # what it already looked like before these fields existed.
+        manifest = {
+            "format_major": 1,
+            "schema_version": 108,
+            "method": {"legend_location": "outside right"},
+            "datasets": [],
+        }
+        untouched = deepcopy(manifest)
+
+        migrated = migrate_project_manifest(manifest)
+
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
+        self.assertEqual(migrated["method"]["legend_frame_color"], "")
+        self.assertEqual(migrated["method"]["legend_fill_color"], "")
+        self.assertEqual(migrated["method"]["legend_location"], "outside right")
+        self.assertEqual(migrate_project_manifest(migrated), migrated)
+        # A fresh method (and any manifest with no "method" object at all)
+        # defaults to the same unframed, unfilled legend.
+        self.assertEqual(AnalysisMethod().legend_frame_color, "")
+        self.assertEqual(AnalysisMethod().legend_fill_color, "")
+
     def test_trace_line_style_identifiers_have_stable_backend_mappings(self):
         self.assertEqual(
             LINE_STYLE_IDS, ("solid", "dashed", "dotted", "dash_dot")
@@ -2312,6 +2338,41 @@ class ProjectTests(unittest.TestCase):
         )
         self.assertEqual(normalize_line_style("unsupported"), "solid")
         self.assertEqual(Dataset(line_style="unsupported").line_style, "solid")
+
+    def test_apply_legend_frame_and_fill_shared_by_screen_and_report(self):
+        # Issue #308/27.7: one shared helper styles the legend frame/fill on
+        # every Matplotlib-backed path (interactive screen and PNG/SVG/PDF
+        # export share a Figure automatically; the report draws its own).
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib.figure import Figure
+
+        figure = Figure()
+        axis = figure.add_subplot(111)
+        axis.plot([0, 1], [0, 1], label="trace")
+
+        legend = axis.legend(frameon=True)
+        apply_legend_frame_and_fill(legend, AnalysisMethod())
+        frame = legend.get_frame()
+        self.assertFalse(frame.get_visible())
+
+        legend = axis.legend(frameon=True)
+        method = AnalysisMethod(
+            legend_frame_color="#000000", legend_fill_color="#ffffff"
+        )
+        apply_legend_frame_and_fill(legend, method)
+        frame = legend.get_frame()
+        self.assertTrue(frame.get_visible())
+        self.assertEqual(matplotlib.colors.to_hex(frame.get_edgecolor()), "#000000")
+        self.assertEqual(matplotlib.colors.to_hex(frame.get_facecolor()), "#ffffff")
+
+        legend = axis.legend(frameon=True)
+        method = AnalysisMethod(legend_frame_color="#111111")
+        apply_legend_frame_and_fill(legend, method)
+        frame = legend.get_frame()
+        self.assertTrue(frame.get_visible())
+        self.assertEqual(matplotlib.colors.to_hex(frame.get_edgecolor()), "#111111")
+        self.assertEqual(frame.get_facecolor()[3], 0.0)
 
     def test_schema_102_creates_one_stable_run_per_legacy_dataset(self):
         manifest = {
@@ -3289,6 +3350,8 @@ class ProjectTests(unittest.TestCase):
             "column",
         ]
         project.method.legend_separator = " | "
+        project.method.legend_frame_color = "#000000"
+        project.method.legend_fill_color = "#ffffff"
         project.method.gradient_axis_label = "ACN (%)"
         project.method.show_retention_labels = True
         project.method.zoom_axis = "x"
@@ -3320,6 +3383,8 @@ class ProjectTests(unittest.TestCase):
                 ["run_id", "label", "timestamp", "wavelength", "column"],
             )
             self.assertEqual(loaded.method.legend_separator, " | ")
+            self.assertEqual(loaded.method.legend_frame_color, "#000000")
+            self.assertEqual(loaded.method.legend_fill_color, "#ffffff")
             self.assertEqual(loaded.method.gradient_axis_label, "ACN (%)")
             self.assertTrue(loaded.method.show_retention_labels)
             self.assertEqual(loaded.method.zoom_axis, "x")
@@ -4686,6 +4751,8 @@ class ProjectTests(unittest.TestCase):
         fitted_peak.amount_ug = 1.5
         project = Project(title="Report test", datasets=[dataset])
         project.method.line_width = 2.4
+        project.method.legend_frame_color = "#000000"
+        project.method.legend_fill_color = "#ffffff"
         figures = analysis_report_figures(project, [dataset], "en")
         plot_axis = next(
             axis
@@ -4727,6 +4794,19 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(dataset.peaks[0].area_percent, 62.5)
         self.assertTrue(
             any(line.get_color() == "#c026d3" for line in plot_axis.lines)
+        )
+        # Issue #308/27.7: the report path applies the same shared
+        # frame/fill helper as the interactive screen.
+        import matplotlib
+        report_legend = plot_axis.get_legend()
+        self.assertIsNotNone(report_legend)
+        report_frame = report_legend.get_frame()
+        self.assertTrue(report_frame.get_visible())
+        self.assertEqual(
+            matplotlib.colors.to_hex(report_frame.get_edgecolor()), "#000000"
+        )
+        self.assertEqual(
+            matplotlib.colors.to_hex(report_frame.get_facecolor()), "#ffffff"
         )
         for figure in figures:
             figure.clear()

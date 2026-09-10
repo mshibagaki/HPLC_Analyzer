@@ -4140,6 +4140,113 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_overview_zoom_buttons_anchor_on_zero_and_scrollbars_stay_outside_the_plot(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            window.show()
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            consumer = window._screen_preview.consumer
+
+            # Issue #307/27.1: the +/- buttons (center=None) anchor the
+            # shared fraction window on Y1's y=0 -- not the current window's
+            # midpoint -- including when Y1's own low bound is negative.
+            # (The fraction window is shared with Y2 by design (#302), so
+            # only Y1's own zero is guaranteed to stay put; Y2 follows the
+            # same fraction change rather than independently anchoring its
+            # own zero.)
+            data_low, data_high = window._overview_y_bounds("y1")
+            self.assertLess(data_low, 0.0)
+            zero_fraction = (0.0 - data_low) / (data_high - data_low)
+            before = window._overview_y_fraction()
+            window._zoom_overview_y(0.5)
+            after = window._overview_y_fraction()
+            before_zero = before[0] + zero_fraction * (before[1] - before[0])
+            after_zero = after[0] + zero_fraction * (after[1] - after[0])
+            self.assertAlmostEqual(before_zero, after_zero, places=6)
+            window._set_overview_y_fraction((0.0, 1.0))
+
+            # 0 outside the data range clamps to the nearest edge instead of
+            # raising or silently doing nothing.
+            window._overview_full_y = None
+            with patch.object(
+                window, "_overview_y_bounds", return_value=(10.0, 20.0)
+            ):
+                window._zoom_overview_y(0.5)
+                fraction = window._overview_y_fraction()
+                self.assertAlmostEqual(fraction[0], 0.0, places=6)
+
+            # The wheel path (explicit cursor `center`) is unaffected: the
+            # cursor's *relative* position inside the window is preserved by
+            # an anchored zoom, not turned into the new window's midpoint.
+            window._set_overview_y_fraction((0.0, 1.0))
+            data_low, data_high = window._overview_y_bounds("y1")
+            cursor_value = data_low + 0.75 * (data_high - data_low)
+            before = window._overview_y_fraction()
+            before_relative = (0.75 - before[0]) / (before[1] - before[0])
+            window._zoom_overview_y(0.5, center=cursor_value)
+            after = window._overview_y_fraction()
+            after_relative = (0.75 - after[0]) / (after[1] - after[0])
+            self.assertAlmostEqual(before_relative, after_relative, places=6)
+
+            # Issue #307/27.3: the overview shows the X ticks/numbers but no
+            # axis label, and the left axis stays hidden.
+            bottom_axis = consumer.overview.getAxis("bottom")
+            left_axis = consumer.overview.getAxis("left")
+            self.assertTrue(bottom_axis.isVisible())
+            self.assertEqual(bottom_axis.labelText, "")
+            self.assertTrue(bottom_axis.style.get("showValues"))
+            self.assertFalse(left_axis.isVisible())
+
+            # Issue #307/27.2: none of the four scrollbars overlap their
+            # plot's own rendered content (ticks/labels included).
+            overview_rect = consumer.overview.sceneBoundingRect()
+            detail_rect = consumer.primary.sceneBoundingRect()
+            self.assertGreaterEqual(
+                consumer.overview_scrollbar.geometry().top(),
+                overview_rect.bottom(),
+            )
+            self.assertGreaterEqual(
+                consumer.overview_y_scrollbar.geometry().left(),
+                overview_rect.right(),
+            )
+            self.assertGreaterEqual(
+                consumer.detail_x_scrollbar.geometry().top(), detail_rect.bottom()
+            )
+            self.assertGreaterEqual(
+                consumer.detail_y_scrollbar.geometry().left(), detail_rect.right()
+            )
+
+            # Issue #307/27.4: switching to single/split leaves no blank
+            # strip above the detail plot (a stretch factor of 0 alone was
+            # not enough -- the overview PlotItem's own preferred size and
+            # the layout's default inter-row spacing were the rest of it).
+            for view_mode in ("single", "split_y_axes"):
+                with self.subTest(view_mode=view_mode):
+                    window.view_mode_combo.setCurrentIndex(
+                        window.view_mode_combo.findData(view_mode)
+                    )
+                    self.app.processEvents()
+                    consumer = window._screen_preview.consumer
+                    self.assertAlmostEqual(
+                        consumer.primary.sceneBoundingRect().top(),
+                        consumer.widget.ci.layout.getContentsMargins()[1],
+                        delta=1.0,
+                    )
+
+            window.view_mode_combo.setCurrentIndex(
+                window.view_mode_combo.findData("overview_detail")
+            )
+            self.app.processEvents()
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_view_resets_follow_pointer_after_overview_wheel_in_both_renderers(self):
         if not pyqtgraph_scene_available():
             self.skipTest("optional modern renderer unavailable")

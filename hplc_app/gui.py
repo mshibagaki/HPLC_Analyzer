@@ -3898,11 +3898,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _zoom_overview_y(self, factor, center=None):
         limits = self._overview_y_fraction()
+        data_low, data_high = self._overview_y_bounds("y1")
+        data_span = data_high - data_low
         if center is None:
-            center = sum(limits) / 2.0
+            # Default the +/- buttons to the y=0 anchor (small peaks near the
+            # baseline are the common case). The wheel keeps the cursor as
+            # its anchor via the explicit `center` argument below. When 0 is
+            # outside the data range, round to the nearest edge.
+            if data_span > 0.0:
+                zero_fraction = (0.0 - data_low) / data_span
+            else:
+                zero_fraction = 0.5
+            center = min(max(zero_fraction, 0.0), 1.0)
         else:
-            data_low, data_high = self._overview_y_bounds("y1")
-            center = (float(center) - data_low) / (data_high - data_low)
+            center = (float(center) - data_low) / data_span
         self._set_overview_y_fraction(
             self._scaled_limits(limits, factor, center)
         )

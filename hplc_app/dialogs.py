@@ -5123,6 +5123,48 @@ class AxisLabelsDialog(QtWidgets.QDialog):
         styles.setColumnStretch(1, 1)
         root.addWidget(styles_group, 1)
 
+        legend_fill_group = QtWidgets.QGroupBox(
+            "凡例表示の塗りつぶし" if language == "ja" else "Legend frame and fill"
+        )
+        legend_fill_form = QtWidgets.QFormLayout(legend_fill_group)
+        self.legend_frame_checkbox = QtWidgets.QCheckBox(
+            "枠線を表示" if language == "ja" else "Show frame"
+        )
+        self.legend_frame_checkbox.setChecked(bool(method.legend_frame_color))
+        self.legend_frame_button = self._color_button(
+            method.legend_frame_color or "#000000"
+        )
+        self.legend_frame_button.setEnabled(self.legend_frame_checkbox.isChecked())
+        self.legend_frame_checkbox.toggled.connect(
+            self.legend_frame_button.setEnabled
+        )
+        frame_row = QtWidgets.QHBoxLayout()
+        frame_row.addWidget(self.legend_frame_checkbox)
+        frame_row.addWidget(self.legend_frame_button)
+        frame_row.addStretch(1)
+        legend_fill_form.addRow(
+            "枠線" if language == "ja" else "Frame", frame_row
+        )
+        self.legend_fill_checkbox = QtWidgets.QCheckBox(
+            "塗りつぶしを表示" if language == "ja" else "Show fill"
+        )
+        self.legend_fill_checkbox.setChecked(bool(method.legend_fill_color))
+        self.legend_fill_button = self._color_button(
+            method.legend_fill_color or "#ffffff"
+        )
+        self.legend_fill_button.setEnabled(self.legend_fill_checkbox.isChecked())
+        self.legend_fill_checkbox.toggled.connect(
+            self.legend_fill_button.setEnabled
+        )
+        fill_row = QtWidgets.QHBoxLayout()
+        fill_row.addWidget(self.legend_fill_checkbox)
+        fill_row.addWidget(self.legend_fill_button)
+        fill_row.addStretch(1)
+        legend_fill_form.addRow(
+            "塗りつぶし" if language == "ja" else "Fill", fill_row
+        )
+        root.addWidget(legend_fill_group)
+
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -5219,6 +5261,16 @@ class AxisLabelsDialog(QtWidgets.QDialog):
         method.legend_font_family = self.legend_font_combo.currentFont().family()
         method.legend_font_size = self.legend_font_size.value()
         method.legend_font_color = self.legend_color_button.color_name
+        method.legend_frame_color = (
+            self.legend_frame_button.color_name
+            if self.legend_frame_checkbox.isChecked()
+            else ""
+        )
+        method.legend_fill_color = (
+            self.legend_fill_button.color_name
+            if self.legend_fill_checkbox.isChecked()
+            else ""
+        )
         method.retention_label_font_family = self.retention_font_combo.currentFont().family()
         method.retention_label_font_size = self.retention_font_size.value()
         method.retention_label_color = self.retention_color_button.color_name

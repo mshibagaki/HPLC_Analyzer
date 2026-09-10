@@ -118,6 +118,7 @@ from .report import (
 from .rendering import (
     HIGH_QUALITY,
     LIGHTWEIGHT,
+    apply_legend_frame_and_fill as _apply_legend_frame_and_fill,
     default_render_quality,
     default_trace_color,
     matplotlib_line_style,
@@ -4749,10 +4750,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     labels,
                     loc="upper left",
                     bbox_to_anchor=(outside_anchor, 1.0),
-                    frameon=False,
+                    frameon=True,
                 )
             else:
-                legend = self.axes.legend(handles, labels, loc=location, frameon=False)
+                legend = self.axes.legend(handles, labels, loc=location, frameon=True)
             for legend_text in legend.get_texts():
                 if _resolved_plot_font(self.project.method.legend_font_family):
                     legend_text.set_fontfamily(
@@ -4762,6 +4763,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 legend_text.set_color(
                     self.project.method.legend_font_color or "#000000"
                 )
+            _apply_legend_frame_and_fill(legend, self.project.method)
             legend.set_draggable(True)
         self._view_initialized = bool(times)
         self._view_state = (

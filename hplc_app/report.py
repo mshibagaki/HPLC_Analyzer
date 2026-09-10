@@ -19,7 +19,7 @@ from .peak_fitting import (
     evaluate_fit_profile,
     is_saturation_corrected,
 )
-from .rendering import matplotlib_line_style
+from .rendering import apply_legend_frame_and_fill, matplotlib_line_style
 
 
 A4_SIZE_INCHES = (8.2677165, 11.6929134)
@@ -418,7 +418,8 @@ def _plot_dataset(
         gradient_axis.set_ylim(0.0, 100.0)
         gradient_axis.set_ylabel(project.method.gradient_axis_label or "Mobile phase B (%)")
     if fitted_plotted:
-        axis.legend(frameon=False, fontsize=6.5)
+        legend = axis.legend(frameon=True, fontsize=6.5)
+        apply_legend_frame_and_fill(legend, project.method)
 
 
 def analysis_report_figures(

@@ -87,6 +87,25 @@ def matplotlib_line_style(value: object) -> str:
     return MATPLOTLIB_LINE_STYLES[normalize_line_style(value)]
 
 
+def apply_legend_frame_and_fill(legend, method) -> None:
+    """Style a Matplotlib legend's frame/fill from persisted method colors.
+
+    Shared by the interactive screen (also used for PNG/SVG/PDF export, which
+    reuses the same Matplotlib ``Figure``) and the analysis report so the two
+    Matplotlib-backed paths cannot drift (Issue #308). An empty color string
+    means "none", matching the existing ``Dataset.color`` convention; the
+    frame is hidden unless a frame or fill color is set, matching every
+    project saved before these fields existed.
+    """
+
+    frame_color = getattr(method, "legend_frame_color", "") or ""
+    fill_color = getattr(method, "legend_fill_color", "") or ""
+    frame = legend.get_frame()
+    frame.set_edgecolor(frame_color or "none")
+    frame.set_facecolor(fill_color or "none")
+    frame.set_visible(bool(frame_color or fill_color))
+
+
 @dataclass(frozen=True)
 class ScreenRendererCapabilities:
     """Backend-neutral features exposed by an interactive screen surface."""

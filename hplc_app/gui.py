@@ -46,6 +46,7 @@ from .dialogs import (
     QuantitationHelpDialog,
     ReportOptionsDialog,
     ReportScopeDialog,
+    ScreenDisplaySettingsDialog,
     TextAnnotationDialog,
     ThreeDChromatogramDialog,
     WorkDirectoriesDialog,
@@ -66,6 +67,7 @@ from .import_batch import (
     normalized_source_path,
 )
 from .models import (
+    AnalysisMethod,
     Dataset,
     FractionRegion,
     PeakRegion,
@@ -554,6 +556,59 @@ class DatasetTableWidget(QtWidgets.QTableWidget):
         )
         event.setDropAction(ignore_action)
         event.accept()
+
+
+class ScreenAspectRatioContainer(QtWidgets.QWidget):
+    """Letterbox a single child widget to a target width:height ratio.
+
+    Issue #310 / workflow doc 27.11: choosing a screen aspect ratio means
+    "reflect it on screen" by letterboxing the plot area, reusing Issue
+    #292's "the preview is a scaled model of the export" idea without any
+    renderer-specific code -- the child (whichever of the Matplotlib canvas
+    or the PyQtGraph widget is current in the owning QStackedWidget) is
+    simply confined to a centered sub-rectangle of the requested ratio. A
+    ``None`` ratio ("match current screen") leaves the child filling the
+    whole container, exactly as before this feature existed.
+    """
+
+    def __init__(self, child: QtWidgets.QWidget, parent=None):
+        super().__init__(parent)
+        self._child = child
+        self._ratio = None
+        child.setParent(self)
+
+    def set_ratio(self, ratio):
+        ratio = float(ratio) if ratio else None
+        if ratio == self._ratio:
+            return
+        self._ratio = ratio
+        self._relayout()
+
+    def ratio(self):
+        return self._ratio
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self):
+        rect = self.rect()
+        width = rect.width()
+        height = rect.height()
+        if not self._ratio or width <= 0 or height <= 0:
+            self._child.setGeometry(rect)
+            return
+        if width / height > self._ratio:
+            target_height = height
+            target_width = int(round(target_height * self._ratio))
+        else:
+            target_width = width
+            target_height = int(round(target_width / self._ratio))
+        target_width = max(1, min(target_width, width))
+        target_height = max(1, min(target_height, height))
+        x = rect.x() + (width - target_width) // 2
+        y = rect.y() + (height - target_height) // 2
+        self._child.setGeometry(x, y, target_width, target_height)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -1278,6 +1333,21 @@ class MainWindow(QtWidgets.QMainWindow):
             glyph.moveTo(8, 19)
             glyph.lineTo(16, 19)
             painter.drawPath(glyph)
+        elif kind == "display":
+            # A small monitor: screen rectangle + stand, drawn as geometry
+            # (Issue #310 / workflow doc 27.11) so no external asset is added
+            # (kept offline-build-safe for Windows 7).
+            painter.setPen(QtGui.QPen(ink, 1.6))
+            no_brush = (
+                QtCore.Qt.BrushStyle.NoBrush if QT_API == 6 else QtCore.Qt.NoBrush
+            )
+            painter.setBrush(no_brush)
+            painter.drawRoundedRect(QtCore.QRectF(3, 4, 18, 12), 1.5, 1.5)
+            painter.setPen(QtGui.QPen(accent, 1.6))
+            painter.drawLine(9, 16, 9, 19)
+            painter.drawLine(15, 16, 15, 19)
+            painter.setPen(QtGui.QPen(ink, 1.4))
+            painter.drawLine(6, 19, 18, 19)
         painter.end()
         return QtGui.QIcon(pixmap)
 
@@ -1487,7 +1557,8 @@ class MainWindow(QtWidgets.QMainWindow):
         plot_layout.addLayout(preview_controls)
         self.plot_stack = QtWidgets.QStackedWidget()
         self.plot_stack.addWidget(self.canvas)
-        plot_layout.addWidget(self.plot_stack, 1)
+        self.plot_aspect_container = ScreenAspectRatioContainer(self.plot_stack)
+        plot_layout.addWidget(self.plot_aspect_container, 1)
         plot_panel.setMinimumHeight(220)
         self.right_splitter.addWidget(plot_panel)
 
@@ -1627,24 +1698,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select_all_peaks_button = QtWidgets.QPushButton()
         self.delete_peak_button = QtWidgets.QPushButton()
         self.integration_list_button = QtWidgets.QPushButton()
+        # Row layout (Issue #310 / workflow doc 27.10, 29): auto-detect, fit
+        # and saturation correction now share one row in that order, freeing
+        # the row they used to split across; every row below moves up by one
+        # to close the gap (2026-09-10 default, workflow doc 29). Issue #313
+        # (サ²) touches the *next* two rows (select/delete and the fraction
+        # buttons plus the integration-list/fraction-list buttons) -- it
+        # should rebase onto this row numbering rather than reintroduce the
+        # old one.
         integration_controls.addWidget(self.baseline_label, 0, 0)
         integration_controls.addWidget(self.baseline_combo, 0, 1, 1, 2)
         integration_controls.addWidget(self.integrate_button, 1, 0)
         integration_controls.addWidget(self.edit_peak_button, 1, 1)
         integration_controls.addWidget(self.split_peak_button, 1, 2)
-        integration_controls.addWidget(self.auto_detect_button, 2, 0, 1, 2)
-        integration_controls.addWidget(self.fit_peak_button, 2, 2)
+        integration_controls.addWidget(self.auto_detect_button, 2, 0)
+        integration_controls.addWidget(self.fit_peak_button, 2, 1)
+        integration_controls.addWidget(self.saturation_correction_button, 2, 2)
+        integration_controls.addWidget(self.select_all_peaks_button, 3, 0, 1, 2)
+        integration_controls.addWidget(self.delete_peak_button, 3, 2)
         integration_controls.addWidget(
-            self.saturation_correction_button, 3, 0, 1, 3
+            self.fraction_numeric_button, 4, 0, 1, 2
         )
-        integration_controls.addWidget(self.select_all_peaks_button, 4, 0, 1, 2)
-        integration_controls.addWidget(self.delete_peak_button, 4, 2)
-        integration_controls.addWidget(
-            self.fraction_numeric_button, 5, 0, 1, 2
-        )
-        integration_controls.addWidget(self.clear_fractions_button, 5, 2)
-        integration_controls.addWidget(self.integration_list_button, 6, 0, 1, 3)
-        integration_controls.setRowStretch(7, 1)
+        integration_controls.addWidget(self.clear_fractions_button, 4, 2)
+        integration_controls.addWidget(self.integration_list_button, 5, 0, 1, 3)
+        integration_controls.setRowStretch(6, 1)
 
         # Issue #236 / 9.15: installed here, once every group-panel control
         # it binds to (move_trace_button, integrate_button, edit_peak_button,
@@ -1848,6 +1925,17 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.toolbar.addSeparator()
 
+        # Issue #310 / workflow doc 27.11: a non-mode utility icon, placed
+        # immediately to the right of "Axes, labels and formatting" (the
+        # Subplots/"3 bar" icon) by _configure_toolbar_actions below, which
+        # keeps the rest of the non-mode utility order (Home/Back/Forward/
+        # Save) untouched.
+        self.display_settings_action = self._action(
+            slot=self.edit_screen_display_settings
+        )
+        self.display_settings_action.setIcon(self._mode_glyph_icon("display"))
+        self.display_settings_action.setToolTip(t("screen_display_settings"))
+
         self._configure_toolbar_actions()
 
     def _configure_toolbar_actions(self):
@@ -1864,6 +1952,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         actions = getattr(self.toolbar, "_actions", {}) or {}
         customize_action = actions.get("edit_parameters")
+        subplots_action = actions.get("configure_subplots")
         mode_actions = {
             "normal": actions.get("pan"),
             "zoom": actions.get("zoom"),
@@ -1896,8 +1985,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.toolbar.addAction(action)
         if utility_actions:
             self.toolbar.addSeparator()
+            display_settings_action = getattr(self, "display_settings_action", None)
+            placed_display_settings = False
             for action in utility_actions:
                 self.toolbar.addAction(action)
+                if (
+                    display_settings_action is not None
+                    and subplots_action is not None
+                    and action is subplots_action
+                ):
+                    # Issue #310 / workflow doc 27.11: immediately to the
+                    # right of "Axes, labels and formatting" (Subplots),
+                    # leaving the rest of the non-mode utility order
+                    # (Home/Back/Forward/Save) unchanged.
+                    self.toolbar.addAction(display_settings_action)
+                    placed_display_settings = True
+            if display_settings_action is not None and not placed_display_settings:
+                # Defensive fallback if Subplots is ever unavailable.
+                self.toolbar.addAction(display_settings_action)
 
     def _select_toolbar_toggled(self, checked: bool):
         """Route the select toolbar icon through the combo.
@@ -4230,6 +4335,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _plot(self, preserve_view: bool = True):
         if not hasattr(self, "axes"):
             return
+        self._apply_screen_aspect_ratio()
         if getattr(self, "_screen_preview", None) is not None:
             self._screen_preview.cancel_move_drag()
             self._screen_preview.cancel_annotation_drag()
@@ -7365,6 +7471,60 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.dirty = True
         self._plot()
         self._update_title()
+
+    def _screen_letterbox_ratio(self):
+        """The width:height ratio to letterbox the plot area to, or None.
+
+        Issue #310 / workflow doc 27.11: no new persisted field is added --
+        the aspect-ratio choice itself is derived from the already-persisted
+        ``figure_width_mm`` / ``figure_height_mm``. The dataclass defaults
+        (never touched by this dialog) are the "match current screen"
+        sentinel, so a project nobody has ever opened this dialog on keeps
+        today's fill-the-panel behavior unchanged.
+        """
+        method = self.project.method
+        defaults = AnalysisMethod()
+        width_mm = float(getattr(method, "figure_width_mm", defaults.figure_width_mm))
+        height_mm = float(getattr(method, "figure_height_mm", defaults.figure_height_mm))
+        if width_mm == defaults.figure_width_mm and height_mm == defaults.figure_height_mm:
+            return None
+        if height_mm <= 0:
+            return None
+        return width_mm / height_mm
+
+    def _apply_screen_aspect_ratio(self):
+        container = getattr(self, "plot_aspect_container", None)
+        if container is not None:
+            container.set_ratio(self._screen_letterbox_ratio())
+
+    def edit_screen_display_settings(self):
+        before = self._capture_analysis_state()
+        dialog = ScreenDisplaySettingsDialog(
+            self.project.method,
+            self._current_screen_ratio(),
+            self._application_language,
+            self,
+        )
+        if not dialog_exec(dialog):
+            return
+        dialog.apply_to_method(self.project.method)
+        self._push_undo_snapshot(
+            before,
+            self._history_label("画面表示設定", "Display settings"),
+        )
+        self.project.dirty = True
+        self._apply_screen_aspect_ratio()
+        self._plot()
+        self._update_title()
+
+    def _current_screen_ratio(self):
+        container = getattr(self, "plot_aspect_container", None)
+        if container is not None:
+            width = container.width()
+            height = container.height()
+            if width > 0 and height > 0:
+                return width / height
+        return None
 
     def edit_legend_composer(self):
         before = self._capture_analysis_state()

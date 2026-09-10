@@ -42,6 +42,7 @@ from hplc_app.dialogs import (
     ReportOptionsDialog,
     SaturatedRangeDialog,
     ReportScopeDialog,
+    ScreenDisplaySettingsDialog,
     TextAnnotationDialog,
     ThreeDChromatogramDialog,
     WorkDirectoriesDialog,
@@ -67,6 +68,7 @@ from hplc_app.gui import (
     PEAK_TYPE_COLUMN,
     MOUSE_MODE_IDS,
     MainWindow,
+    ScreenAspectRatioContainer,
     dataset_display_color,
     format_area,
 )
@@ -74,6 +76,7 @@ from hplc_app import gui as gui_module
 from hplc_app import report as report_module
 from hplc_app.i18n import Translator
 from hplc_app.models import (
+    AnalysisMethod,
     Dataset,
     FractionRegion,
     GradientPoint,
@@ -12741,6 +12744,255 @@ class GuiTests(unittest.TestCase):
             self.assertTrue(Path(output).read_bytes().startswith(b"%PDF"))
         window.project.dirty = False
         window.close()
+
+    # -- Issue #310: screen display settings (aspect ratio / dpi) and the
+    # integration-controls row layout. --
+
+    def test_display_settings_icon_sits_right_of_axis_label_settings(self):
+        window = self.make_window()
+        try:
+            actions = window.toolbar.actions()
+            subplots_action = window.toolbar._actions["configure_subplots"]
+            self.assertIn(subplots_action, actions)
+            self.assertIn(window.display_settings_action, actions)
+            subplots_index = actions.index(subplots_action)
+            self.assertEqual(
+                actions[subplots_index + 1], window.display_settings_action
+            )
+            # Non-mode utility order (Home/Back/Forward/Subplots/Save --
+            # workflow doc 27.11, Issue #269) is otherwise unchanged: no
+            # mode action (pan/zoom/pointer/select/...) sits after Subplots
+            # other than the new display-settings icon itself.
+            mode_action_ids = {
+                window.toolbar._actions.get("pan"),
+                window.toolbar._actions.get("zoom"),
+                window.pointer_toolbar_widget_action,
+                window.select_toolbar_action,
+                window.integrate_toolbar_action,
+                window.edit_peak_toolbar_action,
+                window.split_peak_toolbar_action,
+                window.move_trace_toolbar_action,
+                window.annotation_action,
+            }
+            for action in actions[subplots_index + 1 :]:
+                self.assertNotIn(action, mode_action_ids)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_display_settings_icon_opens_dialog(self):
+        window = self.make_window()
+        try:
+            with patch(
+                "hplc_app.gui.ScreenDisplaySettingsDialog"
+            ) as dialog_class, patch("hplc_app.gui.dialog_exec", return_value=False):
+                window.display_settings_action.trigger()
+                self.assertEqual(dialog_class.call_count, 1)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_screen_display_settings_dialog_offers_presets_and_custom_ratio(self):
+        method = AnalysisMethod()
+        dialog = ScreenDisplaySettingsDialog(method, 1.5, "en")
+        try:
+            keys = [
+                dialog.aspect_combo.itemData(i)
+                for i in range(dialog.aspect_combo.count())
+            ]
+            self.assertEqual(
+                keys, ["match", "4:3", "16:9", "a4_landscape", "a4_portrait", "custom"]
+            )
+            # Untouched defaults dialog to "match current screen".
+            self.assertEqual(dialog.aspect_combo.currentData(), "match")
+            self.assertFalse(dialog.custom_width_spin.isEnabled())
+
+            dialog.aspect_combo.setCurrentIndex(dialog.aspect_combo.findData("custom"))
+            self.assertTrue(dialog.custom_width_spin.isEnabled())
+            dialog.custom_width_spin.setValue(21.0)
+            dialog.custom_height_spin.setValue(9.0)
+            dialog.dpi_spin.setValue(150)
+            dialog.apply_to_method(method)
+            self.assertAlmostEqual(
+                method.figure_width_mm / method.figure_height_mm, 21.0 / 9.0, places=3
+            )
+            self.assertEqual(method.dpi, 150)
+        finally:
+            dialog.reject()
+
+    def test_screen_display_settings_dialog_applies_named_presets(self):
+        method = AnalysisMethod()
+        for key, ratio in (
+            ("4:3", 4.0 / 3.0),
+            ("16:9", 16.0 / 9.0),
+            ("a4_landscape", 297.0 / 210.0),
+            ("a4_portrait", 210.0 / 297.0),
+        ):
+            with self.subTest(key=key):
+                fresh_method = AnalysisMethod()
+                dialog = ScreenDisplaySettingsDialog(fresh_method, None, "ja")
+                dialog.aspect_combo.setCurrentIndex(
+                    dialog.aspect_combo.findData(key)
+                )
+                dialog.dpi_spin.setValue(200)
+                dialog.apply_to_method(fresh_method)
+                self.assertAlmostEqual(
+                    fresh_method.figure_width_mm / fresh_method.figure_height_mm,
+                    ratio,
+                    places=3,
+                )
+                self.assertEqual(fresh_method.dpi, 200)
+                # Reopening recovers the same preset from the stored mm dims
+                # (workflow doc 29: the choice itself is not persisted).
+                reopened = ScreenDisplaySettingsDialog(fresh_method, None, "ja")
+                self.assertEqual(reopened.aspect_combo.currentData(), key)
+                reopened.reject()
+                dialog.reject()
+
+    def test_screen_display_settings_reflected_on_screen_and_is_one_undo_step(self):
+        window = self.make_window()
+        try:
+            self.assertIsInstance(
+                window.plot_aspect_container, ScreenAspectRatioContainer
+            )
+            # Default (untouched) method: no letterbox, matches pre-#310
+            # behavior.
+            self.assertIsNone(window._screen_letterbox_ratio())
+
+            class AcceptedDialog:
+                def apply_to_method(self, method):
+                    method.figure_width_mm = 160.0
+                    method.figure_height_mm = 90.0
+                    method.dpi = 220
+
+            with patch(
+                "hplc_app.gui.ScreenDisplaySettingsDialog",
+                return_value=AcceptedDialog(),
+            ), patch("hplc_app.gui.dialog_exec", return_value=True):
+                window.edit_screen_display_settings()
+
+            self.assertAlmostEqual(window.project.method.figure_width_mm, 160.0)
+            self.assertAlmostEqual(window.project.method.figure_height_mm, 90.0)
+            self.assertEqual(window.project.method.dpi, 220)
+            self.assertAlmostEqual(
+                window._screen_letterbox_ratio(), 160.0 / 90.0, places=6
+            )
+            self.assertAlmostEqual(
+                window.plot_aspect_container.ratio(), 160.0 / 90.0, places=6
+            )
+            self.assertEqual(window._undo_stack[-1][0], "画面表示設定")
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_screen_aspect_ratio_container_letterboxes_the_child(self):
+        child = QtWidgets.QWidget()
+        container = ScreenAspectRatioContainer(child)
+        try:
+            container.show()
+            container.resize(400, 200)
+            self.app.processEvents()
+            # No ratio: child fills the container (today's behavior).
+            self.assertEqual(child.geometry(), container.rect())
+
+            container.set_ratio(1.0)
+            self.app.processEvents()
+            geometry = child.geometry()
+            # Square letterboxed inside a 400x200 container: capped by the
+            # shorter dimension (height), centered horizontally.
+            self.assertEqual(geometry.height(), 200)
+            self.assertEqual(geometry.width(), 200)
+            self.assertEqual(geometry.x(), 100)
+            self.assertEqual(geometry.y(), 0)
+
+            container.set_ratio(None)
+            self.app.processEvents()
+            self.assertEqual(child.geometry(), container.rect())
+        finally:
+            container.deleteLater()
+
+    def test_screen_display_settings_persist_and_reapply_after_reload(self):
+        from hplc_app.project_io import load_project, save_project
+
+        window = self.make_window()
+        try:
+            window.project.method.figure_width_mm = 210.0
+            window.project.method.figure_height_mm = 297.0
+            window.project.method.dpi = 600
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "aspect.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+            self.assertAlmostEqual(restored.method.figure_width_mm, 210.0)
+            self.assertAlmostEqual(restored.method.figure_height_mm, 297.0)
+            self.assertEqual(restored.method.dpi, 600)
+            window.project = restored
+            window._refresh_all(0)
+            self.assertAlmostEqual(
+                window._screen_letterbox_ratio(), 210.0 / 297.0, places=6
+            )
+            self.assertAlmostEqual(
+                window.plot_aspect_container.ratio(), 210.0 / 297.0, places=6
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_screen_display_settings_export_uses_chosen_dims_and_dpi(self):
+        window = self.make_window()
+        try:
+            window.project.method.figure_width_mm = 297.0
+            window.project.method.figure_height_mm = 210.0
+            window.project.method.dpi = 150
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "out.png")
+                with patch.object(
+                    window.figure, "savefig", wraps=window.figure.savefig
+                ) as savefig:
+                    window._save_static_figure(window.figure, path)
+                    self.assertEqual(savefig.call_args.kwargs["dpi"], 150)
+                self.assertTrue(Path(path).exists())
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_integration_controls_row_has_detect_fit_saturation_in_order(self):
+        window = self.make_window()
+        try:
+            layout = window.integration_group.layout()
+
+            def position_of(widget):
+                index = layout.indexOf(widget)
+                self.assertGreaterEqual(index, 0)
+                return layout.getItemPosition(index)
+
+            detect_row, detect_col, _rs, _cs = position_of(window.auto_detect_button)
+            fit_row, fit_col, _rs, _cs = position_of(window.fit_peak_button)
+            sat_row, sat_col, _rs, _cs = position_of(
+                window.saturation_correction_button
+            )
+            self.assertEqual(detect_row, fit_row)
+            self.assertEqual(fit_row, sat_row)
+            self.assertLess(detect_col, fit_col)
+            self.assertLess(fit_col, sat_col)
+            for button in (
+                window.auto_detect_button,
+                window.fit_peak_button,
+                window.saturation_correction_button,
+            ):
+                self.assertTrue(button.text())
+
+            # The rows below moved up by one to close the freed row
+            # (workflow doc 27.10 / 29: "下の行を1つ上に詰める").
+            select_row, _c, _rs, _cs = position_of(window.select_all_peaks_button)
+            fraction_row, _c, _rs, _cs = position_of(window.fraction_numeric_button)
+            list_row, _c, _rs, _cs = position_of(window.integration_list_button)
+            self.assertEqual(select_row, detect_row + 1)
+            self.assertEqual(fraction_row, detect_row + 2)
+            self.assertEqual(list_row, detect_row + 3)
+        finally:
+            window.project.dirty = False
+            window.close()
 
 
 if __name__ == "__main__":

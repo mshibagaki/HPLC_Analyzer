@@ -4629,6 +4629,162 @@ class LegendComposerDialog(QtWidgets.QDialog):
         )
 
 
+class ScreenDisplaySettingsDialog(QtWidgets.QDialog):
+    """Choose a screen/export aspect ratio and export dpi (Issue #310).
+
+    No new persisted field is added (workflow doc 27.11): the chosen aspect
+    ratio is expressed directly as the existing
+    ``AnalysisMethod.figure_width_mm`` / ``figure_height_mm``, and the chosen
+    preset itself is not stored -- reopening this dialog recovers the closest
+    matching preset (or "custom") from those dimensions. "Match current
+    screen" is the dataclass-default dimensions, which is also today's
+    behavior for every project that has never used this dialog.
+    """
+
+    ASPECT_PRESETS = (
+        ("4:3", 4.0, 3.0),
+        ("16:9", 16.0, 9.0),
+        ("a4_landscape", 297.0, 210.0),
+        ("a4_portrait", 210.0, 297.0),
+    )
+
+    def __init__(
+        self,
+        method: AnalysisMethod,
+        current_screen_ratio=None,
+        language: str = "ja",
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.language = language
+        defaults = AnalysisMethod()
+        width_mm = float(method.figure_width_mm)
+        height_mm = float(method.figure_height_mm) or defaults.figure_height_mm
+        is_default = (
+            width_mm == defaults.figure_width_mm
+            and height_mm == defaults.figure_height_mm
+        )
+        self._anchor_width_mm = width_mm if width_mm > 0 else defaults.figure_width_mm
+        current_ratio = width_mm / height_mm if height_mm else None
+
+        self.setWindowTitle(
+            "画面表示設定" if language == "ja" else "Display settings"
+        )
+        root = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QFormLayout()
+
+        self.aspect_combo = QtWidgets.QComboBox()
+        self.aspect_combo.addItem(
+            "現在の画面表示にあわせる" if language == "ja" else "Match current screen",
+            "match",
+        )
+        for key, ratio_w, ratio_h in self.ASPECT_PRESETS:
+            label = self._preset_label(key)
+            self.aspect_combo.addItem(label, key)
+        self.aspect_combo.addItem(
+            "任意の比（数値入力）" if language == "ja" else "Custom ratio (numeric)",
+            "custom",
+        )
+        form.addRow(
+            "アスペクト比" if language == "ja" else "Aspect ratio", self.aspect_combo
+        )
+
+        custom_widget = QtWidgets.QWidget()
+        custom_row = QtWidgets.QHBoxLayout(custom_widget)
+        custom_row.setContentsMargins(0, 0, 0, 0)
+        self.custom_width_spin = QtWidgets.QDoubleSpinBox()
+        self.custom_height_spin = QtWidgets.QDoubleSpinBox()
+        for spin in (self.custom_width_spin, self.custom_height_spin):
+            spin.setRange(0.01, 1000.0)
+            spin.setDecimals(2)
+        default_ratio = current_ratio if (current_ratio and not is_default) else (
+            current_screen_ratio or (defaults.figure_width_mm / defaults.figure_height_mm)
+        )
+        self.custom_width_spin.setValue(round(default_ratio, 2) if default_ratio else 4.0)
+        self.custom_height_spin.setValue(1.0)
+        custom_row.addWidget(self.custom_width_spin)
+        custom_row.addWidget(QtWidgets.QLabel(":"))
+        custom_row.addWidget(self.custom_height_spin)
+        form.addRow(
+            "任意の比 (幅:高さ)" if language == "ja" else "Custom ratio (W:H)",
+            custom_widget,
+        )
+
+        self.dpi_spin = QtWidgets.QSpinBox()
+        self.dpi_spin.setRange(36, 1200)
+        self.dpi_spin.setValue(int(method.dpi))
+        form.addRow(
+            "出力解像度 (dpi)" if language == "ja" else "Export resolution (dpi)",
+            self.dpi_spin,
+        )
+        root.addLayout(form)
+
+        note = QtWidgets.QLabel(
+            "表示画面と PNG / SVG / PDF 出力の両方に反映されます。"
+            if language == "ja"
+            else "Applies to both the on-screen display and PNG / SVG / PDF export."
+        )
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        selected_key = "match"
+        if not is_default and current_ratio:
+            selected_key = "custom"
+            for key, ratio_w, ratio_h in self.ASPECT_PRESETS:
+                if abs(current_ratio - (ratio_w / ratio_h)) < 1e-3:
+                    selected_key = key
+                    break
+            if selected_key == "custom":
+                self.custom_width_spin.setValue(round(current_ratio, 2))
+                self.custom_height_spin.setValue(1.0)
+        self.aspect_combo.setCurrentIndex(
+            max(0, self.aspect_combo.findData(selected_key))
+        )
+        self._sync_custom_enabled()
+        self.aspect_combo.currentIndexChanged.connect(self._sync_custom_enabled)
+
+    def _preset_label(self, key: str) -> str:
+        labels = {
+            "4:3": ("4:3", "4:3"),
+            "16:9": ("16:9", "16:9"),
+            "a4_landscape": ("A4（横）", "A4 (landscape)"),
+            "a4_portrait": ("A4（縦）", "A4 (portrait)"),
+        }
+        ja, en = labels[key]
+        return ja if self.language == "ja" else en
+
+    def _sync_custom_enabled(self, *_args):
+        enabled = self.aspect_combo.currentData() == "custom"
+        self.custom_width_spin.setEnabled(enabled)
+        self.custom_height_spin.setEnabled(enabled)
+
+    def apply_to_method(self, method: AnalysisMethod):
+        key = self.aspect_combo.currentData()
+        defaults = AnalysisMethod()
+        if key == "match":
+            method.figure_width_mm = defaults.figure_width_mm
+            method.figure_height_mm = defaults.figure_height_mm
+        else:
+            if key == "custom":
+                ratio_w = max(self.custom_width_spin.value(), 0.01)
+                ratio_h = max(self.custom_height_spin.value(), 0.01)
+            else:
+                preset = {p[0]: (p[1], p[2]) for p in self.ASPECT_PRESETS}[key]
+                ratio_w, ratio_h = preset
+            width_mm = self._anchor_width_mm
+            height_mm = width_mm * ratio_h / ratio_w
+            method.figure_width_mm = round(width_mm, 3)
+            method.figure_height_mm = round(height_mm, 3)
+        method.dpi = int(self.dpi_spin.value())
+
+
 class AxisLabelsDialog(QtWidgets.QDialog):
     """Axis text, tick spacing and label styles kept outside the main window."""
 

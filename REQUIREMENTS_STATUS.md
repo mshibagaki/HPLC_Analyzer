@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-10 (Issues #290-#293 and #301-#302 delivered)
+Updated: 2026-09-10 (Issues #307-#311 planning)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -85,6 +85,19 @@ Windows 11 field use on `c1fd86a` produced nine more requests, grouped into four
 Issue #291 makes saturated-peak correction request a manual saturated range before every fit, initially showing the selected integration range. The GUI always passes that accepted range to the existing fitter, so automatic saturation detection is not part of the correction execution path; cancelling leaves the project unchanged. `detect_saturated_span` remains available to its direct core callers and tests. An explicitly supplied range may therefore be used on a peak that automatic detection would have considered unsaturated; this intentionally withdraws the earlier automatic-warning requirement. No calculation, project schema, raw data, dependency, or Windows 7 offline-build input changes. Issue #292 keeps its independent 3D typography and preview scaling in `ThreeDPlotOptions` and dialog state only, so opening or exporting 3D plots never writes the 2D method or a project file. Issue #293 gives every default output filename a timestamp through one shared helper, since seven separate save dialogs currently offer fixed names.
 
 The reported inability to overwrite an existing output is recorded as unreproduced. All seven save dialogs use `QFileDialog.getSaveFileName`, which confirms an overwrite by default and then performs it; no `DontConfirmOverwrite` flag and no filename-uniquifying logic exist anywhere, including in `naming.py`. The condition has to be pinned on the machine — a file left open in another application would surface as a write permission error — before anything is changed, and the timestamped defaults should largely remove the collision in the first place.
+
+Windows 11 field use on `582424f` produced thirteen more requests, grouped into five issues (#307-#311). The findings are recorded in `WIN11_FEEDBACK_WORKFLOW.md` section 27; two of them still need the condition pinned on the machine.
+
+| Issue | Affected row | What is actually wrong |
+|---|---|---|
+| #307 | Selection and display | The overview's plus/minus zoom anchors on the middle of the current Y window rather than on zero, so small peaks drift out of view. All four scrollbars are positioned with setGeometry inside the graphics widget and therefore sit on top of the chromatogram. The overview hides both of its axes, so the X ticks and their numbers are unavailable. Switching away from overview-plus-detail still leaves blank space although Issue #302 released the row's stretch factor |
+| #308 | Legends and labels | Placing the legend outside puts a LegendItem straight into a layout cell, where it is stretched to the cell and its entries spread down the plot. The Method carries a legend location, font family and font colour but no frame or fill colour at all. PyQtGraph draws retention labels horizontally while Matplotlib rotates them 90 degrees |
+| #309 | Selection and display | Double-clicking steps back only once in practice, although `ScreenViewHistory.navigate("back")` reads as if it should repeat. Peak areas in the integration list go through the shared `_format` helper at `%.5g`, so large areas appear in scientific notation |
+| #311 | Chromatogram list | The source-path cell alternates between three states as the column is resized. Measured across nine widths offscreen, the delegate returns the correct left-elided text every time, and a second right elision is a no-op whenever the text already fits; the failure therefore occurs only at widths where the rectangle the delegate measures and the one `drawControl` uses disagree. The preset manager offers rename, duplicate and delete but no way to edit a preset's content |
+
+Issue #310 is new work rather than a defect: a display-settings dialog for the figure aspect ratio and export dpi, plus a one-row layout for the integration buttons. It needs no new persisted fields because `figure_width_mm`, `figure_height_mm` and `dpi` already exist.
+
+Issue #308 is the only batch in this round that changes the schema, adding two legend appearance fields to `AnalysisMethod` with a migration that reads existing projects as unframed and unfilled.
 
 ## Project compatibility notes for Issues #181 and #221
 

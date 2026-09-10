@@ -32,7 +32,9 @@ from .dialogs import (
     BatchMetadataDialog,
     DirectoryImportDialog,
     DisplaySettingsDialog,
+    ElideRightCheckBox,
     FractionRangeDialog,
+    FractionRegionListDialog,
     GradientDialog,
     IntegrationListDialog,
     LeftElideDelegate,
@@ -675,6 +677,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._updating_table = False
         self._peak_selection_sync_guard = False
         self._integration_list_dialog = None
+        self._fraction_list_dialog = None
         self._dataset_column_order = self._settings.get(DATASET_COLUMN_ORDER)
         self._solo_dataset_id = ""
         self._dataset_header_update_guard = False
@@ -1581,10 +1584,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.unit_combo.addItem("mAU", "mAU")
         self.unit_combo.addItem("AU", "AU")
         self.unit_combo.addItem("Normalized", "normalized")
-        self.show_integration_checkbox = QtWidgets.QCheckBox()
-        self.show_retention_checkbox = QtWidgets.QCheckBox()
-        self.show_gradient_checkbox = QtWidgets.QCheckBox()
-        self.show_grid_checkbox = QtWidgets.QCheckBox()
+        self.show_integration_checkbox = ElideRightCheckBox()
+        self.show_retention_checkbox = ElideRightCheckBox()
+        self.show_gradient_checkbox = ElideRightCheckBox()
+        self.show_grid_checkbox = ElideRightCheckBox()
+        self.show_fraction_checkbox = ElideRightCheckBox()
         self.legend_label = QtWidgets.QLabel()
         self.legend_combo = QtWidgets.QComboBox()
         for label, value in (
@@ -1612,11 +1616,29 @@ class MainWindow(QtWidgets.QMainWindow):
         self.legend_axis_button_row.addWidget(self.legend_settings_button)
         self.legend_axis_button_row.addWidget(self.axis_labels_button)
         display_controls.addLayout(self.legend_axis_button_row, 2, 0, 1, 2)
-        display_controls.addWidget(self.show_integration_checkbox, 3, 0, 1, 2)
-        display_controls.addWidget(self.show_retention_checkbox, 4, 0, 1, 2)
-        display_controls.addWidget(self.show_gradient_checkbox, 5, 0, 1, 2)
-        display_controls.addWidget(self.show_grid_checkbox, 6, 0, 1, 2)
-        display_controls.setRowStretch(7, 1)
+        # Issue #313 (サ²) / workflow doc 30.7, 30.9: a fixed two-column flow
+        # that grows downward as checkboxes are added, instead of one column
+        # per checkbox. The row above (display unit, legend location,
+        # buttons) keeps its own unchanged 2-column layout; only this list is
+        # re-flowed, and the checkbox count is never hard-coded so it can grow
+        # or shrink without touching this loop.
+        self._display_checkboxes = (
+            self.show_integration_checkbox,
+            self.show_retention_checkbox,
+            self.show_gradient_checkbox,
+            self.show_grid_checkbox,
+            self.show_fraction_checkbox,
+        )
+        checkbox_first_row = 3
+        for index, checkbox in enumerate(self._display_checkboxes):
+            row = checkbox_first_row + index // 2
+            column = index % 2
+            display_controls.addWidget(checkbox, row, column)
+        last_checkbox_row = (
+            checkbox_first_row
+            + max(0, len(self._display_checkboxes) - 1) // 2
+        )
+        display_controls.setRowStretch(last_checkbox_row + 1, 1)
 
         self.navigation_group = QtWidgets.QGroupBox()
         navigation_controls = QtWidgets.QGridLayout(self.navigation_group)
@@ -1654,6 +1676,17 @@ class MainWindow(QtWidgets.QMainWindow):
         # Row order (Issue #236 / workflow doc 9.18): move_controls (trace
         # move) moves below the view-reset row. Widget creation and signal
         # connections are unchanged; only the row numbers below move.
+        #
+        # Issue #313 (サ²) / workflow doc 30.6: pointer_control_button is no
+        # longer added to this layout -- the toolbar (#236/#269) and Edit
+        # menu already reach the same shared pointer_action, matching how
+        # Issue #290 removed the equivalent text-label button from the
+        # display group while keeping annotation_action shared with the
+        # toolbar/menu. The QAction itself, and this QToolButton object (kept
+        # so its accessible name/default-action stay wired for anything that
+        # still references it), are unchanged -- only this addWidget call is
+        # removed. reset_buttons and move_controls move up one row each to
+        # close the gap the removed row leaves.
         navigation_controls.addWidget(self.mouse_mode_label, 0, 0)
         navigation_controls.addWidget(self.mouse_mode_combo, 0, 1)
         move_controls = QtWidgets.QHBoxLayout()
@@ -1666,15 +1699,14 @@ class MainWindow(QtWidgets.QMainWindow):
         navigation_controls.addWidget(self.zoom_axis_combo, 1, 1)
         navigation_controls.addWidget(self.view_mode_label, 2, 0)
         navigation_controls.addWidget(self.view_mode_combo, 2, 1)
-        navigation_controls.addWidget(self.pointer_control_button, 3, 0, 1, 2)
         reset_buttons = QtWidgets.QHBoxLayout()
         reset_buttons.setContentsMargins(0, 0, 0, 0)
         reset_buttons.addWidget(self.reset_view_button)
         reset_buttons.addWidget(self.reset_x_view_button)
         reset_buttons.addWidget(self.reset_y_view_button)
-        navigation_controls.addLayout(reset_buttons, 4, 0, 1, 2)
-        navigation_controls.addLayout(move_controls, 5, 0, 1, 2)
-        navigation_controls.setRowStretch(6, 1)
+        navigation_controls.addLayout(reset_buttons, 3, 0, 1, 2)
+        navigation_controls.addLayout(move_controls, 4, 0, 1, 2)
+        navigation_controls.setRowStretch(5, 1)
 
         self.integration_group = QtWidgets.QGroupBox()
         integration_controls = QtWidgets.QGridLayout(self.integration_group)
@@ -1699,14 +1731,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.select_all_peaks_button = QtWidgets.QPushButton()
         self.delete_peak_button = QtWidgets.QPushButton()
         self.integration_list_button = QtWidgets.QPushButton()
+        self.fraction_list_button = QtWidgets.QPushButton()
         # Row layout (Issue #310 / workflow doc 27.10, 29): auto-detect, fit
-        # and saturation correction now share one row in that order, freeing
-        # the row they used to split across; every row below moves up by one
-        # to close the gap (2026-09-10 default, workflow doc 29). Issue #313
-        # (サ²) touches the *next* two rows (select/delete and the fraction
-        # buttons plus the integration-list/fraction-list buttons) -- it
-        # should rebase onto this row numbering rather than reintroduce the
-        # old one.
+        # and saturation correction share one row in that order, freeing the
+        # row they used to split across; every row below moves up by one to
+        # close the gap (2026-09-10 default, workflow doc 29).
+        #
+        # Issue #313 (サ²) / workflow doc 30.3, 31: rebased onto that row
+        # numbering. select_all_peaks_button and fraction_numeric_button used
+        # to each span two columns with a lone button in the third; both now
+        # take one column each so integration_list_button and
+        # fraction_list_button can sit to their right, three single buttons
+        # per row -- the same "three in one row" shape #310 already used for
+        # auto-detect/fit/saturation-correction. The row the standalone
+        # integration-list button used to occupy on its own (row 5) is
+        # freed and absorbed into the row-stretch below.
         integration_controls.addWidget(self.baseline_label, 0, 0)
         integration_controls.addWidget(self.baseline_combo, 0, 1, 1, 2)
         integration_controls.addWidget(self.integrate_button, 1, 0)
@@ -1715,14 +1754,13 @@ class MainWindow(QtWidgets.QMainWindow):
         integration_controls.addWidget(self.auto_detect_button, 2, 0)
         integration_controls.addWidget(self.fit_peak_button, 2, 1)
         integration_controls.addWidget(self.saturation_correction_button, 2, 2)
-        integration_controls.addWidget(self.select_all_peaks_button, 3, 0, 1, 2)
-        integration_controls.addWidget(self.delete_peak_button, 3, 2)
-        integration_controls.addWidget(
-            self.fraction_numeric_button, 4, 0, 1, 2
-        )
-        integration_controls.addWidget(self.clear_fractions_button, 4, 2)
-        integration_controls.addWidget(self.integration_list_button, 5, 0, 1, 3)
-        integration_controls.setRowStretch(6, 1)
+        integration_controls.addWidget(self.select_all_peaks_button, 3, 0)
+        integration_controls.addWidget(self.delete_peak_button, 3, 1)
+        integration_controls.addWidget(self.integration_list_button, 3, 2)
+        integration_controls.addWidget(self.fraction_numeric_button, 4, 0)
+        integration_controls.addWidget(self.clear_fractions_button, 4, 1)
+        integration_controls.addWidget(self.fraction_list_button, 4, 2)
+        integration_controls.setRowStretch(5, 1)
 
         # Issue #236 / 9.15: installed here, once every group-panel control
         # it binds to (move_trace_button, integrate_button, edit_peak_button,
@@ -1778,6 +1816,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_retention_checkbox.toggled.connect(self._method_controls_changed)
         self.show_gradient_checkbox.toggled.connect(self._method_controls_changed)
         self.show_grid_checkbox.toggled.connect(self._method_controls_changed)
+        self.show_fraction_checkbox.toggled.connect(self._method_controls_changed)
         self.legend_combo.currentIndexChanged.connect(self._method_controls_changed)
         self.zoom_axis_combo.currentIndexChanged.connect(self._zoom_axis_changed)
         self.view_mode_combo.currentIndexChanged.connect(self._view_mode_changed)
@@ -1786,6 +1825,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.split_peak_button.toggled.connect(self._toggle_split_mode)
         self.clear_fractions_button.clicked.connect(self.clear_fraction_regions)
         self.fraction_numeric_button.clicked.connect(self.edit_fraction_range_numeric)
+        self.fraction_list_button.clicked.connect(self.open_fraction_list)
         self.edit_peak_button.toggled.connect(self._toggle_edit_range_mode)
         self.delete_peak_button.clicked.connect(self.delete_peak)
         self.auto_detect_button.clicked.connect(self.auto_detect_peaks)
@@ -2657,15 +2697,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.split_peak_button.setText(t("split_peak"))
         self.clear_fractions_button.setText(t("clear_fractions"))
         self.fraction_numeric_button.setText(t("fraction_numeric"))
+        self.fraction_list_button.setText(t("fraction_list"))
         self.delete_peak_button.setText(t("delete_peak"))
         self.show_integration_checkbox.setText(t("show_integration"))
         self.show_retention_checkbox.setText(t("show_retention_labels"))
         self.show_gradient_checkbox.setText(t("show_gradient_b"))
-        self.show_gradient_checkbox.setToolTip(self._history_label(
+        gradient_description = self._history_label(
             "上下2画面では、選択中のクロマトグラムのB%曲線を両方に表示／非表示にします。",
             "In split view, show or hide the selected chromatogram's B% curve on both panels.",
-        ))
+        )
         self.show_grid_checkbox.setText(t("show_major_grid"))
+        self.show_fraction_checkbox.setText(t("show_fraction_regions"))
+        # Issue #313 (サ²) / workflow doc 30.9: the right-elided checkbox
+        # label needs its full text somewhere readable. Every checkbox in
+        # this group gets its full label as a tooltip; show_gradient_checkbox
+        # already carries a description tooltip (Issue #140/#182), so its
+        # full label is appended below that existing text rather than
+        # overwriting it.
+        for checkbox in self._display_checkboxes:
+            if checkbox is self.show_gradient_checkbox:
+                continue
+            checkbox.setToolTip(checkbox.text())
+        self.show_gradient_checkbox.setToolTip(
+            gradient_description + "\n" + self.show_gradient_checkbox.text()
+        )
+        # workflow doc 30.9's explicit floor rule: the group's minimum width
+        # must fit the shortest whole label currently in play, not shrink
+        # further to a single "…" even when space is available. Measured
+        # from the live labels/font rather than a hard-coded pixel value, so
+        # it stays correct in both languages and if labels change.
+        shortest_label_width = min(
+            checkbox.label_width(checkbox.text())
+            for checkbox in self._display_checkboxes
+        )
+        for checkbox in self._display_checkboxes:
+            checkbox.set_minimum_label_width(shortest_label_width)
         self.reset_view_button.setText(t("reset_view"))
         self.reset_x_view_button.setText(t("reset_x_view"))
         self.reset_y_view_button.setText(t("reset_y_view"))
@@ -2772,6 +2838,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for table in tables:
             table.setHorizontalHeaderLabels(headers)
         self._retranslate_integration_list()
+        self._retranslate_fraction_list()
 
     def set_language(self, language: str):
         self._application_language = language if language in ("ja", "en") else "ja"
@@ -2808,6 +2875,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_all(self, selected_row: Optional[int] = None):
         self._refresh_dataset_table(selected_row)
         self._refresh_peak_table()
+        self._refresh_fraction_list()
         self._sync_method_controls()
         self._plot()
         self._update_title()
@@ -3602,6 +3670,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.show_grid_checkbox.blockSignals(True)
         self.show_grid_checkbox.setChecked(self.project.method.show_major_grid)
         self.show_grid_checkbox.blockSignals(False)
+        self.show_fraction_checkbox.blockSignals(True)
+        self.show_fraction_checkbox.setChecked(self.project.method.show_fraction_regions)
+        self.show_fraction_checkbox.blockSignals(False)
         self.legend_combo.blockSignals(True)
         self.legend_combo.setCurrentIndex(max(0, self.legend_combo.findData(self.project.method.legend_location)))
         self.legend_combo.blockSignals(False)
@@ -3623,6 +3694,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.method.show_retention_labels = self.show_retention_checkbox.isChecked()
         self.project.method.show_gradient_b = self.show_gradient_checkbox.isChecked()
         self.project.method.show_major_grid = self.show_grid_checkbox.isChecked()
+        self.project.method.show_fraction_regions = self.show_fraction_checkbox.isChecked()
         self.project.method.legend_location = self.legend_combo.currentData()
         self.project.dirty = True
         if self._screen_preview is not None and new_unit == old_unit:
@@ -4143,6 +4215,8 @@ class MainWindow(QtWidgets.QMainWindow):
             )
 
     def _draw_fraction_regions(self):
+        if not self.project.method.show_fraction_regions:
+            return
         for region in self._screen_scene.fraction_regions:
             self.axes.axvspan(
                 region.start_x,
@@ -5082,6 +5156,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.dirty = True
         self._plot()
         self._update_title()
+        self._refresh_fraction_list()
 
     def edit_fraction_range_numeric(self):
         if not self.project.datasets:
@@ -5136,6 +5211,87 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project.dirty = True
         self._plot()
         self._update_title()
+        self._refresh_fraction_list()
+
+    def delete_fraction_regions(self, region_ids):
+        """Delete specific fraction ranges by id, as one Undo/Redo step.
+
+        Reuses the same capture/mutate/push-undo pattern every other delete
+        action in this class already uses (``clear_fraction_regions``,
+        ``delete_peak``, the marker deletion inside
+        ``delete_selected_plot_items``) rather than a separate deletion path
+        (Issue #313 / サ² / workflow doc 30.2).
+        """
+
+        region_ids = {str(region_id) for region_id in region_ids if region_id}
+        if not region_ids:
+            return False
+        remaining = [
+            region for region in self.project.fraction_regions
+            if region.id not in region_ids
+        ]
+        if len(remaining) == len(self.project.fraction_regions):
+            return False
+        before = self._capture_analysis_state()
+        self.project.fraction_regions = remaining
+        self._push_undo_snapshot(
+            before,
+            self._history_label(
+                "フラクション範囲を削除", "Delete fraction ranges"
+            ),
+        )
+        self.project.dirty = True
+        self._plot()
+        self._update_title()
+        self._refresh_fraction_list()
+        return True
+
+    def open_fraction_list(self):
+        dialog = self._fraction_list_dialog
+        if dialog is None:
+            dialog = FractionRegionListDialog(
+                language=self._application_language, parent=self,
+            )
+            self._fraction_list_dialog = dialog
+            dialog.delete_button.clicked.connect(
+                self._delete_selected_fraction_list_regions
+            )
+        self._refresh_fraction_list()
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _delete_selected_fraction_list_regions(self):
+        dialog = self._fraction_list_dialog
+        if dialog is None:
+            return
+        self.delete_fraction_regions(dialog.selected_region_ids())
+
+    def _refresh_fraction_list(self):
+        dialog = self._fraction_list_dialog
+        if dialog is None:
+            return
+        dialog.set_regions(self.project.fraction_regions)
+
+    def _retranslate_fraction_list(self):
+        dialog = self._fraction_list_dialog
+        if dialog is None:
+            return
+        ja = self._application_language == "ja"
+        dialog.setWindowTitle(
+            "フラクション範囲の一覧" if ja else "Fraction range list"
+        )
+        dialog.table.setHorizontalHeaderLabels(
+            ["開始 (min)", "終了 (min)", "間隔 (s)"]
+            if ja
+            else ["Start (min)", "End (min)", "Interval (s)"]
+        )
+        dialog.empty_label.setText(
+            "フラクション範囲はまだありません。"
+            if ja
+            else "No fraction ranges yet."
+        )
+        dialog.delete_button.setText("削除" if ja else "Delete")
 
     def _toggle_move_mode(self, enabled: bool):
         if enabled:

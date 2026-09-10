@@ -511,6 +511,10 @@ class AnalysisMethod:
     retention_label_color: str = "#000000"
     show_gradient_b: bool = False
     show_major_grid: bool = False
+    # Issue #313 (サ²): fraction-collector regions were always drawn
+    # unconditionally before this field existed, so True is the compatible
+    # default for both a fresh project and a migrated older one.
+    show_fraction_regions: bool = True
     gradient_legend_include_dataset_name: bool = False
     legend_location: str = "best"
     legend_font_family: str = "Arial"

@@ -2328,6 +2328,29 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(AnalysisMethod().legend_frame_color, "")
         self.assertEqual(AnalysisMethod().legend_fill_color, "")
 
+    def test_schema_109_migrates_to_visible_fraction_regions(self):
+        # Issue #313/30.8: show_fraction_regions is new. Fraction regions
+        # were drawn unconditionally before this field existed, so an
+        # existing (pre-#313) project must reopen with them still visible.
+        manifest = {
+            "format_major": 1,
+            "schema_version": 109,
+            "method": {"legend_location": "outside right"},
+            "datasets": [],
+        }
+        untouched = deepcopy(manifest)
+
+        migrated = migrate_project_manifest(manifest)
+
+        self.assertEqual(manifest, untouched)
+        self.assertEqual(migrated["schema_version"], PROJECT_SCHEMA_VERSION)
+        self.assertIs(migrated["method"]["show_fraction_regions"], True)
+        self.assertEqual(migrated["method"]["legend_location"], "outside right")
+        self.assertEqual(migrate_project_manifest(migrated), migrated)
+        # A fresh method (and any manifest with no "method" object at all)
+        # defaults to the same always-visible fraction regions.
+        self.assertIs(AnalysisMethod().show_fraction_regions, True)
+
     def test_trace_line_style_identifiers_have_stable_backend_mappings(self):
         self.assertEqual(
             LINE_STYLE_IDS, ("solid", "dashed", "dotted", "dash_dot")
@@ -3355,6 +3378,7 @@ class ProjectTests(unittest.TestCase):
         project.method.gradient_axis_label = "ACN (%)"
         project.method.show_retention_labels = True
         project.method.zoom_axis = "x"
+        project.method.show_fraction_regions = False
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "roundtrip.hplcproj")
             save_project(path, project)
@@ -3388,6 +3412,7 @@ class ProjectTests(unittest.TestCase):
             self.assertEqual(loaded.method.gradient_axis_label, "ACN (%)")
             self.assertTrue(loaded.method.show_retention_labels)
             self.assertEqual(loaded.method.zoom_axis, "x")
+            self.assertFalse(loaded.method.show_fraction_regions)
             self.assertEqual(loaded.project_id, project.project_id)
             self.assertEqual(loaded.analysis_date, "20260809")
             self.assertEqual(loaded.column_name, "COSMOSIL C4")

@@ -180,6 +180,7 @@ class PyQtGraphSceneConsumer:
         self.gradient_items = []
         self.peak_overlay_items = {}
         self.marker_items = {}
+        self.fraction_region_items = []
         self._marker_specs = ()
         self.annotation_items = {}
         self._annotation_specs = ()
@@ -953,18 +954,22 @@ class PyQtGraphSceneConsumer:
         self.widget.update()
 
     def set_display_options(
-        self, *, show_integration, show_retention, show_gradient
+        self, *, show_integration, show_retention, show_gradient,
+        show_fraction=True,
     ):
         """Show prepared display layers without rerendering the scene."""
 
         show_integration = bool(show_integration)
         show_retention = bool(show_retention)
         show_gradient = bool(show_gradient and self.gradient_items)
+        show_fraction = bool(show_fraction)
         for item in self.gradient_items:
             item.setVisible(show_gradient)
         for view, axis, _host in self.gradient_layers:
             view.setVisible(show_gradient)
             axis.setVisible(show_gradient)
+        for item in self.fraction_region_items:
+            item.setVisible(show_fraction)
 
         visible_overlays = 0
         for overlay in self.peak_overlay_items.values():
@@ -995,6 +1000,8 @@ class PyQtGraphSceneConsumer:
                 len(self.gradient_items) if show_gradient else 0
             )
             counts["peak_overlays"] = visible_overlays
+            if not show_fraction:
+                counts["fraction_regions"] = 0
         self.widget.update()
 
     def set_zoom_rectangle(self, start=None, end=None, axis_id="y1", mode="both"):
@@ -1227,6 +1234,7 @@ class PyQtGraphSceneConsumer:
         self.gradient_items.clear()
         self.peak_overlay_items.clear()
         self.marker_items.clear()
+        self.fraction_region_items.clear()
         self._marker_specs = scene.vertical_markers
         self.annotation_items.clear()
         self._annotation_specs = scene.text_annotations
@@ -1426,8 +1434,9 @@ class PyQtGraphSceneConsumer:
             )
             self.primary.addItem(item)
             self.items.append(item)
+            self.fraction_region_items.append(item)
             for value in region.boundary_values + (region.end_x,):
-                self._add(
+                boundary_item = self._add(
                     self.pg.InfiniteLine(
                         pos=value,
                         angle=90,
@@ -1435,6 +1444,7 @@ class PyQtGraphSceneConsumer:
                         pen=self.pg.mkPen(region.line_color, width=region.line_width),
                     )
                 )
+                self.fraction_region_items.append(boundary_item)
             counts["fraction_regions"] += 1
 
         for annotation in scene.text_annotations:

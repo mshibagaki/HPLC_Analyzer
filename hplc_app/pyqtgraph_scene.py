@@ -36,6 +36,13 @@ class PyQtGraphSceneConsumer:
         "button_press_event", "motion_notify_event",
         "button_release_event", "scroll_event",
     ))
+    # Reserved outer margin (px) so the navigation scrollbars have somewhere
+    # to sit without overlapping the chromatogram (Issue #307/27.2).
+    SCROLLBAR_MARGIN = 20
+    # PyQtGraph's own default GraphicsLayout inter-row spacing, restored
+    # around the overview/handle rows whenever they are visible again
+    # (Issue #307/27.4).
+    _ROW_SPACING = 6.0
 
     def __init__(self, size=(1000, 700), split_y_axes=False):
         try:
@@ -73,7 +80,10 @@ class PyQtGraphSceneConsumer:
         self.overview = self.widget.addPlot(row=0, col=0)
         self.overview.setMouseEnabled(x=False, y=False)
         self.overview.hideAxis("left")
-        self.overview.hideAxis("bottom")
+        # Issue #307/27.3: show the X ticks/numbers (helps orient the overview
+        # window) but not an axis label/title text.
+        self.overview.showAxis("bottom")
+        self.overview.getAxis("bottom").setLabel(None)
         self.overview.setTitle("Overview", color="#4b5563", size="8pt")
         self.overview.vb.setBorder(self.pg.mkPen("#6b7280", width=0.8))
         self.overview_region = qt_widgets.QGraphicsRectItem()
@@ -299,6 +309,25 @@ class PyQtGraphSceneConsumer:
         self.overview_handle.setMinimumHeight(handle_height)
         self.overview_handle.setMaximumHeight(handle_height)
 
+        # Issue #307/27.4: a stretch factor of 0 alone still leaves the
+        # overview row 0 and its handle row 1 reserving their own preferred
+        # size -- the overview PlotItem itself measures ~100 px even hidden,
+        # and the layout keeps its default 6 px inter-row spacing on both
+        # sides of a hidden row. Neither shrank with `setVisible(False)`,
+        # which is what left single/split modes with a blank strip on top.
+        # Clamp the PlotItem's own height and null out that spacing whenever
+        # the overview is disabled; restore both when it is re-enabled.
+        default_max = 16777215.0
+        self.overview.setMinimumHeight(0.0)
+        self.overview.setMaximumHeight(default_max if enabled else 0.0)
+        layout.setRowSpacing(0, self._ROW_SPACING if enabled else 0.0)
+        layout.setRowSpacing(1, self._ROW_SPACING if enabled else 0.0)
+        # Reserve room for the scrollbars only where the enabled rows
+        # actually need it (Issue #307/27.2): the right/bottom outer margin
+        # always fits the detail scrollbars, and the overview's own visible
+        # X axis (27.3) means it needs no extra top margin of its own.
+        layout.setContentsMargins(0, 0, self.SCROLLBAR_MARGIN, self.SCROLLBAR_MARGIN)
+
     def _overview_action(self, command, value=None):
         if callable(self.overview_action_handler):
             self.overview_action_handler(command, value)
@@ -325,11 +354,12 @@ class PyQtGraphSceneConsumer:
         if not getattr(self, "overview_state", None) or not self.overview_state.enabled:
             self._layout_detail_scrollbars()
             return
-        rectangle = self.overview.vb.sceneBoundingRect()
-        top_left = self.widget.mapFromScene(rectangle.topLeft())
-        bottom_right = self.widget.mapFromScene(rectangle.bottomRight())
-        left, right = int(top_left.x()), int(bottom_right.x())
-        bottom = int(bottom_right.y())
+        # Buttons stay anchored to the plotted (ViewBox) area, unchanged.
+        button_rectangle = self.overview.vb.sceneBoundingRect()
+        button_top_left = self.widget.mapFromScene(button_rectangle.topLeft())
+        button_bottom_right = self.widget.mapFromScene(button_rectangle.bottomRight())
+        left, right = int(button_top_left.x()), int(button_bottom_right.x())
+        bottom = int(button_bottom_right.y())
         size, gap, margin = 22, 2, 4
         buttons_width = len(self.overview_buttons) * size + 2 * gap
         button_left = max(left + margin, right - margin - buttons_width)
@@ -339,19 +369,26 @@ class PyQtGraphSceneConsumer:
                 size, size,
             )
             button.raise_()
+        # Issue #307/27.2: the scrollbars themselves move into the reserved
+        # outer margin, anchored to the whole PlotItem (including the now
+        # visible bottom axis) so they never sit on top of plotted content.
+        plot_rectangle = self.overview.sceneBoundingRect()
+        plot_top_left = self.widget.mapFromScene(plot_rectangle.topLeft())
+        plot_bottom_right = self.widget.mapFromScene(plot_rectangle.bottomRight())
         vertical_width = 18
-        scroll_width = max(0, button_left - left - 2 * margin)
+        horizontal_height = 18
         self.overview_scrollbar.setGeometry(
-            left + margin, bottom - margin - 18, scroll_width, 18
+            int(plot_top_left.x()),
+            int(plot_bottom_right.y()) + 1,
+            max(0, int(plot_bottom_right.x() - plot_top_left.x())),
+            horizontal_height,
         )
         self.overview_scrollbar.raise_()
-        scroll_top = int(top_left.y()) + margin
-        scroll_height = max(0, bottom - scroll_top - size - 2 * margin)
         self.overview_y_scrollbar.setGeometry(
-            right - margin - vertical_width,
-            scroll_top,
+            int(plot_bottom_right.x()) + 1,
+            int(plot_top_left.y()),
             vertical_width,
-            scroll_height,
+            max(0, int(plot_bottom_right.y() - plot_top_left.y())),
         )
         self.overview_y_scrollbar.raise_()
 
@@ -360,7 +397,11 @@ class PyQtGraphSceneConsumer:
     def _layout_detail_scrollbars(self):
         if not hasattr(self, "detail_x_scrollbar"):
             return
-        detail_rectangle = self.primary.vb.sceneBoundingRect()
+        # Issue #307/27.2: anchor to the whole PlotItem (ticks, numbers and
+        # axis label included) and place the scrollbars in the reserved
+        # outer margin just past it, so the bottom one sits outside the X
+        # axis label and neither overlaps the chromatogram.
+        detail_rectangle = self.primary.sceneBoundingRect()
         detail_top_left = self.widget.mapFromScene(detail_rectangle.topLeft())
         detail_bottom_right = self.widget.mapFromScene(
             detail_rectangle.bottomRight()
@@ -369,19 +410,18 @@ class PyQtGraphSceneConsumer:
         detail_right = int(detail_bottom_right.x())
         detail_top = int(detail_top_left.y())
         detail_bottom = int(detail_bottom_right.y())
-        margin = 4
         vertical_width = 18
         self.detail_x_scrollbar.setGeometry(
-            detail_left + margin,
-            detail_bottom - margin - 18,
-            max(0, detail_right - detail_left - vertical_width - 3 * margin),
+            detail_left,
+            detail_bottom + 1,
+            max(0, detail_right - detail_left),
             18,
         )
         self.detail_y_scrollbar.setGeometry(
-            detail_right - margin - vertical_width,
-            detail_top + margin,
+            detail_right + 1,
+            detail_top,
             vertical_width,
-            max(0, detail_bottom - detail_top - 18 - 3 * margin),
+            max(0, detail_bottom - detail_top),
         )
         self.detail_x_scrollbar.raise_()
         self.detail_y_scrollbar.raise_()

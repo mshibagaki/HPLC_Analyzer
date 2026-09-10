@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-10 (Issues #307-#311 planning)
+Updated: 2026-09-10 (Issues #307-#314 planning)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -98,6 +98,15 @@ Windows 11 field use on `582424f` produced thirteen more requests, grouped into 
 Issue #310 is new work rather than a defect: a display-settings dialog for the figure aspect ratio and export dpi, plus a one-row layout for the integration buttons. It needs no new persisted fields because `figure_width_mm`, `figure_height_mm` and `dpi` already exist.
 
 Issue #308 is the only batch in this round that changes the schema, adding two legend appearance fields to `AnalysisMethod` with a migration that reads existing projects as unframed and unfilled.
+
+A further eight requests were grouped into two issues (#313, #314), planned on top of #312 because both rounds edit the same document sections. The findings are in `WIN11_FEEDBACK_WORKFLOW.md` section 30.
+
+| Issue | Affected row | What is actually wrong |
+|---|---|---|
+| #313 | Selection and display | Fraction ranges are stored on the project but there is no way to list them, and removing one means finding it on the plot. The integration panel puts the integration-list window on its own row below the two peak buttons, and the fraction buttons likewise. The vertical-pointer button still occupies a row of the move/zoom panel although the same action is on the toolbar and the edit menu, and the four display checkboxes each span two columns in a single stack |
+| #314 | Output and reports | `report.py` contains no tick handling at all, so a manual X tick spacing chosen in the axis and format settings never reaches the report; the screen path in `_set_dynamic_x_ticks` is the only implementation. The report contents dialog is a flat list of six checkboxes with no grouping, and fraction ranges cannot be reported at all |
+
+Issue #313 changes the schema and #314 does not. The fraction ranges themselves already persist on `Project.fraction_regions`, and `ReportOptions` is a session-only dataclass that needs one more flag, but the requested "show fraction areas" checkbox has no counterpart at all: the four existing display flags live on `AnalysisMethod` and none covers fraction ranges, which `screen_scene.py` builds unconditionally. #313 therefore adds one persisted field with a migration that reads existing projects as visible, matching what they draw today. Issue #314 must also apply the tick-count ceiling added by Issue #241, because a report can span a wider X range than the screen and would otherwise generate more tick lines than the screen permits.
 
 ## Project compatibility notes for Issues #181 and #221
 

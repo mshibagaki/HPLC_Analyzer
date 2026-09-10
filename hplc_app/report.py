@@ -45,8 +45,13 @@ def _number(value, digits=4) -> str:
     return ("%%.%dg" % digits) % value
 
 
-def _area_number(value) -> str:
-    """Format the report's µV·sec area without scientific notation."""
+def format_area(value) -> str:
+    """Format a peak area (µV·sec or mAU·sec) without scientific notation.
+
+    Shared by the report table and the on-screen integration peak list
+    (Issue #309/27.9) so the two surfaces never drift into separate
+    thousands-separator formats.
+    """
 
     if value is None:
         return ""
@@ -162,7 +167,7 @@ def _peak_rows(
             row.append("%s–%s" % (_number(peak.start_min), _number(peak.end_min)))
         row.extend(
             (
-                _area_number(peak.raw_area_uv_sec),
+                format_area(peak.raw_area_uv_sec),
                 _number(peak.area_percent),
                 _number(peak.fwhm_min),
             )

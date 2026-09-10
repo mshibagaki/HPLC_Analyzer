@@ -5546,3 +5546,210 @@ class IntegrationListDialog(QtWidgets.QDialog):
         close_buttons.rejected.connect(self.close)
         actions.addWidget(close_buttons)
         layout.addLayout(actions)
+
+
+class ElideRightCheckBox(QtWidgets.QCheckBox):
+    """A ``QCheckBox`` whose label elides on the right when it does not fit.
+
+    ``QCheckBox`` has no built-in elide mode (``setTextElideMode`` does not
+    exist on it) and its horizontal size policy is ``Minimum``, so a layout
+    treats ``sizeHint()`` as a hard floor and ignores a smaller
+    ``minimumSizeHint()``. Fixing only the paint path therefore does not let
+    the "表示" group shrink below its longest label (WIN11_FEEDBACK_WORKFLOW.md
+    30.9): both the painted text *and* the horizontal size policy have to
+    change together.
+
+    Unlike ``LeftElideDelegate`` (``dialogs.py``, which elides source paths on
+    the *left* so the trailing filename stays visible), this widget elides on
+    the *right*, keeping the leading word(s) of the label visible.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._full_text = text
+        # None means "no floor narrower than this checkbox's own full label"
+        # -- i.e. it will not elide at all until something calls
+        # set_minimum_label_width() with a smaller value. gui.py sets a
+        # floor shared by the whole "表示" group (30.9's "一番短いラベルが
+        # 収まる幅", measured from the current labels, not hard-coded).
+        self._min_label_width = None
+        preferred = (
+            QtWidgets.QSizePolicy.Policy.Preferred
+            if QT_API == 6
+            else QtWidgets.QSizePolicy.Preferred
+        )
+        policy = self.sizePolicy()
+        policy.setHorizontalPolicy(preferred)
+        self.setSizePolicy(policy)
+
+    def setText(self, text):  # noqa: N802 - Qt override naming
+        self._full_text = text
+        self._min_label_width = None
+        super().setText(text)
+        self.updateGeometry()
+
+    def text(self):  # noqa: N802 - Qt override naming
+        return self._full_text
+
+    def set_minimum_label_width(self, width):
+        """Set this checkbox's elide floor to ``width`` label pixels.
+
+        Called from gui.py with the narrowest full label currently in the
+        group, so no checkbox shrinks below "the shortest whole label fits"
+        even when every other label is longer (30.9's explicit floor rule).
+        """
+
+        self._min_label_width = max(0, int(width))
+        self.updateGeometry()
+
+    def label_width(self, text):
+        metrics = self.fontMetrics()
+        return (
+            metrics.horizontalAdvance(text) if hasattr(metrics, "horizontalAdvance")
+            else metrics.width(text)
+        )
+
+    def _indicator_width(self):
+        style_option = QtWidgets.QStyleOptionButton()
+        self.initStyleOption(style_option)
+        indicator_element = (
+            QtWidgets.QStyle.SubElement.SE_CheckBoxIndicator
+            if QT_API == 6
+            else QtWidgets.QStyle.SE_CheckBoxIndicator
+        )
+        rect = self.style().subElementRect(indicator_element, style_option, self)
+        return rect.width() + 6
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt override naming
+        base = super().minimumSizeHint()
+        text_floor = (
+            self._min_label_width if self._min_label_width is not None
+            else self.label_width(self._full_text)
+        )
+        width = self._indicator_width() + text_floor + 8
+        return QtCore.QSize(min(base.width(), width) if base.width() else width, base.height())
+
+    def paintEvent(self, event):
+        painter = QtWidgets.QStylePainter(self)
+        option = QtWidgets.QStyleOptionButton()
+        self.initStyleOption(option)
+        available = max(0, option.rect.width() - self._indicator_width())
+        elide_mode = (
+            QtCore.Qt.TextElideMode.ElideRight
+            if QT_API == 6
+            else QtCore.Qt.ElideRight
+        )
+        option.text = self.fontMetrics().elidedText(
+            self._full_text, elide_mode, available
+        )
+        control = (
+            QtWidgets.QStyle.ControlElement.CE_CheckBox
+            if QT_API == 6
+            else QtWidgets.QStyle.CE_CheckBox
+        )
+        painter.drawControl(control, option)
+
+
+def _read_only_list_item(text: str) -> QtWidgets.QTableWidgetItem:
+    item = QtWidgets.QTableWidgetItem(text)
+    item.setFlags(item.flags() & ~ITEM_IS_EDITABLE)
+    return item
+
+
+class FractionRegionListDialog(QtWidgets.QDialog):
+    """Non-modal list of persisted fraction ranges (Issue #313 / サ²).
+
+    Built on the same non-modal, selection/table pattern as
+    ``IntegrationListDialog``: a plain ``QTableWidget`` with row selection and
+    a Delete action, kept in sync with the project rather than owning its own
+    copy of the data.
+    """
+
+    START_COLUMN = 0
+    END_COLUMN = 1
+    INTERVAL_COLUMN = 2
+
+    def __init__(self, language: str = "ja", parent=None):
+        super().__init__(parent)
+        self.setModal(False)
+        self.setWindowTitle(
+            "フラクション範囲の一覧" if language == "ja" else "Fraction range list"
+        )
+        self.resize(420, 320)
+        layout = QtWidgets.QVBoxLayout(self)
+        self.table = QtWidgets.QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(
+            ["開始 (min)", "終了 (min)", "間隔 (s)"]
+            if language == "ja"
+            else ["Start (min)", "End (min)", "Interval (s)"]
+        )
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        edit_triggers = (
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+            if QT_API == 6
+            else QtWidgets.QAbstractItemView.NoEditTriggers
+        )
+        self.table.setEditTriggers(edit_triggers)
+        self.table.setWordWrap(False)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table, 1)
+        self.empty_label = QtWidgets.QLabel(
+            "フラクション範囲はまだありません。"
+            if language == "ja"
+            else "No fraction ranges yet."
+        )
+        self.empty_label.setAlignment(
+            (QtCore.Qt.AlignmentFlag.AlignCenter if QT_API == 6
+             else QtCore.Qt.AlignCenter)
+        )
+        layout.addWidget(self.empty_label)
+        actions = QtWidgets.QHBoxLayout()
+        self.delete_button = QtWidgets.QPushButton(
+            "削除" if language == "ja" else "Delete"
+        )
+        actions.addWidget(self.delete_button)
+        actions.addStretch(1)
+        close_buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Close
+        )
+        close_buttons.rejected.connect(self.close)
+        actions.addWidget(close_buttons)
+        layout.addLayout(actions)
+
+    def selected_region_ids(self):
+        ids = []
+        for item in self.table.selectedItems():
+            if item.column() != self.START_COLUMN:
+                continue
+            region_id = item.data(USER_ROLE)
+            if region_id:
+                ids.append(region_id)
+        return ids
+
+    def set_regions(self, regions):
+        """Repopulate the table from ``regions`` (start_min, end_min, interval_min, id)."""
+
+        selected = set(self.selected_region_ids())
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(regions))
+        for row, region in enumerate(regions):
+            start_item = _read_only_list_item("%g" % region.start_min)
+            start_item.setData(USER_ROLE, region.id)
+            end_item = _read_only_list_item("%g" % region.end_min)
+            interval_item = _read_only_list_item("%g" % (region.interval_min * 60.0))
+            self.table.setItem(row, self.START_COLUMN, start_item)
+            self.table.setItem(row, self.END_COLUMN, end_item)
+            self.table.setItem(row, self.INTERVAL_COLUMN, interval_item)
+        self.table.resizeColumnsToContents()
+        if selected:
+            for row in range(self.table.rowCount()):
+                item = self.table.item(row, self.START_COLUMN)
+                if item is not None and item.data(USER_ROLE) in selected:
+                    selection = QtWidgets.QTableWidgetSelectionRange(
+                        row, 0, row, self.table.columnCount() - 1
+                    )
+                    self.table.setRangeSelected(selection, True)
+        self.table.blockSignals(False)
+        self.table.setVisible(bool(regions))
+        self.empty_label.setVisible(not regions)

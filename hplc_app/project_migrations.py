@@ -423,6 +423,18 @@ def migrate_108_to_109(manifest: Manifest) -> Manifest:
     return migrated
 
 
+def migrate_109_to_110(manifest: Manifest) -> Manifest:
+    """Give existing projects the established always-drawn fraction regions."""
+
+    migrated = _with_schema(manifest, 110)
+    method = migrated.get("method", {})
+    if not isinstance(method, dict):
+        raise ProjectMigrationError("Project method must be an object")
+    method.setdefault("show_fraction_regions", True)
+    migrated["method"] = method
+    return migrated
+
+
 LEGACY_MIGRATIONS: Dict[int, Migration] = {
     0: migrate_legacy_0_to_1,
     1: migrate_legacy_1_to_2,
@@ -444,6 +456,7 @@ V1_MIGRATIONS: Dict[int, Migration] = {
     106: migrate_106_to_107,
     107: migrate_107_to_108,
     108: migrate_108_to_109,
+    109: migrate_109_to_110,
 }
 
 

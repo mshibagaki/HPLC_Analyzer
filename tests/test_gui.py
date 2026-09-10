@@ -28,7 +28,9 @@ from hplc_app.dialogs import (
     ConditionCopyDialog,
     DirectoryImportDialog,
     DisplaySettingsDialog,
+    ElideRightCheckBox,
     FractionRangeDialog,
+    FractionRegionListDialog,
     GradientDialog,
     LabDatabaseDialog,
     LegendComposerDialog,
@@ -3256,17 +3258,22 @@ class GuiTests(unittest.TestCase):
                         return row
                 return None
 
-            # reset_buttons (row 4) now comes before move_controls (row 5),
-            # which holds move_trace_button (Issue #236 / 9.18).
+            # reset_buttons (row 3) now comes before move_controls (row 4),
+            # which holds move_trace_button (Issue #236 / 9.18). Issue #313
+            # (サ²) removed pointer_control_button from this layout (the
+            # toolbar and Edit menu already reach the same shared
+            # pointer_action), closing the row it used to occupy.
             expected_rows = {
                 window.zoom_axis_label: 1,
                 window.view_mode_label: 2,
-                window.pointer_control_button: 3,
-                window.reset_view_button: 4,
-                window.move_trace_button: 5,
+                window.reset_view_button: 3,
+                window.move_trace_button: 4,
             }
             for widget, expected in expected_rows.items():
                 self.assertEqual(row_of(widget), expected)
+            self.assertEqual(
+                layout.indexOf(window.pointer_control_button), -1
+            )
 
             # Reordering must not have disconnected any of the row's controls.
             window.zoom_axis_combo.setCurrentIndex(
@@ -7449,7 +7456,10 @@ class GuiTests(unittest.TestCase):
         window.show()
         self.app.processEvents()
         # Issue #236/9.18: the move/reset row moved below the view-reset row.
-        move_row = window.navigation_group.layout().itemAtPosition(5, 0).layout()
+        # Issue #313 (サ²) / workflow doc 30.6 then removed
+        # pointer_control_button from this layout, closing the row it used
+        # to occupy and moving this row up from 5 to 4.
+        move_row = window.navigation_group.layout().itemAtPosition(4, 0).layout()
         self.assertGreaterEqual(move_row.indexOf(window.move_trace_button), 0)
         self.assertGreaterEqual(move_row.indexOf(window.reset_trace_position_button), 0)
         for button in (window.move_trace_button, window.reset_trace_position_button):
@@ -8924,7 +8934,9 @@ class GuiTests(unittest.TestCase):
                 window.navigation_group.title(),
                 window.integration_group.title(),
             ],
-            ["表示", "移動・ズーム", "積分"],
+            # Issue #313 (サ²) / workflow doc 30.5: renamed to reflect the
+            # fraction-collector controls the group already hosts.
+            ["表示", "移動・ズーム", "積分・フラコレ"],
         )
         self.assertFalse(hasattr(window, "zoom_in_button"))
         self.assertFalse(hasattr(window, "zoom_out_button"))
@@ -13283,13 +13295,365 @@ class GuiTests(unittest.TestCase):
                 self.assertTrue(button.text())
 
             # The rows below moved up by one to close the freed row
-            # (workflow doc 27.10 / 29: "下の行を1つ上に詰める").
-            select_row, _c, _rs, _cs = position_of(window.select_all_peaks_button)
-            fraction_row, _c, _rs, _cs = position_of(window.fraction_numeric_button)
-            list_row, _c, _rs, _cs = position_of(window.integration_list_button)
+            # (workflow doc 27.10 / 29: "下の行を1つ上に詰める"). Issue #313
+            # (サ²) / workflow doc 30.3, 31 then rebased onto that numbering
+            # and put integration_list_button/fraction_list_button on the
+            # same rows as select_all_peaks_button/fraction_numeric_button
+            # (three single-column buttons per row, like this detect/fit/
+            # saturation row), instead of each on its own row below.
+            select_row, select_col, _rs, _cs = position_of(
+                window.select_all_peaks_button
+            )
+            delete_row, delete_col, _rs, _cs = position_of(
+                window.delete_peak_button
+            )
+            list_row, list_col, _rs, _cs = position_of(
+                window.integration_list_button
+            )
+            fraction_row, fraction_col, _rs, _cs = position_of(
+                window.fraction_numeric_button
+            )
+            clear_row, clear_col, _rs, _cs = position_of(
+                window.clear_fractions_button
+            )
+            fraction_list_row, fraction_list_col, _rs, _cs = position_of(
+                window.fraction_list_button
+            )
             self.assertEqual(select_row, detect_row + 1)
+            self.assertEqual(select_row, delete_row)
+            self.assertEqual(select_row, list_row)
+            self.assertLess(select_col, delete_col)
+            self.assertLess(delete_col, list_col)
             self.assertEqual(fraction_row, detect_row + 2)
-            self.assertEqual(list_row, detect_row + 3)
+            self.assertEqual(fraction_row, clear_row)
+            self.assertEqual(fraction_row, fraction_list_row)
+            self.assertLess(fraction_col, clear_col)
+            self.assertLess(clear_col, fraction_list_col)
+            for button in (
+                window.select_all_peaks_button,
+                window.delete_peak_button,
+                window.integration_list_button,
+                window.fraction_numeric_button,
+                window.clear_fractions_button,
+                window.fraction_list_button,
+            ):
+                self.assertTrue(button.text())
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_navigation_group_no_longer_hosts_pointer_button(self):
+        # Issue #313 (サ²) / workflow doc 30.6: the vertical-line pointer
+        # button is removed from the "移動・ズーム" panel because the toolbar
+        # (#236/#269) and Edit menu already reach the same pointer_action.
+        # pointer_action itself, and the pointer_control_button object, stay
+        # in place for anything that still references them.
+        window = self.make_window()
+        try:
+            layout = window.navigation_group.layout()
+            self.assertEqual(
+                layout.indexOf(window.pointer_control_button), -1
+            )
+            self.assertIs(
+                window.pointer_control_button.defaultAction(),
+                window.pointer_action,
+            )
+            self.assertIn(
+                window.pointer_toolbar_widget_action, window.toolbar.actions()
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_integration_group_renamed_integration_and_fractions(self):
+        window = self.make_window()
+        try:
+            self.assertEqual(window.integration_group.title(), "積分・フラコレ")
+            window.set_language("en")
+            self.assertEqual(window.integration_group.title(), "Integration / fractions")
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_display_group_checkboxes_flow_two_columns(self):
+        # workflow doc 30.7: a fixed two-column flow that grows downward,
+        # instead of one column (and one row) per checkbox.
+        window = self.make_window()
+        try:
+            layout = window.display_group.layout()
+
+            def position_of(widget):
+                index = layout.indexOf(widget)
+                self.assertGreaterEqual(index, 0)
+                return layout.getItemPosition(index)
+
+            positions = [
+                position_of(checkbox)
+                for checkbox in window._display_checkboxes
+            ]
+            first_row = positions[0][0]
+            for index, (row, column, _rs, _cs) in enumerate(positions):
+                self.assertEqual(row, first_row + index // 2)
+                self.assertEqual(column, index % 2)
+            # The unit/legend/button row above keeps its own 2-column layout.
+            unit_row, unit_col, _rs, unit_cs = position_of(window.unit_label)
+            self.assertEqual(unit_cs, 1)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_display_group_has_fraction_visibility_checkbox(self):
+        window = self.make_window()
+        try:
+            self.assertIn(
+                window.show_fraction_checkbox, window._display_checkboxes
+            )
+            self.assertTrue(window.show_fraction_checkbox.isChecked())
+            self.assertEqual(
+                window.show_fraction_checkbox.text(), "フラコレ領域を表示"
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_elide_right_checkbox_elides_when_narrow_and_not_when_wide(self):
+        checkbox = ElideRightCheckBox("積分範囲・ベースラインを表示")
+        checkbox.show()
+        self.app.processEvents()
+        checkbox.resize(60, checkbox.sizeHint().height())
+        checkbox.set_minimum_label_width(1)
+        self.app.processEvents()
+        option = QtWidgets.QStyleOptionButton()
+        checkbox.initStyleOption(option)
+        available = max(0, option.rect.width() - checkbox._indicator_width())
+        elide_mode = (
+            QtCore.Qt.TextElideMode.ElideRight if QT_API == 6
+            else QtCore.Qt.ElideRight
+        )
+        narrow_text = checkbox.fontMetrics().elidedText(
+            checkbox.text(), elide_mode, available
+        )
+        self.assertNotEqual(narrow_text, checkbox.text())
+        self.assertTrue(narrow_text.endswith("…"))
+
+        checkbox.resize(600, checkbox.sizeHint().height())
+        self.app.processEvents()
+        option = QtWidgets.QStyleOptionButton()
+        checkbox.initStyleOption(option)
+        available = max(0, option.rect.width() - checkbox._indicator_width())
+        wide_text = checkbox.fontMetrics().elidedText(
+            checkbox.text(), elide_mode, available
+        )
+        self.assertEqual(wide_text, checkbox.text())
+        checkbox.deleteLater()
+
+    def test_elide_right_checkbox_full_text_stays_in_tooltip(self):
+        window = self.make_window()
+        try:
+            for checkbox in window._display_checkboxes:
+                self.assertIn(checkbox.text(), checkbox.toolTip())
+            # show_gradient_checkbox's pre-existing description tooltip
+            # (Issue #140/#182) is not overwritten by the new full-label
+            # tooltip; the full label is appended instead.
+            self.assertIn(
+                "B%曲線を両方に表示", window.show_gradient_checkbox.toolTip()
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_display_group_minimum_width_does_not_grow_with_two_columns(self):
+        # workflow doc 30.9: shrinking each checkbox's horizontal size policy
+        # to Preferred (instead of the default Minimum) must let the group's
+        # minimum width come back down after the 2-column reflow, rather
+        # than staying pinned at the widest label's width in every column.
+        window = self.make_window()
+        try:
+            layout = window.display_group.layout()
+            self.assertLessEqual(layout.minimumSize().width(), 300)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_fraction_list_dialog_lists_regions_in_seconds(self):
+        window = self.make_window()
+        try:
+            window.project.fraction_regions = [
+                FractionRegion(start_min=1.0, end_min=5.0, interval_min=0.5),
+            ]
+            window.open_fraction_list()
+            dialog = window._fraction_list_dialog
+            self.assertTrue(dialog.isVisible())
+            self.assertEqual(dialog.table.rowCount(), 1)
+            self.assertEqual(dialog.table.item(0, 0).text(), "1")
+            self.assertEqual(dialog.table.item(0, 1).text(), "5")
+            # Interval is stored in minutes (interval_min) but shown in
+            # seconds to match the numeric fraction-range editor (Issue
+            # #217): 0.5 min == 30 s.
+            self.assertEqual(dialog.table.item(0, 2).text(), "30")
+            self.assertFalse(dialog.empty_label.isVisible())
+        finally:
+            window._fraction_list_dialog.close()
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_fraction_list_dialog_shows_empty_state(self):
+        window = self.make_window()
+        try:
+            window.project.fraction_regions = []
+            window.open_fraction_list()
+            dialog = window._fraction_list_dialog
+            self.assertEqual(dialog.table.rowCount(), 0)
+            self.assertTrue(dialog.empty_label.isVisible())
+        finally:
+            window._fraction_list_dialog.close()
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_fraction_list_dialog_stays_in_sync_while_open(self):
+        # "ダイアログを開いたまま範囲を変えたときの挙動が決まっている": editing
+        # or clearing fraction ranges while the list dialog is open refreshes
+        # it in place.
+        window = self.make_window()
+        try:
+            window.project.fraction_regions = [
+                FractionRegion(start_min=0.0, end_min=10.0, interval_min=1.0),
+            ]
+            window.open_fraction_list()
+            dialog = window._fraction_list_dialog
+            self.assertEqual(dialog.table.rowCount(), 1)
+
+            window.clear_fraction_regions()
+            self.assertEqual(dialog.table.rowCount(), 0)
+        finally:
+            window._fraction_list_dialog.close()
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_fraction_list_dialog_delete_reuses_existing_undo_step(self):
+        window = self.make_window()
+        try:
+            keep = FractionRegion(start_min=0.0, end_min=5.0, interval_min=1.0)
+            drop = FractionRegion(start_min=10.0, end_min=15.0, interval_min=1.0)
+            window.project.fraction_regions = [keep, drop]
+            window.open_fraction_list()
+            dialog = window._fraction_list_dialog
+            self.assertEqual(dialog.table.rowCount(), 2)
+
+            drop_row = next(
+                row for row in range(dialog.table.rowCount())
+                if dialog.table.item(row, 0).data(USER_ROLE) == drop.id
+            )
+            dialog.table.selectRow(drop_row)
+            undo_count = len(window._undo_stack)
+
+            dialog.delete_button.click()
+
+            self.assertEqual(
+                [region.id for region in window.project.fraction_regions],
+                [keep.id],
+            )
+            self.assertEqual(dialog.table.rowCount(), 1)
+            # One Undo/Redo step, through the same
+            # _capture_analysis_state/_push_undo_snapshot machinery every
+            # other delete action already uses.
+            self.assertEqual(len(window._undo_stack), undo_count + 1)
+            window.undo()
+            self.assertEqual(
+                sorted(region.id for region in window.project.fraction_regions),
+                sorted([keep.id, drop.id]),
+            )
+            window.redo()
+            self.assertEqual(
+                [region.id for region in window.project.fraction_regions],
+                [keep.id],
+            )
+        finally:
+            window._fraction_list_dialog.close()
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_show_fraction_regions_checkbox_toggles_matplotlib_drawing(self):
+        window = self.make_window()
+        try:
+            window.project.fraction_regions = [
+                FractionRegion(start_min=1.0, end_min=5.0, interval_min=1.0),
+            ]
+            window.project.method.show_fraction_regions = True
+            window._plot()
+            self.app.processEvents()
+            self.assertTrue(window.axes.patches or window.axes.lines)
+            visible_before = len(window.axes.patches)
+
+            window.show_fraction_checkbox.setChecked(False)
+            self.app.processEvents()
+            self.assertFalse(window.project.method.show_fraction_regions)
+            # No patch drawn for the fraction span once hidden.
+            self.assertLess(len(window.axes.patches), max(visible_before, 1))
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_show_fraction_regions_persists_and_reloads(self):
+        from hplc_app.project_io import load_project, save_project
+
+        window = self.make_window()
+        try:
+            window.project.fraction_regions = [
+                FractionRegion(start_min=1.0, end_min=5.0, interval_min=1.0),
+            ]
+            window.show_fraction_checkbox.setChecked(False)
+            self.assertFalse(window.project.method.show_fraction_regions)
+            with tempfile.TemporaryDirectory() as directory:
+                path = str(Path(directory) / "fraction_visibility.hplcproj")
+                save_project(path, window.project)
+                restored = load_project(path)
+            self.assertFalse(restored.method.show_fraction_regions)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_show_fraction_regions_toggles_pyqtgraph_without_rebuild(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self.make_window()
+        try:
+            window.project.fraction_regions = [
+                FractionRegion(start_min=1.0, end_min=5.0, interval_min=1.0),
+            ]
+            window.screen_preview_checkbox.setChecked(True)
+            self.app.processEvents()
+            preview = window._screen_preview
+            consumer = preview.consumer
+            self.assertTrue(consumer.fraction_region_items)
+            scene_before = preview._scene
+
+            window.show_fraction_checkbox.setChecked(False)
+            self.app.processEvents()
+
+            # The scene object itself is unchanged (no rebuild); only item
+            # visibility toggled, matching the #203/#216 no-rebuild toggle
+            # mechanism already used for integration/retention/gradient.
+            self.assertIs(preview._scene, scene_before)
+            self.assertTrue(
+                all(
+                    not item.isVisible()
+                    for item in consumer.fraction_region_items
+                )
+            )
+
+            window.show_fraction_checkbox.setChecked(True)
+            self.app.processEvents()
+            self.assertTrue(
+                all(
+                    item.isVisible()
+                    for item in consumer.fraction_region_items
+                )
+            )
         finally:
             window.project.dirty = False
             window.close()

@@ -159,6 +159,7 @@ class ExperimentalScreenPreview:
                 show_integration=method.show_integration_areas,
                 show_retention=method.show_retention_labels,
                 show_gradient=method.show_gradient_b,
+                show_fraction=method.show_fraction_regions,
             )
             if not self.consumer._overview_drag_active:
                 self.consumer.set_overview_ratio(owner._overview_split_ratio)

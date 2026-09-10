@@ -882,6 +882,55 @@ class AnalysisTests(unittest.TestCase):
         )
         self.assertIsNone(history.navigate("invalid", home))
 
+    def test_screen_view_history_back_repeats_multiple_steps_and_caps_at_trim_limit(
+        self,
+    ):
+        # Issue #309/27.5: repeated "back" must step back one recorded view
+        # at a time -- two double-clicks land two views earlier -- until it
+        # reaches the oldest entry the trim limit still retains, at which
+        # point it is a defined no-op rather than silently repeating.
+        states = [
+            ScreenViewState(x=(float(i), float(i) + 10.0), y1=(0.0, 100.0))
+            for i in range(5)
+        ]
+        history = ScreenViewHistory(max_entries=3)
+        history.ensure_home(states[0])
+        current = states[0]
+        for later in states[1:]:
+            history.record_before_change(current)
+            current = later
+        # Zooming (or panning) once per step recorded one entry per step,
+        # trimmed to the configured cap; the live "current" view (states[4])
+        # is itself not yet a recorded entry until something navigates away
+        # from it.
+        self.assertEqual(history.count, 3)
+        self.assertEqual(history.position, 2)
+
+        current = history.navigate("back", current)
+        self.assertEqual(current, states[3])
+        self.assertEqual(history.count, 3)
+        self.assertEqual(history.position, 1)
+
+        current = history.navigate("back", current)
+        self.assertEqual(current, states[2])
+        self.assertEqual(history.count, 3)
+        self.assertEqual(history.position, 0)
+
+        # The oldest surviving entry is reached; a further "back" is a
+        # defined no-op instead of wrapping or fabricating an older view.
+        self.assertIsNone(history.navigate("back", current))
+        self.assertEqual(history.count, 3)
+        self.assertEqual(history.position, 0)
+
+        # "forward" retraces the same steps back to the most recent entry.
+        current = history.navigate("forward", current)
+        self.assertEqual(current, states[3])
+        self.assertEqual(history.position, 1)
+        current = history.navigate("forward", current)
+        self.assertEqual(current, states[4])
+        self.assertEqual(history.position, 2)
+        self.assertIsNone(history.navigate("forward", current))
+
     def test_overview_state_orders_without_moving_detail_range(self):
         state = compose_overview_state(
             enabled=True,

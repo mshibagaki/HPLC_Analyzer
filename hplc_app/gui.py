@@ -110,6 +110,7 @@ from .project_io import (
 from .report import (
     ReportOptions,
     export_analysis_report_pdf,
+    format_area,
     render_analysis_report_pages,
 )
 from .rendering import (
@@ -3238,9 +3239,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 _format(peak.end_min),
                 _format(peak.retention_time_min),
                 _format(peak.raw_height_uv),
-                _format(peak.raw_area_uv_sec),
+                format_area(peak.raw_area_uv_sec),
                 _format(peak.height_mau),
-                _format(peak.area_mau_sec),
+                format_area(peak.area_mau_sec),
                 _format(peak.area_percent),
                 _format(peak.fwhm_min),
                 _format(peak.gradient_a_pct),

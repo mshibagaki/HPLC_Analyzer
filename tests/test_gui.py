@@ -68,7 +68,10 @@ from hplc_app.gui import (
     MOUSE_MODE_IDS,
     MainWindow,
     dataset_display_color,
+    format_area,
 )
+from hplc_app import gui as gui_module
+from hplc_app import report as report_module
 from hplc_app.i18n import Translator
 from hplc_app.models import (
     Dataset,
@@ -1880,6 +1883,107 @@ class GuiTests(unittest.TestCase):
                 navigation.close()
             consumer.close()
 
+    def test_pyqtgraph_double_click_steps_back_repeatedly_despite_click_jitter(self):
+        # Issue #309/27.5: a real hand-held double-click's leading single
+        # press rarely lands on the exact same pixel as the second press. A
+        # couple of pixels of drift used to be recorded as a real pan step,
+        # so each double-click's navigate("back") only ever returned to
+        # "just before that drift" instead of one full step further back --
+        # repeated double-clicks looked stuck after the first one.
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional PyQtGraph dependency is not installed")
+        consumer = PyQtGraphSceneConsumer(size=(800, 500))
+        navigation = None
+        try:
+            initial = ScreenViewState(
+                x=(0.0, 100.0), y1=(0.0, 1000.0), y2=None, gradient=None,
+            )
+            consumer.apply_view_state(
+                initial, compose_overview_state(False, initial.x, initial.x)
+            )
+            consumer.snapshot()
+            navigation = PyQtGraphNavigationController(consumer)
+            navigation.set_pan_enabled(True)
+
+            def zoom():
+                navigation.handle_event("scroll_event", ScreenPointerEvent(
+                    button="up", axis_role="y1", hit_region="x",
+                    data_coordinates=(("y1", 50.0, 0.0),),
+                ))
+
+            def double_click_with_leading_jitter(cx, cy, jitter_px):
+                press = ScreenPointerEvent(
+                    button=1, axis_role="y1", hit_region="plot",
+                    canvas_x=cx, canvas_y=cy,
+                )
+                jittered = ScreenPointerEvent(
+                    button=1, axis_role="y1", hit_region="plot",
+                    canvas_x=cx + jitter_px, canvas_y=cy,
+                )
+                navigation.handle_event("button_press_event", press)
+                navigation.handle_event("motion_notify_event", jittered)
+                navigation.handle_event("button_release_event", jittered)
+                double = ScreenPointerEvent(
+                    button=1, axis_role="y1", hit_region="plot",
+                    canvas_x=cx, canvas_y=cy, double_click=True,
+                )
+                navigation.handle_event("button_press_event", double)
+
+            zoom()
+            zoomed_once = consumer.capture_view_state()
+            self.assertEqual(navigation.history.count, 1)
+            self.assertEqual(navigation.history.position, 0)
+            zoom()
+            zoomed_twice = consumer.capture_view_state()
+            self.assertNotEqual(zoomed_once, zoomed_twice)
+            self.assertEqual(navigation.history.count, 2)
+            self.assertEqual(navigation.history.position, 1)
+
+            # Sub-threshold jitter (< the existing 3px click/drag tolerance
+            # used by zoom-drags) must not itself be recorded: the view
+            # after the leading click stays exactly where it was.
+            double_click_with_leading_jitter(200.0, 200.0, jitter_px=2.0)
+            self.assertEqual(consumer.capture_view_state(), zoomed_once)
+            self.assertEqual(navigation.history.count, 3)
+            self.assertEqual(navigation.history.position, 1)
+
+            double_click_with_leading_jitter(200.0, 200.0, jitter_px=2.0)
+            self.assertEqual(consumer.capture_view_state(), initial)
+            self.assertEqual(navigation.history.count, 3)
+            self.assertEqual(navigation.history.position, 0)
+
+            # Movement past the click threshold remains a real, recorded pan
+            # -- only sub-threshold jitter is suppressed. Starting from a
+            # non-home view makes the "record before change" path exercise
+            # the same recording branch a real drag uses.
+            consumer.apply_view_state(
+                zoomed_twice, compose_overview_state(
+                    False, zoomed_twice.x, zoomed_twice.x
+                )
+            )
+            navigation.reset_history()
+            zoom()
+            before_pan = consumer.capture_view_state()
+            press = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=200.0, canvas_y=200.0,
+            )
+            moved = ScreenPointerEvent(
+                button=1, axis_role="y1", hit_region="plot",
+                canvas_x=210.0, canvas_y=200.0,
+            )
+            navigation.handle_event("button_press_event", press)
+            navigation.handle_event("motion_notify_event", moved)
+            navigation.handle_event("button_release_event", moved)
+            panned = consumer.capture_view_state()
+            self.assertNotEqual(panned, before_pan)
+            navigation.navigate("back")
+            self.assertEqual(consumer.capture_view_state(), before_pan)
+        finally:
+            if navigation is not None:
+                navigation.close()
+            consumer.close()
+
     def test_lightweight_overview_is_coarser_and_peak_selection_reuses_patch(self):
         window = self.make_lightweight_window()
         window.project.method.view_mode = "overview_detail"
@@ -2633,6 +2737,61 @@ class GuiTests(unittest.TestCase):
         window.project.dirty = False
         window.close()
 
+    def test_matplotlib_double_click_steps_back_repeatedly_through_history(self):
+        # Issue #309/27.5: double-clicking N times must return N zoom steps
+        # earlier, not just one. Lock history.count/position at each step.
+        window = self.make_window()
+        window.project.method.zoom_axis = "x"
+        home_x = window.axes.get_xlim()
+        window._view_history.clear()
+        self.assertEqual(window._view_history.count, 0)
+
+        window._zoom_view(0.8, center_x=8.0, source_axis=window.axes, center_y=0.0)
+        after_zoom_1 = window.axes.get_xlim()
+        self.assertNotEqual(after_zoom_1, home_x)
+        self.assertEqual(window._view_history.count, 1)
+        self.assertEqual(window._view_history.position, 0)
+
+        window._zoom_view(0.8, center_x=8.0, source_axis=window.axes, center_y=0.0)
+        after_zoom_2 = window.axes.get_xlim()
+        self.assertNotEqual(after_zoom_2, after_zoom_1)
+        self.assertEqual(window._view_history.count, 2)
+        self.assertEqual(window._view_history.position, 1)
+
+        window._zoom_view(0.8, center_x=8.0, source_axis=window.axes, center_y=0.0)
+        after_zoom_3 = window.axes.get_xlim()
+        self.assertEqual(window._view_history.count, 3)
+        self.assertEqual(window._view_history.position, 2)
+
+        # The first "back" also records the still-current after_zoom_3 view
+        # as a new (4th) entry, so later "forward" can reach it again; the
+        # displayed view still steps back one zoom at a time from there.
+        double_click = SimpleNamespace(button=1, xdata=8.0, dblclick=True)
+        window._on_canvas_press(double_click)
+        self.assertTrue(np.allclose(window.axes.get_xlim(), after_zoom_2))
+        self.assertEqual(window._view_history.count, 4)
+        self.assertEqual(window._view_history.position, 2)
+
+        window._on_canvas_press(double_click)
+        self.assertTrue(np.allclose(window.axes.get_xlim(), after_zoom_1))
+        self.assertEqual(window._view_history.count, 4)
+        self.assertEqual(window._view_history.position, 1)
+
+        window._on_canvas_press(double_click)
+        self.assertTrue(np.allclose(window.axes.get_xlim(), home_x))
+        self.assertEqual(window._view_history.count, 4)
+        self.assertEqual(window._view_history.position, 0)
+
+        # The oldest entry is reached; a further double-click is a defined
+        # no-op rather than repeating or wrapping.
+        window._on_canvas_press(double_click)
+        self.assertTrue(np.allclose(window.axes.get_xlim(), home_x))
+        self.assertEqual(window._view_history.count, 4)
+        self.assertEqual(window._view_history.position, 0)
+
+        window.project.dirty = False
+        window.close()
+
     def test_fixed_both_zoom_changes_x_y1_y2_but_not_gradient(self):
         window = self.make_window()
         before_x = window.axes.get_xlim()
@@ -3160,6 +3319,50 @@ class GuiTests(unittest.TestCase):
         self.assertIsNone(window._screen_pan_session)
         window.project.dirty = False
         window.close()
+
+    def test_peak_table_areas_use_thousands_separator_not_scientific_notation(self):
+        # Issue #309/27.9: large peak areas must render as
+        # "123,456,789", never as "1.2e+05". Only the two area columns
+        # change format; retention time, FWHM and %Area keep the existing
+        # _format() presentation unchanged.
+        window = self.make_window()
+        dataset = window.project.datasets[0]
+        peak = dataset.peaks[0]
+        peak.raw_area_uv_sec = 123456789.4
+        peak.area_mau_sec = 1234567.89
+        peak.retention_time_min = 123456.789
+        peak.fwhm_min = 0.123456
+        peak.area_percent = 100.0
+        window._refresh_peak_table()
+
+        area_uv_text = window.peak_table.item(0, 5).text()
+        area_mau_text = window.peak_table.item(0, 7).text()
+        self.assertEqual(area_uv_text, "123,456,789")
+        self.assertEqual(area_mau_text, "1,234,568")
+        self.assertNotIn("e", area_uv_text.lower())
+        self.assertNotIn("e", area_mau_text.lower())
+        self.assertEqual(area_uv_text, format_area(peak.raw_area_uv_sec))
+        self.assertEqual(area_mau_text, format_area(peak.area_mau_sec))
+
+        # Other numeric columns retain their pre-existing %.5g presentation,
+        # scientific notation included, unaffected by the area change.
+        retention_text = window.peak_table.item(0, 3).text()
+        self.assertEqual(retention_text, gui_module._format(peak.retention_time_min))
+        self.assertIn("e", retention_text.lower())
+        fwhm_text = window.peak_table.item(0, 9).text()
+        self.assertEqual(fwhm_text, gui_module._format(peak.fwhm_min))
+        area_percent_text = window.peak_table.item(0, 8).text()
+        self.assertEqual(area_percent_text, gui_module._format(peak.area_percent))
+
+        window.project.dirty = False
+        window.close()
+
+    def test_peak_area_formatting_is_shared_between_screen_and_report(self):
+        # Issue #309/27.9 explicitly asks the screen peak list to share one
+        # formatting function with the report (#252) rather than keep two.
+        self.assertIs(gui_module.format_area, report_module.format_area)
+        self.assertEqual(report_module.format_area(123456789.4), "123,456,789")
+        self.assertEqual(report_module.format_area(None), "")
 
     def test_split_mode_uses_clicked_time_without_resetting_view(self):
         window = self.make_window()

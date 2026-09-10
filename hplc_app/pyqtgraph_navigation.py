@@ -6,6 +6,17 @@ from .screen_navigation import (
     ScreenViewHistory, axis_pan_view, begin_axis_pan, compose_overview_state,
 )
 
+# A double-click's leading single press begins a pan session exactly like any
+# other click. A real hand-held double-click rarely lands on the exact same
+# pixel twice, and applying/recording that sub-pixel drift used to consume
+# one "back" step per double-click (Issue #309/27.5): the jittered view no
+# longer matched any recorded history entry, so the immediately following
+# double-click's navigate("back") recorded *that* drift as a new step and
+# only stepped back to just before it, instead of one real step further.
+# Matches the existing 3px click/drag threshold already used for zoom-drags
+# in screen_preview.py's _handle_zoom_event.
+PAN_CLICK_THRESHOLD_PX = 3.0
+
 
 class PyQtGraphNavigationController:
     """Own native pointer navigation after render/apply_view_state.
@@ -62,6 +73,18 @@ class PyQtGraphNavigationController:
             self.history.record_before_change(current)
             self._apply(state)
 
+    def _pan_moved_past_click_threshold(self, event):
+        if (
+            self._pan is None
+            or event.canvas_x is None
+            or event.canvas_y is None
+        ):
+            return False
+        return (
+            abs(event.canvas_x - self._pan.start_x) >= PAN_CLICK_THRESHOLD_PX
+            or abs(event.canvas_y - self._pan.start_y) >= PAN_CLICK_THRESHOLD_PX
+        )
+
     @staticmethod
     def _scaled(limits, center, factor):
         if center is None:
@@ -108,15 +131,24 @@ class PyQtGraphNavigationController:
         ):
             ending = name == "button_release_event"
             try:
-                rectangle = self.consumer.pan_rectangle(self._pan.target)
-                state = axis_pan_view(
-                    self._pan, event, rectangle.width(), rectangle.height()
-                )
-                state, _overview = self._bounded_state(state)
-                if state != self._pan.initial_view and not self._pan_recorded:
-                    self.history.record_before_change(self._pan.initial_view)
-                    self._pan_recorded = True
-                self._apply(state)
+                # Stay a no-op (no apply, no record) until real movement is
+                # seen at least once; a click-only gesture must leave the
+                # view exactly as it was so a following double-click's
+                # navigate("back") starts from a state that still matches
+                # its recorded history entry.
+                if (
+                    self._pan_recorded
+                    or self._pan_moved_past_click_threshold(event)
+                ):
+                    rectangle = self.consumer.pan_rectangle(self._pan.target)
+                    state = axis_pan_view(
+                        self._pan, event, rectangle.width(), rectangle.height()
+                    )
+                    state, _overview = self._bounded_state(state)
+                    if state != self._pan.initial_view and not self._pan_recorded:
+                        self.history.record_before_change(self._pan.initial_view)
+                        self._pan_recorded = True
+                    self._apply(state)
             except Exception:
                 self._pan = None
                 raise

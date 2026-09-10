@@ -184,6 +184,38 @@ def apply_preset_operation(presets, metadata, kind, action, name, new_name=""):
     return updated_presets, updated_metadata
 
 
+def apply_preset_content_edit(presets, metadata, kind, name, payload, new_name=""):
+    """Atomically replace one preset's payload, optionally renaming it too.
+
+    This is the atomic write-back counterpart to opening one of the existing
+    condition/gradient/analyte edit screens on a preset and writing its
+    result back into the store (WIN11_FEEDBACK_WORKFLOW.md 27.12): the name
+    and every field can change together as one step under the same conflict
+    policy as rename/duplicate/delete.
+    """
+
+    if kind not in PRESET_KINDS:
+        raise ValueError("unknown preset kind: {0}".format(kind))
+    source = str(name or "").strip()
+    target = str(new_name or name or "").strip()
+    if source not in presets:
+        raise ValueError("Preset does not exist: {0}".format(source))
+    if not target:
+        raise ValueError("Preset name must not be blank")
+    if target != source and target in presets:
+        raise ValueError("Preset already exists: {0}".format(target))
+    if not isinstance(payload, dict):
+        raise ValueError("Preset content must be a mapping")
+
+    updated_presets = deepcopy(presets)
+    updated_metadata = deepcopy(metadata)
+    if target != source:
+        updated_presets.pop(source)
+    updated_presets[target] = deepcopy(payload)
+    record_preset_saved(updated_metadata, kind, source, target)
+    return updated_presets, updated_metadata
+
+
 def build_preset_package(
     conditions, gradients, metadata, names=None, analytes=None
 ):

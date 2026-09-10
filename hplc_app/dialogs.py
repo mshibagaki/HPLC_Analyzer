@@ -40,6 +40,7 @@ from .models import (
 from .naming import build_project_filename, normalize_analysis_date
 from .preset_store import (
     PRESET_KINDS,
+    apply_preset_content_edit,
     apply_preset_operation,
     build_preset_package,
     filter_preset_names,
@@ -138,12 +139,20 @@ class PresetManagerDialog(QtWidgets.QDialog):
         )
         root.addWidget(self.tabs, 1)
         actions = QtWidgets.QHBoxLayout()
+        self.edit_button = QtWidgets.QPushButton(
+            "内容を編集…" if language == "ja" else "Edit content…"
+        )
         self.rename_button = QtWidgets.QPushButton("名前変更…" if language == "ja" else "Rename…")
         self.duplicate_button = QtWidgets.QPushButton("複製…" if language == "ja" else "Duplicate…")
         self.delete_button = QtWidgets.QPushButton("削除" if language == "ja" else "Delete")
         self.import_button = QtWidgets.QPushButton("Import…")
         self.export_button = QtWidgets.QPushButton("Export…")
-        for button in (self.rename_button, self.duplicate_button, self.delete_button):
+        for button in (
+            self.edit_button,
+            self.rename_button,
+            self.duplicate_button,
+            self.delete_button,
+        ):
             actions.addWidget(button)
         actions.addStretch(1)
         actions.addWidget(self.import_button)
@@ -153,6 +162,7 @@ class PresetManagerDialog(QtWidgets.QDialog):
             QtWidgets.QDialogButtonBox.Save | QtWidgets.QDialogButtonBox.Cancel
         )
         root.addWidget(buttons)
+        self.edit_button.clicked.connect(self._edit_content)
         self.rename_button.clicked.connect(lambda: self._rename_or_duplicate("rename"))
         self.duplicate_button.clicked.connect(lambda: self._rename_or_duplicate("duplicate"))
         self.delete_button.clicked.connect(self._delete)
@@ -164,6 +174,9 @@ class PresetManagerDialog(QtWidgets.QDialog):
         self.condition_list.currentRowChanged.connect(lambda _row: self._update_buttons())
         self.gradient_list.currentRowChanged.connect(lambda _row: self._update_buttons())
         self.analyte_list.currentRowChanged.connect(lambda _row: self._update_buttons())
+        self.condition_list.itemDoubleClicked.connect(lambda _item: self._edit_content())
+        self.gradient_list.itemDoubleClicked.connect(lambda _item: self._edit_content())
+        self.analyte_list.itemDoubleClicked.connect(lambda _item: self._edit_content())
         self._refresh()
 
     def _current(self):
@@ -189,9 +202,137 @@ class PresetManagerDialog(QtWidgets.QDialog):
     def _update_buttons(self):
         _kind, _presets, widget = self._current()
         enabled = widget.currentItem() is not None
+        self.edit_button.setEnabled(enabled)
         self.rename_button.setEnabled(enabled)
         self.duplicate_button.setEnabled(enabled)
         self.delete_button.setEnabled(enabled)
+
+    def _edit_content(self):
+        kind, presets, widget = self._current()
+        item = widget.currentItem()
+        if item is None:
+            return
+        source = item.text()
+        if kind == "conditions":
+            result = self._edit_condition_content(source, presets[source])
+        elif kind == "gradients":
+            result = self._edit_gradient_content(source, presets[source])
+        else:
+            result = self._edit_analyte_content(source, presets[source])
+        if result is None:
+            return
+        target, payload = result
+        try:
+            updated, self.metadata = apply_preset_content_edit(
+                presets, self.metadata, kind, source, payload, target
+            )
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, self.windowTitle(), str(exc))
+            return
+        if kind == "conditions":
+            self.conditions = updated
+        elif kind == "gradients":
+            self.gradients = updated
+        else:
+            self.analytes = updated
+        self._refresh(target)
+
+    def _edit_condition_content(self, name, payload):
+        # Reuse the existing measurement/sample-conditions editor (27.12):
+        # a one-row synthetic project pre-filled with this preset's values,
+        # edited exactly like any dataset's conditions, then read back rather
+        # than building a fourth condition-editing form.
+        dataset = Dataset(label=name, short_label=name)
+        project = Project(datasets=[dataset])
+        for field in PRESET_FIELDS:
+            if field in payload:
+                setattr(dataset.measurement, field, payload[field])
+        project.condition_presets = deepcopy(self.conditions)
+        project.gradient_presets = deepcopy(self.gradients)
+        dialog = BatchMetadataDialog(
+            project,
+            dataset.id,
+            self.language,
+            self,
+            preset_metadata=self.metadata,
+            analyte_presets=self.analytes,
+        )
+        dialog.loaded_condition_preset_name = name
+        dialog.setWindowTitle(
+            "条件プリセットの内容を編集: {0}".format(name)
+            if self.language == "ja"
+            else "Edit condition preset content: {0}".format(name)
+        )
+        note = (
+            "編集したら「{0}」を同じ名前で保存してください。"
+            .format(dialog.save_preset_button.text())
+            if self.language == "ja"
+            else "After editing, use \"{0}\" with the same name to save it back."
+            .format(dialog.save_preset_button.text())
+        )
+        QtWidgets.QMessageBox.information(self, dialog.windowTitle(), note)
+        if not dialog_exec(dialog):
+            return None
+        updated_presets = sanitize_condition_presets(dialog.project.condition_presets)
+        if name not in updated_presets:
+            return None
+        return name, updated_presets[name]
+
+    def _edit_gradient_content(self, name, payload):
+        dataset = Dataset(label=name, short_label=name)
+        gradient_points = payload.get("gradient", []) or []
+        dataset.measurement.gradient = [
+            GradientPoint(**deepcopy(point)) for point in gradient_points
+        ] or [GradientPoint()]
+        solvents = payload.get("solvents", {}) or {}
+        dataset.measurement.solvents = {
+            line: Solvent(**deepcopy(solvents.get(line, {}) or {}))
+            for line in "ABCD"
+        }
+        dataset.gradient_preset_name = name
+        dialog = GradientDialog(
+            dataset,
+            self.language,
+            self,
+            presets=self.gradients,
+            preset_metadata=self.metadata,
+        )
+        dialog.setWindowTitle(
+            "グラジエントプリセットの内容を編集: {0}".format(name)
+            if self.language == "ja"
+            else "Edit gradient preset content: {0}".format(name)
+        )
+        if not dialog_exec(dialog):
+            return None
+        new_payload = {
+            "gradient": [asdict(point) for point in dataset.measurement.gradient],
+            "solvents": {
+                line: asdict(solvent)
+                for line, solvent in dataset.measurement.solvents.items()
+            },
+        }
+        return name, new_payload
+
+    def _edit_analyte_content(self, name, payload):
+        other_names = set(self.analytes) - {name}
+        dialog = AnalytePresetRegistrationDialog(
+            self.language,
+            self,
+            name=name,
+            payload=payload,
+            existing_names=other_names,
+        )
+        dialog.setWindowTitle(
+            "分析対象プリセットの内容を編集: {0}".format(name)
+            if self.language == "ja"
+            else "Edit analyte preset content: {0}".format(name)
+        )
+        if not dialog_exec(dialog):
+            return None
+        sanitized = sanitize_analyte_presets({dialog.preset_name: dialog.preset_payload})
+        if dialog.preset_name not in sanitized:
+            return None
+        return dialog.preset_name, sanitized[dialog.preset_name]
 
     def _rename_or_duplicate(self, action):
         kind, presets, widget = self._current()
@@ -1816,7 +1957,59 @@ class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
             if styled.widget is not None
             else QtWidgets.QApplication.style()
         )
+        text_element = (
+            QtWidgets.QStyle.SubElement.SE_ItemViewItemText
+            if QT_API == 6
+            else QtWidgets.QStyle.SE_ItemViewItemText
+        )
+        # The rectangle drawControl actually paints text into can disagree by a
+        # pixel or two with the rectangle this delegate measured above, which
+        # used to re-elide an already left-elided string and collapse it to
+        # little more than ellipsis characters at certain column widths
+        # (WIN11_FEEDBACK_WORKFLOW.md 27.13). Stop depending on the two
+        # rectangles agreeing: let the style paint only the background,
+        # selection state and icon with the text blanked out, then draw the
+        # already-elided text ourselves into the same rectangle this delegate
+        # measured, so the painted result no longer depends on the style and
+        # this delegate agreeing on a rectangle at a given width.
+        elided_text = styled.text
+        styled.text = ""
         style.drawControl(control, styled, painter, styled.widget)
+        text_rect = style.subElementRect(text_element, styled, styled.widget)
+        selected_state = (
+            QtWidgets.QStyle.StateFlag.State_Selected
+            if QT_API == 6
+            else QtWidgets.QStyle.State_Selected
+        )
+        if styled.state & selected_state:
+            role = (
+                QtGui.QPalette.ColorRole.HighlightedText
+                if QT_API == 6
+                else QtGui.QPalette.HighlightedText
+            )
+        else:
+            role = (
+                QtGui.QPalette.ColorRole.Text
+                if QT_API == 6
+                else QtGui.QPalette.Text
+            )
+        color_group = (
+            QtGui.QPalette.ColorGroup.Active
+            if QT_API == 6
+            else QtGui.QPalette.Active
+        )
+        align = (
+            (QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignVCenter)
+            if QT_API == 6
+            else (QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        )
+        painter.save()
+        try:
+            painter.setFont(styled.font)
+            painter.setPen(styled.palette.color(color_group, role))
+            painter.drawText(text_rect, int(align), elided_text)
+        finally:
+            painter.restore()
 
 
 class ConditionCopyDialog(QtWidgets.QDialog):

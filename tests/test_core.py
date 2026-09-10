@@ -89,6 +89,7 @@ from hplc_app.peak_fitting import (
     mirror_fitted_peak_for_legacy,
 )
 from hplc_app.preset_store import (
+    apply_preset_content_edit,
     apply_preset_operation,
     build_preset_package,
     filter_preset_names,
@@ -2632,6 +2633,56 @@ class ProjectTests(unittest.TestCase):
                 renamed, renamed_metadata, "conditions", "duplicate", "renamed", "renamed"
             )
         self.assertEqual(presets, {"original": {"column_name": "C18"}})
+
+    def test_preset_content_edit_is_atomic_bumps_updated_at_and_can_rename(self):
+        presets = {"original": {"column_name": "C18"}, "other": {"column_name": "C8"}}
+        metadata = {
+            "conditions": {
+                "original": {
+                    "id": "stable-id",
+                    "created_at": "2026-01-01T00:00:00",
+                    "updated_at": "2026-01-01T00:00:00",
+                    "last_used_at": "",
+                }
+            },
+        }
+        edited, edited_metadata = apply_preset_content_edit(
+            presets, metadata, "conditions", "original",
+            {"column_name": "C18e"},
+        )
+        # The identity (stable preset id) survives a same-name content edit,
+        # while the store's own atomic write-back bumps updated_at.
+        self.assertEqual(edited["original"], {"column_name": "C18e"})
+        self.assertEqual(edited_metadata["conditions"]["original"]["id"], "stable-id")
+        self.assertEqual(
+            edited_metadata["conditions"]["original"]["created_at"],
+            "2026-01-01T00:00:00",
+        )
+        self.assertNotEqual(
+            edited_metadata["conditions"]["original"]["updated_at"],
+            "2026-01-01T00:00:00",
+        )
+        # The unrelated preset and the caller's own dict are untouched.
+        self.assertEqual(presets["original"], {"column_name": "C18"})
+        self.assertEqual(edited["other"], {"column_name": "C8"})
+
+        renamed, renamed_metadata = apply_preset_content_edit(
+            edited, edited_metadata, "conditions", "original",
+            {"column_name": "C18r"}, new_name="renamed",
+        )
+        self.assertNotIn("original", renamed)
+        self.assertEqual(renamed["renamed"], {"column_name": "C18r"})
+        self.assertEqual(renamed_metadata["conditions"]["renamed"]["id"], "stable-id")
+
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            apply_preset_content_edit(
+                renamed, renamed_metadata, "conditions", "renamed",
+                {"column_name": "x"}, new_name="other",
+            )
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            apply_preset_content_edit(
+                renamed, renamed_metadata, "conditions", "missing", {}
+            )
 
     def test_preset_package_export_and_explicit_conflict_policies(self):
         conditions = {"shared": {"column_name": "old"}}

@@ -2256,6 +2256,159 @@ class GuiTests(unittest.TestCase):
         )
         dialog.close()
 
+    def test_preset_manager_edits_condition_preset_content_via_existing_editor(self):
+        # WIN11_FEEDBACK_WORKFLOW.md 27.12: reuse the existing measurement/
+        # sample-conditions editor rather than a fourth condition-editing form.
+        metadata = {
+            "conditions": {
+                "C18": {
+                    "id": "condition-id",
+                    "created_at": "2026-01-01T00:00:00",
+                    "updated_at": "2026-01-01T00:00:00",
+                    "last_used_at": "",
+                }
+            },
+        }
+        dialog = PresetManagerDialog(
+            {"C18": {"column_name": "C18", "wavelength_nm": 214.0}},
+            {},
+            metadata,
+            "en",
+        )
+        dialog.condition_list.setCurrentRow(0)
+
+        def edit_condition(condition_dialog):
+            self.assertIn("C18", condition_dialog.windowTitle())
+            dataset = condition_dialog._selected_dataset()
+            dataset.measurement.column_name = "C8"
+            with patch.object(
+                QtWidgets.QInputDialog, "getText", return_value=("C18", True)
+            ):
+                condition_dialog._save_preset()
+            condition_dialog._accept()
+            return True
+
+        with patch.object(QtWidgets.QMessageBox, "information"), patch(
+            "hplc_app.dialogs.dialog_exec", side_effect=edit_condition
+        ):
+            dialog._edit_content()
+
+        self.assertEqual(dialog.conditions["C18"]["column_name"], "C8")
+        self.assertEqual(dialog.conditions["C18"]["wavelength_nm"], 214.0)
+        # Content edits are atomic under the same store as rename/delete: the
+        # stable preset id survives, only updated_at moves.
+        self.assertEqual(dialog.metadata["conditions"]["C18"]["id"], "condition-id")
+        self.assertNotEqual(
+            dialog.metadata["conditions"]["C18"]["updated_at"], "2026-01-01T00:00:00"
+        )
+        dialog.close()
+
+    def test_preset_manager_edits_gradient_preset_content_via_existing_editor(self):
+        metadata = {
+            "gradients": {
+                "fast": {
+                    "id": "gradient-id",
+                    "created_at": "",
+                    "updated_at": "",
+                    "last_used_at": "",
+                }
+            },
+        }
+        dialog = PresetManagerDialog(
+            {},
+            {
+                "fast": {
+                    "gradient": [
+                        {
+                            "time_min": 0.0,
+                            "a_pct": 100.0,
+                            "b_pct": 0.0,
+                            "c_pct": 0.0,
+                            "d_pct": 0.0,
+                            "flow_ml_min": None,
+                        }
+                    ],
+                    "solvents": {},
+                }
+            },
+            metadata,
+            "en",
+        )
+        dialog.tabs.setCurrentIndex(1)
+        dialog.gradient_list.setCurrentRow(0)
+
+        def edit_gradient(gradient_dialog):
+            self.assertIn("fast", gradient_dialog.windowTitle())
+            gradient_dialog.table.item(0, 5).setText("1.5")
+            gradient_dialog._accept()
+            return True
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_gradient):
+            dialog._edit_content()
+
+        self.assertEqual(
+            dialog.gradients["fast"]["gradient"][0]["flow_ml_min"], 1.5
+        )
+        self.assertEqual(dialog.metadata["gradients"]["fast"]["id"], "gradient-id")
+        dialog.close()
+
+    def test_preset_manager_edits_analyte_preset_content_via_existing_editor(self):
+        metadata = {
+            "analytes": {
+                "LL-37": {
+                    "id": "analyte-id",
+                    "created_at": "",
+                    "updated_at": "",
+                    "last_used_at": "",
+                }
+            },
+        }
+        dialog = PresetManagerDialog(
+            {}, {}, metadata, "en", analytes={"LL-37": {"molecular_weight_g_mol": 4493.3}}
+        )
+        dialog.tabs.setCurrentIndex(2)
+        dialog.analyte_list.setCurrentRow(0)
+
+        def edit_analyte(analyte_dialog):
+            self.assertIn("LL-37", analyte_dialog.windowTitle())
+            analyte_dialog.mw_edit.setText("5000")
+            analyte_dialog._accept()
+            return True
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_analyte):
+            dialog._edit_content()
+
+        self.assertEqual(dialog.analytes["LL-37"]["molecular_weight_g_mol"], 5000.0)
+        self.assertEqual(dialog.metadata["analytes"]["LL-37"]["id"], "analyte-id")
+        dialog.close()
+
+    def test_preset_manager_double_click_edits_content_same_as_button(self):
+        metadata = {
+            "analytes": {
+                "LL-37": {
+                    "id": "analyte-id",
+                    "created_at": "",
+                    "updated_at": "",
+                    "last_used_at": "",
+                }
+            },
+        }
+        dialog = PresetManagerDialog(
+            {}, {}, metadata, "en", analytes={"LL-37": {"molecular_weight_g_mol": 4493.3}}
+        )
+        dialog.tabs.setCurrentIndex(2)
+        dialog.analyte_list.setCurrentRow(0)
+
+        def edit_analyte(analyte_dialog):
+            analyte_dialog._accept()
+            return True
+
+        with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_analyte):
+            dialog.analyte_list.itemDoubleClicked.emit(dialog.analyte_list.item(0))
+
+        self.assertIn("LL-37", dialog.analytes)
+        dialog.close()
+
     def test_preset_manager_exports_and_imports_with_explicit_conflict_choice(self):
         metadata = {
             "conditions": {"C18": {"id": "condition-id"}},
@@ -7735,6 +7888,52 @@ class GuiTests(unittest.TestCase):
             )
             self.assertEqual(displayed_option.textElideMode, no_elide)
         self.assertNotEqual(displayed[0], displayed[1])
+        dialog.close()
+        window.project.dirty = False
+        window.close()
+
+    def test_source_path_delegate_paints_one_elision_at_every_measured_width(self):
+        # WIN11_FEEDBACK_WORKFLOW.md 27.13: the reported "......" / "...path" /
+        # "...…" cycling happened only when the rectangle this delegate measures
+        # disagrees with the one drawControl uses internally to paint text,
+        # which re-elided an already-elided string. paint() now blanks the
+        # style's own text and draws the once-elided string itself into the
+        # rectangle it measured, so drawText must be called exactly once, with
+        # exactly the already-elided text, at every one of the nine widths
+        # measured in that section -- regardless of selection state.
+        window = self.make_window()
+        source_path = (
+            r"G:\laboratory\projects\2026\September\batchA\sub\deeper\063331.gcd"
+        )
+        window.project.datasets[0].original_path = source_path
+        dialog = BatchMetadataDialog(
+            window.project, window.project.datasets[0].id, "en"
+        )
+        delegate = dialog.table.itemDelegateForColumn(dialog.SOURCE_COLUMN)
+        index = dialog.table.model().index(0, dialog.SOURCE_COLUMN)
+        selected_state = (
+            QtWidgets.QStyle.StateFlag.State_Selected
+            if QT_API == 6
+            else QtWidgets.QStyle.State_Selected
+        )
+        pixmap = QtGui.QPixmap(600, 24)
+        painter = QtGui.QPainter(pixmap)
+        try:
+            for width in (60, 120, 180, 240, 300, 320, 360, 420, 500):
+                for selected in (False, True):
+                    option = QtWidgets.QStyleOptionViewItem()
+                    option.rect = QtCore.QRect(0, 0, width, 24)
+                    option.widget = dialog.table
+                    if selected:
+                        option.state |= selected_state
+                    expected_text = delegate.display_option(option, index).text
+                    self.assertNotIn("……", expected_text)
+                    with patch.object(QtGui.QPainter, "drawText") as draw_text:
+                        delegate.paint(painter, option, index)
+                    self.assertEqual(draw_text.call_count, 1)
+                    self.assertEqual(draw_text.call_args.args[-1], expected_text)
+        finally:
+            painter.end()
         dialog.close()
         window.project.dirty = False
         window.close()

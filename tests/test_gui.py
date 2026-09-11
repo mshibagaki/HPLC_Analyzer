@@ -12853,6 +12853,95 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def test_3d_dialog_draws_on_open_rotates_only_and_resets_after_a_drag(self):
+        from matplotlib.backend_bases import MouseEvent
+
+        window = self.make_window()
+        dialog = ThreeDChromatogramDialog(
+            window.project.datasets,
+            window.project.method,
+            (0.0, 30.0),
+            ThreeDPlotOptions(z_tick_interval=1000.0),
+            "en",
+        )
+
+        def inked_pixels():
+            image = dialog.canvas.grab().toImage()
+            return sum(
+                1
+                for y in range(0, image.height(), 4)
+                for x in range(0, image.width(), 4)
+                if sum(QtGui.QColor(image.pixel(x, y)).getRgb()[:3]) < 600
+            )
+
+        def drag(button, dx, dy):
+            axis = dialog.figure.axes[0]
+            x = axis.bbox.x0 + axis.bbox.width / 2.0
+            y = axis.bbox.y0 + axis.bbox.height / 2.0
+            for name, px, py in (
+                ("button_press_event", x, y),
+                ("motion_notify_event", x + dx, y + dy),
+                ("button_release_event", x + dx, y + dy),
+            ):
+                dialog.canvas.callbacks.process(
+                    name, MouseEvent(name, dialog.canvas, px, py, button=button)
+                )
+            self.app.processEvents()
+
+        def view(axis):
+            return (
+                round(axis.elev, 6),
+                round(axis.azim, 6),
+                tuple(round(value, 6) for value in axis.get_xlim()),
+                tuple(round(value, 6) for value in axis.get_ylim()),
+                tuple(round(value, 6) for value in axis.get_zlim()),
+            )
+
+        try:
+            # Issue #324: the preview used to stay blank until a mouse
+            # rotation happened to redraw it.
+            dialog.show()
+            self.app.processEvents()
+            self.assertGreater(inked_pixels(), 0)
+            dialog.resize(dialog.width() + 90, dialog.height() + 60)
+            self.app.processEvents()
+            self.assertGreater(inked_pixels(), 0)
+
+            # Right-drag zoom and middle-drag pan are switched off.
+            dialog.canvas.draw()
+            before = view(dialog.figure.axes[0])
+            drag(3, 60, 40)
+            drag(2, 60, 40)
+            self.assertEqual(view(dialog.figure.axes[0]), before)
+
+            # Left-drag still rotates, without rolling, and the spin boxes
+            # take over the angles it reached.
+            drag(1, 80, 40)
+            axis = dialog.figure.axes[0]
+            self.assertNotEqual(
+                (round(axis.elev, 2), round(axis.azim, 2)), (20.0, -65.0)
+            )
+            self.assertEqual(round(getattr(axis, "roll", 0.0) or 0.0, 6), 0.0)
+            self.assertEqual(
+                (dialog.elevation_spin.value(), dialog.azimuth_spin.value()),
+                (round(axis.elev, 2), round(axis.azim, 2)),
+            )
+
+            # Reset brings the displayed view back, not only the numbers.
+            dialog.reset_view_button.click()
+            self.app.processEvents()
+            axis = dialog.figure.axes[0]
+            self.assertEqual((axis.elev, axis.azim), (20.0, -65.0))
+            self.assertEqual(
+                (dialog.elevation_spin.value(), dialog.azimuth_spin.value()),
+                (20.0, -65.0),
+            )
+            self.assertGreater(inked_pixels(), 0)
+        finally:
+            dialog.close()
+            window.project.dirty = False
+            window.close()
+
     def test_3d_dialog_uses_selected_table_order_session_settings_and_shared_export(self):
         window = self.make_window()
         window.show()

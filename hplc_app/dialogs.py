@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 from typing import Dict, Optional
 
+import matplotlib
 from matplotlib.figure import Figure
 
 from .analysis import validate_gradient
@@ -4443,7 +4444,9 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         view_widget = QtWidgets.QWidget()
         view_row = QtWidgets.QHBoxLayout(view_widget)
         view_row.setContentsMargins(0, 0, 0, 0)
-        self.elevation_spin = spin(options.elevation_deg, -90.0, 90.0, 5.0)
+        # mplot3d allows elevations past +/-90 degrees (an upside-down view),
+        # and a mouse rotation can reach them, so the spin box follows suit.
+        self.elevation_spin = spin(options.elevation_deg, -180.0, 180.0, 5.0)
         self.azimuth_spin = spin(options.azimuth_deg, -180.0, 180.0, 5.0)
         view_row.addWidget(self.elevation_spin)
         view_row.addWidget(self.azimuth_spin)
@@ -4616,9 +4619,15 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
                 self.method.figure_height_mm / 25.4,
             )
         )
+        # Matplotlib 3.10 rotates with "arcball" by default, which also rolls
+        # the view; 3.7 (Windows 7) only rotates elevation and azimuth.  Use
+        # the latter everywhere so a drag maps exactly onto the spin boxes.
+        if "axes3d.mouserotationstyle" in matplotlib.rcParams:
+            matplotlib.rcParams["axes3d.mouserotationstyle"] = "azel"
         self.canvas = FigureCanvasQTAgg(self.figure)
         self._export_figure_size_inches = tuple(self.figure.get_size_inches())
         self.canvas.installEventFilter(self)
+        self.canvas.mpl_connect("button_release_event", self._on_canvas_release)
         root.addWidget(self.canvas, 1)
 
         widgets = (
@@ -4697,8 +4706,43 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
     def reset_view(self):
         """Return only the two view angles to the documented initial values."""
         defaults = ThreeDPlotOptions()
-        self.elevation_spin.setValue(defaults.elevation_deg)
-        self.azimuth_spin.setValue(defaults.azimuth_deg)
+        self._set_view_angles(defaults.elevation_deg, defaults.azimuth_deg)
+        # Redraw even when neither spin box changed value: the displayed view
+        # may still differ from them, and setValue() alone would not signal.
+        self.refresh_preview()
+
+    def _set_view_angles(self, elevation, azimuth):
+        for widget, value in (
+            (self.elevation_spin, elevation),
+            (self.azimuth_spin, azimuth),
+        ):
+            blocked = widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(blocked)
+
+    def _on_canvas_release(self, _event):
+        # Deferred so mplot3d finishes handling this release before the
+        # figure is rebuilt underneath it.
+        QtCore.QTimer.singleShot(0, self._adopt_mouse_view)
+
+    def _adopt_mouse_view(self):
+        """Copy a mouse rotation into the spin boxes and redraw from them.
+
+        The rebuild also moves the grid planes to the new far side, and it
+        gives Reset a changed value to return from.
+        """
+        if not self.figure.axes:
+            return
+        axis = self.figure.axes[0]
+        elevation = _wrap_degrees(axis.elev)
+        azimuth = _wrap_degrees(axis.azim)
+        current = (self.elevation_spin.value(), self.azimuth_spin.value())
+        if (round(elevation, 2), round(azimuth, 2)) == tuple(
+            round(value, 2) for value in current
+        ):
+            return
+        self._set_view_angles(elevation, azimuth)
+        self.refresh_preview()
 
     def _update_color_controls(self, *_args):
         enabled = self.color_mode_combo.currentData() == "gradient"
@@ -4724,6 +4768,11 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
         )
         self.figure.set_dpi(preview_dpi)
         self.figure.set_size_inches(width_in, height_in, forward=False)
+        # The canvas's own resizeEvent sizes the figure to the widget and may
+        # already have drawn at that size; without a fresh draw the old
+        # buffer no longer matches the figure and the preview paints blank
+        # until something else (a mouse rotation) happens to redraw it.
+        self.canvas.draw_idle()
 
     def refresh_preview(self, *_args):
         self.density_value_label.setText("%d%%" % self.density_slider.value())
@@ -4741,9 +4790,18 @@ class ThreeDChromatogramDialog(QtWidgets.QDialog):
             self.error_label.setText(str(exc))
             self.export_button.setEnabled(False)
             return
+        # Left-drag rotation only.  Right-drag zoom and middle-drag pan are
+        # not wanted and moved the view somewhere the spin boxes cannot hold.
+        for axis in self.figure.axes:
+            axis.mouse_init(rotate_btn=1, pan_btn=[], zoom_btn=[])
         self.error_label.clear()
         self.export_button.setEnabled(True)
         self.canvas.draw_idle()
+
+
+def _wrap_degrees(value):
+    """Wrap an angle into [-180, 180), the range the view spin boxes hold."""
+    return ((float(value) + 180.0) % 360.0) - 180.0
 
 
 class LegendComposerDialog(QtWidgets.QDialog):

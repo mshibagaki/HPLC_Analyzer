@@ -17,6 +17,9 @@ from .models import AnalysisMethod, Dataset
 from .rendering import default_trace_color
 
 
+# Below Line3D's default zorder of 2, so every trace draws over the grid.
+GRID_ZORDER = 1.0
+
 TRACE_FALLBACK_COLORS = (
     "#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e",
     "#17becf", "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22",
@@ -149,32 +152,55 @@ def _ticks_inside(values, limits):
     ]
 
 
+def _far_limits(axis) -> Tuple[float, float, float]:
+    """Return the x, y and z limits on the side facing away from the viewer.
+
+    Matplotlib places the eye along (cos e cos a, cos e sin a, sin e) from the
+    box centre, so each far side is the limit opposite that direction's sign.
+    Grid planes drawn there stay behind the traces, like Matplotlib's panes.
+    """
+
+    elevation = np.deg2rad(float(axis.elev))
+    azimuth = np.deg2rad(float(axis.azim))
+    eye = (
+        np.cos(elevation) * np.cos(azimuth),
+        np.cos(elevation) * np.sin(azimuth),
+        np.sin(elevation),
+    )
+    limits = (axis.get_xlim(), axis.get_ylim(), axis.get_zlim())
+    return tuple(
+        float(min(pair)) if component >= 0 else float(max(pair))
+        for component, pair in zip(eye, limits)
+    )
+
+
 def _add_grid_plane(axis, plane: str) -> None:
     """Draw one selected 3D grid plane using only public Matplotlib APIs."""
 
     x_min, x_max = axis.get_xlim()
     y_min, y_max = axis.get_ylim()
     z_min, z_max = axis.get_zlim()
+    far_x, far_y, far_z = _far_limits(axis)
     x_ticks = _ticks_inside(axis.get_xticks(), (x_min, x_max))
     y_ticks = _ticks_inside(axis.get_yticks(), (y_min, y_max))
     z_ticks = _ticks_inside(axis.get_zticks(), (z_min, z_max))
     if plane == "xy":
         segments = [
-            ((value, y_min, z_min), (value, y_max, z_min)) for value in x_ticks
+            ((value, y_min, far_z), (value, y_max, far_z)) for value in x_ticks
         ] + [
-            ((x_min, value, z_min), (x_max, value, z_min)) for value in y_ticks
+            ((x_min, value, far_z), (x_max, value, far_z)) for value in y_ticks
         ]
     elif plane == "xz":
         segments = [
-            ((value, y_min, z_min), (value, y_min, z_max)) for value in x_ticks
+            ((value, far_y, z_min), (value, far_y, z_max)) for value in x_ticks
         ] + [
-            ((x_min, y_min, value), (x_max, y_min, value)) for value in z_ticks
+            ((x_min, far_y, value), (x_max, far_y, value)) for value in z_ticks
         ]
     elif plane == "yz":
         segments = [
-            ((x_min, value, z_min), (x_min, value, z_max)) for value in y_ticks
+            ((far_x, value, z_min), (far_x, value, z_max)) for value in y_ticks
         ] + [
-            ((x_min, y_min, value), (x_min, y_max, value)) for value in z_ticks
+            ((far_x, y_min, value), (far_x, y_max, value)) for value in z_ticks
         ]
     else:
         raise ValueError("Unknown 3D grid plane: %s" % plane)
@@ -187,6 +213,7 @@ def _add_grid_plane(axis, plane: str) -> None:
         alpha=0.8,
     )
     collection.set_gid("hplc-grid-%s" % plane)
+    collection.set_zorder(GRID_ZORDER)
     axis.add_collection3d(collection)
 
 
@@ -222,6 +249,10 @@ def build_3d_chromatogram_figure(
     # Referencing Axes3D explicitly also keeps the projection registered and
     # discoverable in both PyInstaller targets.
     axis = target.add_subplot(111, projection=_Axes3D.name)
+    # With the default computed order, mplot3d lifts every collection above
+    # the axis zorder + 1 (2.5), which put the grid planes over the Line3D
+    # traces (zorder 2).  Fixed zorders keep the grid at the back instead.
+    axis.computed_zorder = False
     if options.color_mode not in ("trace", "gradient"):
         raise ValueError("Unknown 3D color mode: %s" % options.color_mode)
     colors = (
@@ -263,6 +294,11 @@ def build_3d_chromatogram_figure(
     # Matplotlib's native 3D grid crosses multiple planes, so selected planes
     # are drawn explicitly while the native all-or-nothing grid stays off.
     axis.grid(False)
+    # Matplotlib 3.10's add_collection3d autoscales by default, so each grid
+    # plane would widen an automatic Z range after the plane was placed at
+    # the old one, leaving the grid inside the box instead of on its walls.
+    # Pin the range the traces produced first (3.7 never autoscaled here).
+    axis.set_zlim(*axis.get_zlim())
     for enabled, plane in (
         (options.grid_xy, "xy"),
         (options.grid_xz, "xz"),

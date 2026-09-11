@@ -125,7 +125,7 @@ from .rendering import (
     default_trace_color,
     matplotlib_line_style,
     normalize_render_quality,
-    safe_manual_x_tick_spacing,
+    resolve_x_tick_spacing,
     screen_series,
 )
 from .settings_store import (
@@ -3826,38 +3826,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def _back_to_previous_view(self):
         self._navigate_view_history("back")
 
-    @staticmethod
-    def _nice_tick_step(target: float) -> float:
-        if target <= 0 or not math.isfinite(target):
-            return 1.0
-        magnitude = 10.0 ** math.floor(math.log10(target))
-        fraction = target / magnitude
-        if fraction <= 1.0:
-            nice = 1.0
-        elif fraction <= 2.0:
-            nice = 2.0
-        elif fraction <= 5.0:
-            nice = 5.0
-        else:
-            nice = 10.0
-        return nice * magnitude
-
     def _set_dynamic_x_ticks(self):
         left, right = self.axes.get_xlim()
         span = max(abs(right - left), 1.0e-9)
-        if self.project.method.x_tick_mode == "manual":
-            spacing = safe_manual_x_tick_spacing(
-                span,
-                self.project.method.x_major_tick_min,
-                self.project.method.x_minor_tick_min,
-            )
-        else:
-            spacing = None
-        if spacing is None:
-            major_tick = self._nice_tick_step(span / 18.0)
-            minor_tick = major_tick / 5.0
-        else:
-            major_tick, minor_tick = spacing
+        major_tick, minor_tick = resolve_x_tick_spacing(
+            span,
+            self.project.method.x_tick_mode,
+            self.project.method.x_major_tick_min,
+            self.project.method.x_minor_tick_min,
+        )
         self.axes.xaxis.set_major_locator(MultipleLocator(major_tick))
         self.axes.xaxis.set_minor_locator(MultipleLocator(minor_tick))
         self.axes.tick_params(axis="x", which="minor", length=3, labelbottom=False)
@@ -8227,6 +8204,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 "gradient_b": method.show_gradient_b,
                 "gradient_conditions": True,
                 "quantitation": True,
+                # Issue #313 added a screen-visibility toggle for fraction
+                # regions after this batch's plan assumed there was none to
+                # derive from; follow the same #252 "initial value comes from
+                # the screen setting" pattern used by every other option here
+                # instead of a hardcoded default (Issue #314 / コ²).
+                "fraction_regions": method.show_fraction_regions,
             },
         )
         if not dialog_exec(dialog):

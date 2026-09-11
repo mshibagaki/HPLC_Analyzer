@@ -119,12 +119,14 @@ from hplc_app.rendering import (
     CHANNEL_COLOR_PALETTES,
     HIGH_QUALITY,
     LIGHTWEIGHT,
+    MAX_MANUAL_X_TICK_COUNT,
     ScreenRendererCapabilities,
     apply_legend_frame_and_fill,
     default_render_quality,
     default_trace_color,
     matplotlib_line_style,
     minmax_decimate,
+    resolve_x_tick_spacing,
     screen_series,
 )
 from hplc_app.renderer_benchmark import (
@@ -4886,6 +4888,182 @@ class ProjectTests(unittest.TestCase):
             image = matplotlib_image.imread(pages[0])
             self.assertGreater(image.shape[0], image.shape[1])
             self.assertAlmostEqual(image.shape[0] / image.shape[1], 297.0 / 210.0, delta=0.02)
+
+    def test_report_x_ticks_share_the_screen_manual_and_automatic_calculation(self):
+        """Issue #314 / コ² (30.1): report ticks reuse the screen's shared
+        ``resolve_x_tick_spacing`` -- not a second implementation -- for both
+        manual and automatic modes, including Issue #241's floor and
+        combined-tick-count ceiling on the report's typically wider X range.
+        """
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        project = Project(title="Tick sharing", datasets=[dataset])
+
+        # Automatic mode: unchanged from before this Issue.
+        project.method.x_tick_mode = "auto"
+        figure = analysis_report_figures(project, [dataset], "en")[0]
+        plot_axis = next(
+            axis for axis in figure.axes if axis.get_title(loc="left") == "Chromatogram"
+        )
+        left, right = plot_axis.get_xlim()
+        expected_major, expected_minor = resolve_x_tick_spacing(
+            right - left, "auto", project.method.x_major_tick_min,
+            project.method.x_minor_tick_min,
+        )
+        self.assertAlmostEqual(
+            plot_axis.xaxis.get_major_locator()._edge.step, expected_major
+        )
+        self.assertAlmostEqual(
+            plot_axis.xaxis.get_minor_locator()._edge.step, expected_minor
+        )
+        figure.clear()
+
+        # Manual mode: the numeric spacing chosen in "Axes, labels and
+        # formatting" now reaches the report chromatogram.
+        project.method.x_tick_mode = "manual"
+        project.method.x_major_tick_min = 0.5
+        project.method.x_minor_tick_min = 0.1
+        figure = analysis_report_figures(project, [dataset], "en")[0]
+        plot_axis = next(
+            axis for axis in figure.axes if axis.get_title(loc="left") == "Chromatogram"
+        )
+        self.assertAlmostEqual(plot_axis.xaxis.get_major_locator()._edge.step, 0.5)
+        self.assertAlmostEqual(plot_axis.xaxis.get_minor_locator()._edge.step, 0.1)
+        figure.clear()
+
+        # A manual spacing that would exceed Issue #241's combined-tick-count
+        # ceiling on the report's (wider) X range falls back to automatic
+        # ticks, exactly like the screen -- the report can span a wider X
+        # range than the screen ever shows.
+        project.method.x_major_tick_min = 0.0002
+        project.method.x_minor_tick_min = 0.0001
+        figure = analysis_report_figures(project, [dataset], "en")[0]
+        plot_axis = next(
+            axis for axis in figure.axes if axis.get_title(loc="left") == "Chromatogram"
+        )
+        left, right = plot_axis.get_xlim()
+        self.assertGreater(
+            (right - left) / 0.0002 + (right - left) / 0.0001,
+            MAX_MANUAL_X_TICK_COUNT,
+        )
+        self.assertNotAlmostEqual(
+            plot_axis.xaxis.get_major_locator()._edge.step, 0.0002
+        )
+        auto_major, auto_minor = resolve_x_tick_spacing(
+            right - left, "auto", project.method.x_major_tick_min,
+            project.method.x_minor_tick_min,
+        )
+        self.assertAlmostEqual(
+            plot_axis.xaxis.get_major_locator()._edge.step, auto_major
+        )
+        self.assertAlmostEqual(
+            plot_axis.xaxis.get_minor_locator()._edge.step, auto_minor
+        )
+        figure.clear()
+
+    def test_report_fraction_table_matches_the_list_dialog_columns_and_units(self):
+        """Issue #314 / コ²: selecting "フラクション回収範囲" outputs a table --
+        never the region shading -- using the exact same columns/units as
+        ``FractionRegionListDialog`` (Issue #313): start/end in minutes,
+        interval in seconds, ``%g`` formatting.
+        """
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        project = Project(title="Fraction table", datasets=[dataset])
+        project.fraction_regions = [
+            FractionRegion(start_min=1.0, end_min=4.0, interval_min=0.5),
+            FractionRegion(start_min=5.5, end_min=6.25, interval_min=0.1),
+        ]
+
+        # Default: the new option is off, so no fraction table page appears.
+        default_figures = analysis_report_figures(project, [dataset], "en")
+        self.assertEqual(len(default_figures), 1)
+        for figure in default_figures:
+            figure.clear()
+
+        figures = analysis_report_figures(
+            project, [dataset], "en", ReportOptions(fraction_regions=True)
+        )
+        self.assertEqual(len(figures), 2)
+        fraction_page = figures[-1]
+        cells = [
+            cell.get_text().get_text()
+            for axis in fraction_page.axes
+            for table in axis.tables
+            for cell in table.get_celld().values()
+        ]
+        self.assertIn("Start (min)", cells)
+        self.assertIn("End (min)", cells)
+        self.assertIn("Interval (s)", cells)
+        self.assertIn("1", cells)
+        self.assertIn("4", cells)
+        self.assertIn("30", cells)  # 0.5 min -> 30 s
+        self.assertIn("5.5", cells)
+        self.assertIn("6.25", cells)
+        self.assertIn("6", cells)  # 0.1 min -> 6 s
+
+        # No fraction-region shading is drawn on the chromatogram itself --
+        # only the table -- because it would overlap the integration-range
+        # shading already drawn there. The dedicated fraction page carries no
+        # chromatogram axis at all.
+        chromatogram_axes = [
+            axis for axis in fraction_page.axes
+            if axis.get_title(loc="left") == "Chromatogram"
+        ]
+        self.assertEqual(chromatogram_axes, [])
+        for figure in figures:
+            figure.clear()
+
+        # Empty fraction ranges (selected, but none exist) show only the
+        # heading with an explicit "not applicable" marker, like the peak
+        # table's own empty-state text.
+        project.fraction_regions = []
+        empty_figures = analysis_report_figures(
+            project, [dataset], "en", ReportOptions(fraction_regions=True)
+        )
+        empty_page = empty_figures[-1]
+        empty_texts = [
+            text.get_text()
+            for axis in empty_page.axes
+            for text in axis.texts
+        ]
+        self.assertIn("N/A", empty_texts)
+        self.assertFalse(empty_page.axes[-1].tables)
+        for figure in empty_figures:
+            figure.clear()
+
+        japanese_empty = analysis_report_figures(
+            project, [dataset], "ja", ReportOptions(fraction_regions=True)
+        )
+        japanese_texts = [
+            text.get_text()
+            for axis in japanese_empty[-1].axes
+            for text in axis.texts
+        ]
+        self.assertIn("該当なし", japanese_texts)
+        for figure in japanese_empty:
+            figure.clear()
+
+    def test_report_fraction_table_pdf_and_png_pages_match(self):
+        """Print preview and PDF export share one routine (Issue #219); the
+        fraction table page must appear identically in both output paths.
+        """
+
+        dataset = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        project = Project(title="Fraction parity", datasets=[dataset])
+        project.fraction_regions = [
+            FractionRegion(start_min=0.5, end_min=2.0, interval_min=0.25),
+        ]
+        options = ReportOptions(fraction_regions=True)
+        with tempfile.TemporaryDirectory() as directory:
+            pdf_path = export_analysis_report_pdf(
+                os.path.join(directory, "report.pdf"), project, [dataset], "en", options
+            )
+            self.assertTrue(Path(pdf_path).read_bytes().startswith(b"%PDF"))
+            pages = render_analysis_report_pages(
+                directory, project, [dataset], "en", options
+            )
+            self.assertEqual(len(pages), 2)
 
     def test_report_peak_tables_are_top_aligned_without_stretching_short_lists(self):
         from matplotlib.backends.backend_agg import FigureCanvasAgg

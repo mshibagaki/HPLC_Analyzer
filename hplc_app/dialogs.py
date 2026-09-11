@@ -549,15 +549,45 @@ def _populate_preset_sort_combo(combo, language: str):
 
 
 class ReportOptionsDialog(QtWidgets.QDialog):
-    """Select session-only details included in the next report operation."""
+    """Select session-only details included in the next report operation.
 
-    OPTION_LABELS = (
-        ("integration_range", "積分範囲", "Integration ranges"),
-        ("baseline", "ベースライン", "Baselines"),
-        ("retention_time", "保持時間", "Retention times"),
-        ("gradient_b", "B %", "B %"),
-        ("gradient_conditions", "グラジエント曲線", "Gradient curve"),
-        ("quantitation", "定量値", "Quantitation values"),
+    Issue #314 / コ² groups the flat checkbox list into three ``QGroupBox``
+    sections: the per-peak items (in the requested retention time -> range ->
+    quantitation -> B% -> baseline order), the gradient curve (moved into its
+    own box, otherwise unchanged), and the new fraction-collection-range
+    table option. Each option tuple carries its own fallback default so a
+    caller that omits a key (most callers only override a few) still gets the
+    right unchecked/checked starting state per option, not one blanket
+    default for all of them.
+    """
+
+    INTEGRATION_PEAK_OPTIONS = (
+        ("retention_time", "保持時間", "Retention times", True),
+        ("integration_range", "積分範囲", "Integration ranges", True),
+        ("quantitation", "定量値", "Quantitation values", True),
+        ("gradient_b", "B %", "B %", True),
+        ("baseline", "ベースライン", "Baselines", True),
+    )
+    GRADIENT_CURVE_OPTIONS = (
+        ("gradient_conditions", "グラジエント曲線", "Gradient curve", True),
+    )
+    FRACTION_REGION_OPTIONS = (
+        (
+            "fraction_regions",
+            "フラクション回収範囲の一覧表",
+            "Fraction collection range table",
+            False,
+        ),
+    )
+    OPTION_GROUPS = (
+        ("積分ピーク", "Integration peaks", INTEGRATION_PEAK_OPTIONS),
+        ("グラジエント曲線", "Gradient curve", GRADIENT_CURVE_OPTIONS),
+        ("フラクション回収範囲", "Fraction collection ranges", FRACTION_REGION_OPTIONS),
+    )
+    OPTION_LABELS = tuple(
+        (key, japanese, english)
+        for _title_ja, _title_en, options in OPTION_GROUPS
+        for key, japanese, english, _default in options
     )
 
     def __init__(self, language="ja", parent=None, initial_values=None):
@@ -576,13 +606,17 @@ class ReportOptionsDialog(QtWidgets.QDialog):
         note.setWordWrap(True)
         root.addWidget(note)
         self.checkboxes = {}
-        for key, japanese, english in self.OPTION_LABELS:
-            checkbox = QtWidgets.QCheckBox(
-                japanese if language == "ja" else english
-            )
-            checkbox.setChecked(bool(initial_values.get(key, True)))
-            root.addWidget(checkbox)
-            self.checkboxes[key] = checkbox
+        for title_ja, title_en, options in self.OPTION_GROUPS:
+            group = QtWidgets.QGroupBox(title_ja if language == "ja" else title_en)
+            group_layout = QtWidgets.QVBoxLayout(group)
+            for key, japanese, english, default in options:
+                checkbox = QtWidgets.QCheckBox(
+                    japanese if language == "ja" else english
+                )
+                checkbox.setChecked(bool(initial_values.get(key, default)))
+                group_layout.addWidget(checkbox)
+                self.checkboxes[key] = checkbox
+            root.addWidget(group)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )

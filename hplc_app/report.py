@@ -11,15 +11,20 @@ from matplotlib import rcParams
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 from matplotlib.text import Text
+from matplotlib.ticker import MultipleLocator
 
 from .analysis import baseline_trace, display_values, reference_values_for_display
-from .models import Dataset, PeakRegion, Project
+from .models import Dataset, FractionRegion, PeakRegion, Project
 from .peak_fitting import (
     PeakFitResult,
     evaluate_fit_profile,
     is_saturation_corrected,
 )
-from .rendering import apply_legend_frame_and_fill, matplotlib_line_style
+from .rendering import (
+    apply_legend_frame_and_fill,
+    matplotlib_line_style,
+    resolve_x_tick_spacing,
+)
 
 
 A4_SIZE_INCHES = (8.2677165, 11.6929134)
@@ -37,6 +42,7 @@ class ReportOptions:
     gradient_b: bool = True
     gradient_conditions: bool = True
     quantitation: bool = True
+    fraction_regions: bool = False
 
 
 def _number(value, digits=4) -> str:
@@ -252,6 +258,59 @@ def _add_peak_table(
             cell.set_text_props(weight="bold")
 
 
+def _fraction_region_rows(regions: Iterable[FractionRegion]):
+    """Format fraction ranges with the exact columns/units the list dialog uses.
+
+    ``FractionRegionListDialog`` (Issue #313) shows start/end in minutes and
+    interval in seconds, each with ``%g`` formatting; this mirrors that
+    exactly (same order, same numbers) so the report never grows a second,
+    diverging table shape for the same data (Issue #314).
+    """
+
+    return [
+        (
+            "%g" % region.start_min,
+            "%g" % region.end_min,
+            "%g" % (region.interval_min * 60.0),
+        )
+        for region in regions
+    ]
+
+
+def _add_fraction_table(axis, regions: Iterable[FractionRegion], language: str) -> None:
+    axis.axis("off")
+    headers = (
+        ["開始 (min)", "終了 (min)", "間隔 (s)"]
+        if language == "ja"
+        else ["Start (min)", "End (min)", "Interval (s)"]
+    )
+    rows = _fraction_region_rows(regions)
+    if not rows:
+        axis.text(
+            0.5,
+            0.5,
+            "該当なし" if language == "ja" else "N/A",
+            ha="center",
+            va="center",
+            fontsize=9,
+        )
+        return
+    table = axis.table(
+        cellText=rows,
+        colLabels=headers,
+        cellLoc="center",
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(7.5)
+    table.scale(1.0, 1.3)
+    for (row, _column), cell in table.get_celld().items():
+        cell.set_linewidth(0.35)
+        if row == 0:
+            cell.set_facecolor("#e5e7eb")
+            cell.set_text_props(weight="bold")
+
+
 def _plot_dataset(
     axis,
     project: Project,
@@ -405,6 +464,21 @@ def _plot_dataset(
     axis.set_xlim(0.0, max(1.0e-9, right))
     axis.margins(x=0)
     axis.grid(False)
+    # Share the screen's manual/automatic X-axis tick spacing calculation
+    # (MainWindow._set_dynamic_x_ticks) so a numeric tick spacing chosen in
+    # "Axes, labels and formatting" also applies here; the report can span a
+    # wider X range than the screen, so the same Issue #241 floor/count
+    # ceiling this shared helper enforces applies here too (Issue #314).
+    left, right_limit = axis.get_xlim()
+    major_tick, minor_tick = resolve_x_tick_spacing(
+        right_limit - left,
+        project.method.x_tick_mode,
+        project.method.x_major_tick_min,
+        project.method.x_minor_tick_min,
+    )
+    axis.xaxis.set_major_locator(MultipleLocator(major_tick))
+    axis.xaxis.set_minor_locator(MultipleLocator(minor_tick))
+    axis.tick_params(axis="x", which="minor", length=3, labelbottom=False)
     if options.gradient_conditions and dataset.measurement.gradient:
         gradient = sorted(dataset.measurement.gradient, key=lambda point: point.time_min)
         gradient_axis = axis.twinx()
@@ -545,6 +619,29 @@ def analysis_report_figures(
             continuation.text(0.94, 0.012, report_time, fontsize=6, ha="right", color="#6b7280")
             _apply_report_fonts(continuation)
             figures.append(continuation)
+
+    if options.fraction_regions:
+        # One table for the whole report, not one per chromatogram: fraction
+        # ranges are project-owned (Project.fraction_regions), not per-dataset
+        # data, so repeating the identical table on every chromatogram's page
+        # would only duplicate it. Placed after every peak table, in the same
+        # continuation-page layout, per workflow doc 32's placement decision.
+        # The chromatogram itself never gets the region shading -- only this
+        # table -- because it would overlap the integration-range shading
+        # already drawn there (Issue #314).
+        fraction_page = Figure(figsize=A4_SIZE_INCHES, dpi=REPORT_DPI)
+        fraction_page.subplots_adjust(left=0.06, right=0.94, top=0.975, bottom=0.035)
+        table_axis = fraction_page.add_subplot(111)
+        table_axis.set_title(
+            "フラクション回収範囲" if language == "ja" else "Fraction collection ranges",
+            fontsize=11,
+            loc="left",
+            pad=4,
+        )
+        _add_fraction_table(table_axis, project.fraction_regions, language)
+        fraction_page.text(0.94, 0.012, report_time, fontsize=6, ha="right", color="#6b7280")
+        _apply_report_fonts(fraction_page)
+        figures.append(fraction_page)
 
     return figures
 

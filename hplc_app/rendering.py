@@ -83,6 +83,59 @@ def safe_manual_x_tick_spacing(
     return float(major_spacing_min), float(minor_spacing_min)
 
 
+def nice_tick_step(target: float) -> float:
+    """Round ``target`` up to a "nice" 1/2/5-times-a-power-of-ten step.
+
+    Shared by the screen's automatic X-axis tick spacing and the report's
+    (Issue #241 / #314), so both surfaces compute the same automatic spacing
+    from one place.
+    """
+
+    if target <= 0 or not math.isfinite(target):
+        return 1.0
+    magnitude = 10.0 ** math.floor(math.log10(target))
+    fraction = target / magnitude
+    if fraction <= 1.0:
+        nice = 1.0
+    elif fraction <= 2.0:
+        nice = 2.0
+    elif fraction <= 5.0:
+        nice = 5.0
+    else:
+        nice = 10.0
+    return nice * magnitude
+
+
+def resolve_x_tick_spacing(
+    x_span_min, x_tick_mode, major_spacing_min, minor_spacing_min
+) -> Tuple[float, float]:
+    """Return the (major, minor) X-axis tick spacing for a given view span.
+
+    This is the one place the screen (``MainWindow._set_dynamic_x_ticks``) and
+    the analysis report (``report._plot_dataset``) compute manual-vs-automatic
+    X-axis tick spacing, so the two surfaces cannot drift apart (Issue #314 /
+    workflow doc 30.1). In manual mode the explicit spacing is used only when
+    it passes the Issue #241 floor (``MIN_MANUAL_X_TICK_SPACING_MIN``) and
+    combined-tick-count ceiling (``MAX_MANUAL_X_TICK_COUNT``) checks already
+    enforced by :func:`safe_manual_x_tick_spacing`; automatic mode, and any
+    manual spacing that fails those checks, falls back to the same
+    18-major-ticks-per-view heuristic the screen has always used.
+    """
+
+    span = max(abs(float(x_span_min)), 1.0e-9)
+    spacing = None
+    if x_tick_mode == "manual":
+        spacing = safe_manual_x_tick_spacing(
+            span, major_spacing_min, minor_spacing_min
+        )
+    if spacing is None:
+        major_tick = nice_tick_step(span / 18.0)
+        minor_tick = major_tick / 5.0
+    else:
+        major_tick, minor_tick = spacing
+    return major_tick, minor_tick
+
+
 def matplotlib_line_style(value: object) -> str:
     return MATPLOTLIB_LINE_STYLES[normalize_line_style(value)]
 

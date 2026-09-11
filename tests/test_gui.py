@@ -12628,13 +12628,22 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(initial_dialog.checkboxes["baseline"].text(), "Baselines")
         self.assertTrue(initial_dialog.checkboxes["gradient_conditions"].isChecked())
         self.assertTrue(initial_dialog.checkboxes["quantitation"].isChecked())
+        # Not passed in initial_values, so it falls back to its own default
+        # (False) rather than the blanket True every other option falls back
+        # to (Issue #314 / コ²).
+        self.assertFalse(initial_dialog.checkboxes["fraction_regions"].isChecked())
         initial_dialog.close()
 
         window.project.method.show_integration_areas = False
         window.project.method.show_retention_labels = False
         window.project.method.show_gradient_b = True
+        window.project.method.show_fraction_regions = True
         options_dialog = ReportOptionsDialog("en")
         options_dialog.checkboxes["baseline"].setChecked(False)
+        # The dialog is created directly here (bypassing _choose_report_options'
+        # own construction, which the mock below intercepts), so mirror what
+        # that call would have passed as fraction_regions' initial value.
+        options_dialog.checkboxes["fraction_regions"].setChecked(True)
         values = options_dialog.option_values()
         self.assertFalse(values["baseline"])
         self.assertTrue(values["retention_time"])
@@ -12653,14 +12662,59 @@ class GuiTests(unittest.TestCase):
                 "gradient_b": True,
                 "gradient_conditions": True,
                 "quantitation": True,
+                "fraction_regions": True,
             },
         )
         self.assertFalse(options.baseline)
         self.assertTrue(options.integration_range)
         self.assertTrue(options.retention_time)
+        self.assertTrue(options.fraction_regions)
         options_dialog.close()
         window.project.dirty = False
         window.close()
+
+    def test_report_options_dialog_groups_and_fraction_default(self):
+        """Issue #314 / コ²: three QGroupBox sections in the requested order.
+
+        "積分ピーク" holds retention time -> range -> quantitation -> B% ->
+        baseline (the requested order), "グラジエント曲線" only moved into its
+        own box, and "フラクション回収範囲" is new and defaults to unchecked
+        when not overridden.
+        """
+
+        dialog = ReportOptionsDialog("ja")
+        groups = [
+            child for child in dialog.findChildren(QtWidgets.QGroupBox)
+        ]
+        self.assertEqual(len(groups), 3)
+        self.assertEqual(groups[0].title(), "積分ピーク")
+        self.assertEqual(groups[1].title(), "グラジエント曲線")
+        self.assertEqual(groups[2].title(), "フラクション回収範囲")
+        integration_peak_order = [
+            checkbox.text() for checkbox in groups[0].findChildren(QtWidgets.QCheckBox)
+        ]
+        self.assertEqual(
+            integration_peak_order,
+            ["保持時間", "積分範囲", "定量値", "B %", "ベースライン"],
+        )
+        self.assertIn(
+            dialog.checkboxes["gradient_conditions"], groups[1].findChildren(QtWidgets.QCheckBox)
+        )
+        self.assertIn(
+            dialog.checkboxes["fraction_regions"], groups[2].findChildren(QtWidgets.QCheckBox)
+        )
+        self.assertFalse(dialog.checkboxes["fraction_regions"].isChecked())
+        dialog.checkboxes["fraction_regions"].setChecked(True)
+        self.assertTrue(dialog.option_values()["fraction_regions"])
+        dialog.close()
+
+        english = ReportOptionsDialog("en")
+        english_groups = english.findChildren(QtWidgets.QGroupBox)
+        self.assertEqual(
+            [group.title() for group in english_groups],
+            ["Integration peaks", "Gradient curve", "Fraction collection ranges"],
+        )
+        english.close()
 
     def test_3d_dialog_selects_grid_planes_and_resets_only_the_view_angles(self):
         window = self.make_window()

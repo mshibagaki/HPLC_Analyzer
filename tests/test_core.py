@@ -5451,6 +5451,10 @@ class ProjectTests(unittest.TestCase):
         x_min, x_max = axis.get_xlim()
         y_min, y_max = axis.get_ylim()
         z_min, z_max = axis.get_zlim()
+        # The series range ends on the outermost traces, so the far wall, the
+        # retention time x intensity grid and the intensity axis all lie in
+        # the rearmost chromatogram's own plane.
+        self.assertEqual((y_min, y_max), (0.0, 1.0))
         self.assertEqual(constant["xz"], y_max)
         self.assertEqual(constant["yz"], x_min)
         self.assertEqual(constant["xy"], z_min)
@@ -5468,7 +5472,9 @@ class ProjectTests(unittest.TestCase):
         # Viewed from the opposite side and from below, each plane follows.
         figure, constant = build(-20.0, 115.0)
         axis = figure.axes[0]
+        # Rotated past the series axis, trace 0 is the rearmost one.
         self.assertEqual(constant["xz"], axis.get_ylim()[0])
+        self.assertEqual(constant["xz"], 0.0)
         self.assertEqual(constant["yz"], axis.get_xlim()[1])
         self.assertEqual(constant["xy"], axis.get_zlim()[1])
 

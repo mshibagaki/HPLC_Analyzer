@@ -280,7 +280,13 @@ def build_3d_chromatogram_figure(
     axis.set_ylabel(options.y_axis_title)
     axis.set_zlabel(z_label)
     axis.set_xlim(left, right)
-    axis.set_ylim(-0.35, max(0.35, len(datasets) - 0.65))
+    # No padding beyond the outermost traces: the far wall then lies on the
+    # rearmost chromatogram, so the retention time x intensity grid and the
+    # intensity axis share that trace's plane and its peaks can be read
+    # against the grid lines from any rotation.
+    axis.set_ylim(
+        (-0.35, 0.35) if len(datasets) < 2 else (0.0, float(len(datasets) - 1))
+    )
     if options.z_min is not None:
         axis.set_zlim(float(options.z_min), float(options.z_max))
     axis.set_yticks(range(len(datasets)))

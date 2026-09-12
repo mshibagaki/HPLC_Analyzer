@@ -5401,6 +5401,83 @@ class ProjectTests(unittest.TestCase):
                 self.assertGreater(path.stat().st_size, 500)
         figure.clear()
 
+    def test_3d_grid_planes_sit_behind_the_traces_on_the_far_side(self):
+        # Issue #324: the grid drew over the traces, and the retention time x
+        # intensity plane always sat at y_min, which is the near side at the
+        # default -65 degree azimuth.
+        import io as _io
+        from unittest.mock import patch
+        from mpl_toolkits.mplot3d.art3d import Line3DCollection
+        from hplc_app.plot3d import (
+            GRID_ZORDER,
+            ThreeDPlotOptions,
+            build_3d_chromatogram_figure,
+        )
+
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        method = Project().method
+
+        def build(elevation, azimuth):
+            captured = []
+
+            def recording(segments, *args, **kwargs):
+                captured.append([tuple(map(tuple, segment)) for segment in segments])
+                return Line3DCollection(segments, *args, **kwargs)
+
+            options = ThreeDPlotOptions(
+                z_tick_interval=1000.0,
+                elevation_deg=elevation,
+                azimuth_deg=azimuth,
+                grid_xy=True,
+                grid_xz=True,
+                grid_yz=True,
+            )
+            with patch("hplc_app.plot3d.Line3DCollection", side_effect=recording):
+                figure = build_3d_chromatogram_figure(
+                    [first, second], method, (0.0, 30.0), options
+                )
+            # Planes are added in xy, xz, yz order; each holds one coordinate
+            # constant: z for xy, y for xz and x for yz.
+            constant = {}
+            for plane, index, segments in zip(("xy", "xz", "yz"), (2, 1, 0), captured):
+                values = {point[index] for segment in segments for point in segment}
+                self.assertEqual(len(values), 1, plane)
+                constant[plane] = values.pop()
+            return figure, constant
+
+        figure, constant = build(20.0, -65.0)
+        axis = figure.axes[0]
+        x_min, x_max = axis.get_xlim()
+        y_min, y_max = axis.get_ylim()
+        z_min, z_max = axis.get_zlim()
+        # The series range ends on the outermost traces, so the far wall, the
+        # retention time x intensity grid and the intensity axis all lie in
+        # the rearmost chromatogram's own plane.
+        self.assertEqual((y_min, y_max), (0.0, 1.0))
+        self.assertEqual(constant["xz"], y_max)
+        self.assertEqual(constant["yz"], x_min)
+        self.assertEqual(constant["xy"], z_min)
+
+        # Every grid plane stays under every trace, also after a real draw:
+        # mplot3d's computed order would otherwise lift collections to 2.5.
+        self.assertFalse(axis.computed_zorder)
+        figure.savefig(_io.BytesIO(), format="png", dpi=50)
+        line_zorders = {line.get_zorder() for line in axis.lines}
+        self.assertTrue(line_zorders)
+        for collection in axis.collections:
+            self.assertEqual(collection.get_zorder(), GRID_ZORDER)
+            self.assertLess(collection.get_zorder(), min(line_zorders))
+
+        # Viewed from the opposite side and from below, each plane follows.
+        figure, constant = build(-20.0, 115.0)
+        axis = figure.axes[0]
+        # Rotated past the series axis, trace 0 is the rearmost one.
+        self.assertEqual(constant["xz"], axis.get_ylim()[0])
+        self.assertEqual(constant["xz"], 0.0)
+        self.assertEqual(constant["yz"], axis.get_xlim()[1])
+        self.assertEqual(constant["xy"], axis.get_zlim()[1])
+
     def test_3d_grid_planes_reach_the_figure_and_its_image_output(self):
         from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
 

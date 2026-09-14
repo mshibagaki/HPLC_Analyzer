@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import itertools
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
 from matplotlib import colormaps
+from matplotlib.backends.backend_agg import RendererAgg
 from matplotlib.figure import Figure
 from matplotlib.ticker import MultipleLocator
+from matplotlib.transforms import Bbox
 from mpl_toolkits.mplot3d import Axes3D as _Axes3D
+from mpl_toolkits.mplot3d import proj3d
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 from .analysis import display_values
@@ -19,6 +23,17 @@ from .rendering import default_trace_color
 
 # Below Line3D's default zorder of 2, so every trace draws over the grid.
 GRID_ZORDER = 1.0
+
+# Series-axis gap kept between the nearest trace and the retention time axis.
+NEAR_SERIES_PADDING = 0.35
+
+# Blank share of the figure kept on each side when the box is fitted.  The
+# fit treats label sizes as independent of the zoom, which measured up to
+# 1.2 points optimistic, so this sits above the roughly 2 % gap wanted.
+FIT_MARGIN = 0.035
+# Bounds for the fitted box zoom.
+MIN_BOX_ZOOM = 0.3
+MAX_BOX_ZOOM = 1.6
 
 TRACE_FALLBACK_COLORS = (
     "#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e",
@@ -174,6 +189,99 @@ def _far_limits(axis) -> Tuple[float, float, float]:
     )
 
 
+def _fill_subplot_area(axis) -> None:
+    """Let the 3D axes use its whole subplot rectangle instead of a square.
+
+    ``Axes3D.apply_aspect`` shrinks every 3D axes to a square inside its
+    subplot area, which in a landscape output figure left about 45 % of the
+    width empty beside the box.  Keeping the full rectangle stretches the
+    projection horizontally to fill the figure without rewriting the
+    X / Y / Z aspect the user chose.  mplot3d re-applies the aspect on every
+    draw, so the override is installed on the axes rather than applied once.
+    """
+
+    def apply_aspect(position=None):
+        if position is None:
+            position = axis.get_position(original=True)
+        # The same private setter mplot3d's own apply_aspect uses; the public
+        # set_position would also drop the axes from layout calculations.
+        axis._set_position(position, "active")
+
+    axis.apply_aspect = apply_aspect
+
+
+def _fit_box_zoom(figure: Figure, axis, aspect) -> float:
+    """Scale the box so the plot fills the figure without a label leaving it.
+
+    One off-screen draw measures the projected box and how far the tick and
+    axis labels stand out beyond it.  The box grows with the zoom about the
+    axes centre while the labels keep their size, so each figure edge gives
+    the zoom at which the content would just reach it; the smallest wins.
+    A fixed zoom filled the default view but pushed labels off the figure
+    once the X aspect was stretched, and mplot3d's own layout already cut
+    off views from below and tall Z aspects.
+    """
+
+    axis.set_box_aspect(aspect)
+    width, height = (max(1, int(round(value))) for value in figure.bbox.size)
+    renderer = RendererAgg(width, height, figure.dpi)
+    # The projection matrix and the tick label positions only exist after a
+    # draw; measuring before one returns meaningless extents.
+    figure.draw(renderer)
+    corners = itertools.product(axis.get_xlim(), axis.get_ylim(), axis.get_zlim())
+    xs, ys, zs = (np.array(values, dtype=float) for values in zip(*corners))
+    projected_x, projected_y, _ = proj3d.proj_transform(xs, ys, zs, axis.M)
+    points = axis.transData.transform(np.column_stack([projected_x, projected_y]))
+    box = Bbox.from_extents(
+        points[:, 0].min(), points[:, 1].min(), points[:, 0].max(), points[:, 1].max()
+    )
+    # The axes' own tight box includes its empty rectangle, so the labels are
+    # taken from the three axis artists instead.
+    extents = [box] + [
+        extent
+        for extent in (
+            item.get_tightbbox(renderer)
+            for item in (axis.xaxis, axis.yaxis, axis.zaxis)
+        )
+        if extent is not None
+    ]
+    content = Bbox.union(extents)
+    frame = figure.bbox
+    centre_x = axis.bbox.x0 + axis.bbox.width / 2.0
+    centre_y = axis.bbox.y0 + axis.bbox.height / 2.0
+    gap_x = frame.width * FIT_MARGIN
+    gap_y = frame.height * FIT_MARGIN
+    scales = []
+    for box_edge, content_edge, limit, centre in (
+        (box.x1, content.x1, frame.x1 - gap_x, centre_x),
+        (box.x0, content.x0, frame.x0 + gap_x, centre_x),
+        (box.y1, content.y1, frame.y1 - gap_y, centre_y),
+        (box.y0, content.y0, frame.y0 + gap_y, centre_y),
+    ):
+        reach = box_edge - centre
+        if abs(reach) > 1.0e-6:
+            scales.append((limit - (content_edge - box_edge) - centre) / reach)
+    zoom = float(np.clip(min(scales), MIN_BOX_ZOOM, MAX_BOX_ZOOM)) if scales else 1.0
+    axis.set_box_aspect(aspect, zoom=zoom)
+    return zoom
+
+
+def _pad_near_series(axis) -> None:
+    """Hold the series range away from the viewer's side of the box.
+
+    The far side stays flush with the rearmost trace so the grid and the
+    intensity axis share its plane; the near side gains padding so the
+    closest trace does not lie along the retention time axis.
+    """
+
+    low, high = axis.get_ylim()
+    _, far_y, _ = _far_limits(axis)
+    if far_y >= high:
+        axis.set_ylim(low - NEAR_SERIES_PADDING, high)
+    else:
+        axis.set_ylim(low, high + NEAR_SERIES_PADDING)
+
+
 def _add_grid_plane(axis, plane: str) -> None:
     """Draw one selected 3D grid plane using only public Matplotlib APIs."""
 
@@ -280,12 +388,15 @@ def build_3d_chromatogram_figure(
     axis.set_ylabel(options.y_axis_title)
     axis.set_zlabel(z_label)
     axis.set_xlim(left, right)
-    # No padding beyond the outermost traces: the far wall then lies on the
-    # rearmost chromatogram, so the retention time x intensity grid and the
-    # intensity axis share that trace's plane and its peaks can be read
-    # against the grid lines from any rotation.
+    # Padding on the near side only.  The far wall then lies on the rearmost
+    # chromatogram, so the retention time x intensity grid and the intensity
+    # axis share that trace's plane, while the nearest trace keeps clear of
+    # the retention time axis instead of running along it.  Which side is
+    # near depends on the view, so this is applied after view_init below.
     axis.set_ylim(
-        (-0.35, 0.35) if len(datasets) < 2 else (0.0, float(len(datasets) - 1))
+        (-NEAR_SERIES_PADDING, NEAR_SERIES_PADDING)
+        if len(datasets) < 2
+        else (0.0, float(len(datasets) - 1))
     )
     if options.z_min is not None:
         axis.set_zlim(float(options.z_min), float(options.z_max))
@@ -296,7 +407,10 @@ def build_3d_chromatogram_figure(
     axis.xaxis.set_major_locator(MultipleLocator(options.x_tick_interval))
     axis.zaxis.set_major_locator(MultipleLocator(options.z_tick_interval))
     axis.view_init(elev=options.elevation_deg, azim=options.azimuth_deg)
+    if len(datasets) > 1:
+        _pad_near_series(axis)
     axis.set_box_aspect(aspect)
+    _fill_subplot_area(axis)
     # Matplotlib's native 3D grid crosses multiple planes, so selected planes
     # are drawn explicitly while the native all-or-nothing grid stays off.
     axis.grid(False)
@@ -340,4 +454,7 @@ def build_3d_chromatogram_figure(
     for label in axis.get_xticklabels() + axis.get_yticklabels() + axis.get_zticklabels():
         label.set_fontfamily(method.tick_label_font_family)
         label.set_color(tick_color)
+    # Last, once every font, label and visibility choice is in place, since
+    # all of them change how far the labels stand out beyond the box.
+    _fit_box_zoom(target, axis, aspect)
     return target

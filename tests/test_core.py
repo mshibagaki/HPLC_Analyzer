@@ -5401,6 +5401,111 @@ class ProjectTests(unittest.TestCase):
                 self.assertGreater(path.stat().st_size, 500)
         figure.clear()
 
+    def test_3d_axes_fill_the_landscape_figure_instead_of_a_square(self):
+        # mplot3d shrinks a 3D axes to a square, which left about 45 % of a
+        # 160 x 100 mm figure's width empty beside the box.  The axes must
+        # keep its full subplot rectangle through a real draw.
+        import io as _io
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
+        from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
+
+        first = load_ascii_file(str(SAMPLES / "210601.TXT"))
+        second = load_ascii_file(str(SAMPLES / "225120.TXT"))
+        method = Project().method
+        # Built at the output size, as the dialog does: the box is fitted to
+        # the figure it is built into.
+        figure = build_3d_chromatogram_figure(
+            [first, second],
+            method,
+            (0.0, 30.0),
+            ThreeDPlotOptions(z_tick_interval=1000.0),
+            figure=Figure(
+                figsize=(
+                    method.figure_width_mm / 25.4,
+                    method.figure_height_mm / 25.4,
+                ),
+                dpi=60,
+            ),
+        )
+        FigureCanvasAgg(figure).draw()
+        axis = figure.axes[0]
+        full = axis.get_position(original=True)
+        active = axis.get_position(original=False)
+        self.assertAlmostEqual(active.width, full.width)
+        self.assertAlmostEqual(active.height, full.height)
+        # A square active box would be much narrower than the figure is wide.
+        figure_aspect = method.figure_width_mm / method.figure_height_mm
+        self.assertGreater(
+            active.width * figure_aspect / active.height, 1.2
+        )
+
+        # Rendering the pixels confirms the box, not just the rectangle,
+        # uses the width: under a quarter of each side is left blank.
+        buffer = _io.BytesIO()
+        figure.savefig(buffer, format="rgba", dpi=60)
+        width, height = (int(v) for v in figure.get_size_inches() * 60)
+        pixels = np.frombuffer(buffer.getvalue(), dtype=np.uint8).reshape(
+            height, width, 4
+        )
+        columns = np.where((pixels[:, :, :3].min(axis=2) < 250).any(axis=0))[0]
+        # Measured 48 % of the width blank before the fit; about 10 % after.
+        self.assertLess(columns.min() / width, 0.2)
+        self.assertLess((width - 1 - columns.max()) / width, 0.2)
+
+    def test_3d_box_is_fitted_so_no_label_leaves_the_figure(self):
+        # A fixed zoom that filled the default view pushed labels past the
+        # right edge once the X aspect was stretched, and mplot3d's own
+        # square layout already cut off a tall Z aspect and a view from below.
+        import io as _io
+        from matplotlib.figure import Figure
+        from hplc_app.plot3d import ThreeDPlotOptions, build_3d_chromatogram_figure
+
+        datasets = [
+            load_ascii_file(str(SAMPLES / name))
+            for name in ("210601.TXT", "225120.TXT", "210601.TXT", "225120.TXT")
+        ]
+        method = Project().method
+        size = (method.figure_width_mm / 25.4, method.figure_height_mm / 25.4)
+        for label, overrides in (
+            ("default", {}),
+            ("stretched X", {"aspect_x": 3.0}),
+            ("tall Z", {"aspect_z": 2.0}),
+            ("from below", {"elevation_deg": -25.0}),
+            ("from above", {"elevation_deg": 60.0}),
+            ("large type", {"axis_label_font_size": 16.0, "tick_label_font_size": 13.0}),
+        ):
+            with self.subTest(label):
+                figure = build_3d_chromatogram_figure(
+                    datasets,
+                    method,
+                    (0.0, 90.0),
+                    ThreeDPlotOptions(
+                        z_min=0.0,
+                        z_max=500000.0,
+                        x_tick_interval=15.0,
+                        z_tick_interval=50000.0,
+                        grid_xy=True,
+                        grid_xz=True,
+                        **overrides
+                    ),
+                    figure=Figure(figsize=size, dpi=60),
+                )
+                buffer = _io.BytesIO()
+                figure.savefig(buffer, format="rgba", dpi=60)
+                width, height = (int(v) for v in figure.get_size_inches() * 60)
+                pixels = np.frombuffer(buffer.getvalue(), dtype=np.uint8).reshape(
+                    height, width, 4
+                )
+                ink = pixels[:, :, :3].min(axis=2) < 250
+                rows = np.where(ink.any(axis=1))[0]
+                columns = np.where(ink.any(axis=0))[0]
+                # Every edge keeps a blank strip: nothing was cut off.
+                self.assertGreater(columns.min(), 0)
+                self.assertLess(columns.max(), width - 1)
+                self.assertGreater(rows.min(), 0)
+                self.assertLess(rows.max(), height - 1)
+
     def test_3d_grid_planes_sit_behind_the_traces_on_the_far_side(self):
         # Issue #324: the grid drew over the traces, and the retention time x
         # intensity plane always sat at y_min, which is the near side at the
@@ -5410,6 +5515,7 @@ class ProjectTests(unittest.TestCase):
         from mpl_toolkits.mplot3d.art3d import Line3DCollection
         from hplc_app.plot3d import (
             GRID_ZORDER,
+            NEAR_SERIES_PADDING,
             ThreeDPlotOptions,
             build_3d_chromatogram_figure,
         )
@@ -5451,10 +5557,11 @@ class ProjectTests(unittest.TestCase):
         x_min, x_max = axis.get_xlim()
         y_min, y_max = axis.get_ylim()
         z_min, z_max = axis.get_zlim()
-        # The series range ends on the outermost traces, so the far wall, the
-        # retention time x intensity grid and the intensity axis all lie in
-        # the rearmost chromatogram's own plane.
-        self.assertEqual((y_min, y_max), (0.0, 1.0))
+        # The far end of the series range is flush with the rearmost trace, so
+        # the retention time x intensity grid and the intensity axis lie in
+        # that chromatogram's own plane; only the near end is padded, keeping
+        # the nearest trace off the retention time axis.
+        self.assertEqual((y_min, y_max), (-NEAR_SERIES_PADDING, 1.0))
         self.assertEqual(constant["xz"], y_max)
         self.assertEqual(constant["yz"], x_min)
         self.assertEqual(constant["xy"], z_min)
@@ -5472,9 +5579,11 @@ class ProjectTests(unittest.TestCase):
         # Viewed from the opposite side and from below, each plane follows.
         figure, constant = build(-20.0, 115.0)
         axis = figure.axes[0]
-        # Rotated past the series axis, trace 0 is the rearmost one.
+        # Rotated past the series axis, trace 0 is the rearmost one, and the
+        # padding moves to the other end with the near side.
         self.assertEqual(constant["xz"], axis.get_ylim()[0])
         self.assertEqual(constant["xz"], 0.0)
+        self.assertEqual(axis.get_ylim(), (0.0, 1.0 + NEAR_SERIES_PADDING))
         self.assertEqual(constant["yz"], axis.get_xlim()[1])
         self.assertEqual(constant["xy"], axis.get_zlim()[1])
 

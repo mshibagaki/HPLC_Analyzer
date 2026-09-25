@@ -136,6 +136,17 @@ At minimum, consider:
 
 For Windows 7-related changes, inspect the dedicated verification scripts in `scripts/` and do not claim Win7 compatibility solely because the code works on a modern machine.
 
+Do not assert a wall-clock budget calibrated on the development machine. The same
+suite must pass on the physical Windows 7 SP1 x86 Core 2, where identical work
+runs roughly 15x slower than on the Windows 11 x64 machine (measured: 17 s vs
+269 s for the saturated EMG fits of Issue #238), so any ceiling that separates
+correct from regressed on one machine is wrong on the other. Pin the structural
+property the budget was standing in for -- a call count, an array size, an
+iteration count -- which holds identically on both. A wall-clock assertion is
+acceptable only where correct behavior is effectively instant and the bug is an
+unbounded scan or a hang, so the two differ by orders of magnitude rather than by
+a factor of hardware speed.
+
 ## Scope discipline
 Make the smallest coherent change that satisfies the requested task.
 Avoid unrelated refactors, dependency upgrades, mass formatting, or architecture rewrites unless explicitly requested.

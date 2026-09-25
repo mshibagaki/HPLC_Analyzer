@@ -71,6 +71,7 @@ from hplc_app.parser import (
     load_ascii_file,
     load_chromatogram_file,
 )
+from hplc_app import peak_fitting
 from hplc_app.peak_fitting import (
     PeakFitResult,
     _emg_true_amplitude,
@@ -1732,7 +1733,6 @@ class AnalysisTests(unittest.TestCase):
         densely sampled EMG peak at several clipping depths.
         """
 
-        clock = time.time  # captured before "time" below shadows the module
         time_axis = np.linspace(0.0, 12.0, 2401)
         true_amplitude, center, sigma, tau = 100000.0, 4.0, 0.25, 0.35
         clean = true_amplitude * emg_profile(time_axis, center, sigma, tau)
@@ -1764,7 +1764,6 @@ class AnalysisTests(unittest.TestCase):
             0.50: 0.9954,
             0.35: 0.9986,
         }
-        started = clock()
         for clip_ratio in (0.90, 0.70, 0.50, 0.35):
             with self.subTest(clip_ratio=clip_ratio):
                 ceiling = true_amplitude * clip_ratio
@@ -1829,13 +1828,55 @@ class AnalysisTests(unittest.TestCase):
         self.assertAlmostEqual(
             fitted_area_uv_min(normal_result) / true_area, 1.0, delta=0.01
         )
-        elapsed = clock() - started
-        # A generous ceiling: five EMG fits over a 2,401-point trace. This
-        # exists to catch a return of the "2 minutes to complete" regression
-        # the workflow document warns against (re-normalizing on a dense grid
-        # inside the search loop instead of once after it converges), not to
-        # assert this is fast in any absolute sense.
-        self.assertLess(elapsed, 90.0)
+        # The "2 minutes to complete" regression this guarded against is
+        # pinned by call count instead, in
+        # test_emg_amplitude_rescale_happens_once_per_fit_not_per_search_step.
+        # A wall-clock ceiling cannot express it: the same five EMG fits take
+        # about 17 s on the Windows 11 development machine and about 270 s on
+        # the physical Windows 7 SP1 x86 Core 2 that AGENTS.md requires the
+        # suite to run on, so any budget separating "correct" from "regressed"
+        # on one machine is wrong on the other.
+
+    def test_emg_amplitude_rescale_happens_once_per_fit_not_per_search_step(self):
+        """Issue #238 / #244: the amplitude rescale that makes ``amplitude_uv``
+        mean the model's true apex height must run once, after the coarse
+        sweep and the refinement rounds have converged -- not inside the
+        scoring loop. Re-normalizing on ``_model_grid``'s dense grid per
+        search step is what made a single EMG fit take about two minutes.
+
+        This pins the structure by counting calls rather than by timing:
+        ``_score_profile`` runs tens of thousands of times per EMG fit while
+        ``_model_grid`` must stay at a small constant. The regression turns
+        that constant into the search count, so the two are four orders of
+        magnitude apart. Unlike a wall-clock budget, the separation is the
+        same on the Windows 11 development machine and on the physical
+        Windows 7 SP1 x86 Core 2, where identical work runs about 15x slower.
+        """
+
+        # Deliberately short: the counts below are set by the search grid's
+        # shape, not by the sample count, so this needs no dense trace.
+        time_axis = np.linspace(3.0, 5.0, 241)
+        clean = 100000.0 * emg_profile(time_axis, 3.8, 0.08, 0.12)
+        dataset = Dataset(time_min=time_axis.copy(), intensity_uv=clean.copy())
+        region = PeakRegion(start_min=3.0, end_min=5.0, baseline_mode="linear")
+
+        with patch(
+            "hplc_app.peak_fitting._model_grid", wraps=peak_fitting._model_grid
+        ) as grid_calls, patch(
+            "hplc_app.peak_fitting._score_profile",
+            wraps=peak_fitting._score_profile,
+        ) as score_calls:
+            result = fit_peak(dataset, region, "emg")
+
+        self.assertEqual(result.model, "emg")
+        # The search really did sweep, so a rescale placed inside it would be
+        # caught rather than silently absent.
+        self.assertGreater(score_calls.call_count, 1000)
+        # ... and the dense-grid work did not follow it. Measured: 2 calls
+        # (the post-fit rescale and fitted_apex_min). The bound leaves room
+        # for another legitimate post-fit helper without admitting a rescale
+        # that scales with the sweep.
+        self.assertLessEqual(grid_calls.call_count, 8)
 
     def test_saturation_detection_ignores_a_merely_rounded_apex(self):
         time = np.linspace(4.0, 6.0, 1201)

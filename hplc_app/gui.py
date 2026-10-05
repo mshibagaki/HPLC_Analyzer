@@ -53,6 +53,7 @@ from .dialogs import (
     ThreeDChromatogramDialog,
     WorkDirectoriesDialog,
     dialog_exec,
+    press_on_check_indicator,
     SaturatedRangeDialog,
 )
 from .database import initialize_database, sync_project_to_database
@@ -468,6 +469,17 @@ class DatasetTableWidget(QtWidgets.QTableWidget):
 
     rowMoveRequested = QtCore.Signal(int, int)
 
+    def selectionCommand(self, index, event=None):
+        if press_on_check_indicator(
+            self, index, event, (DATASET_VISIBLE_COLUMN, DATASET_SELECTED_COLUMN)
+        ):
+            return (
+                QtCore.QItemSelectionModel.SelectionFlag.NoUpdate
+                if QT_API == 6
+                else QtCore.QItemSelectionModel.NoUpdate
+            )
+        return super().selectionCommand(index, event)
+
     def __init__(self, rows=0, columns=0, parent=None):
         super().__init__(rows, columns, parent)
         internal_move = (
@@ -684,6 +696,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dataset_selection_sync_guard = False
         self._dataset_checkbox_press = False
         self._dataset_checkbox_target_rows = []
+        self._dataset_checkbox_anchor = {}
         self._span_selector = None
         self._span_selector_mode = None
         self._view_state = None
@@ -3114,6 +3127,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dataset_checkbox_target_rows = []
         if not target_rows and row in selected_rows and len(selected_rows) > 1:
             target_rows = selected_rows
+        if column in (DATASET_SELECTED_COLUMN, DATASET_VISIBLE_COLUMN):
+            # #330: a plain click changes only the clicked row and Shift+click
+            # changes the range from the column's anchor row.
+            shift_modifier = (
+                QtCore.Qt.KeyboardModifier.ShiftModifier
+                if QT_API == 6
+                else QtCore.Qt.ShiftModifier
+            )
+            anchor_row = -1
+            anchor_id = self._dataset_checkbox_anchor.get(column)
+            for index, candidate in enumerate(self.project.datasets):
+                if candidate.id == anchor_id:
+                    anchor_row = index
+                    break
+            if (
+                QtWidgets.QApplication.keyboardModifiers() & shift_modifier
+                and anchor_row >= 0
+            ):
+                target_rows = list(
+                    range(min(anchor_row, row), max(anchor_row, row) + 1)
+                )
+            else:
+                target_rows = [row]
+            self._dataset_checkbox_anchor[column] = self.project.datasets[row].id
         if column == DATASET_SELECTED_COLUMN:
             if target_rows:
                 self._dataset_selection_sync_guard = True

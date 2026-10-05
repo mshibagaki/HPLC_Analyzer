@@ -9982,7 +9982,9 @@ class GuiTests(unittest.TestCase):
         click_selection_checkbox(1)
         self.assertEqual(window._selected_dataset_rows(), [0, 1])
         click_selection_checkbox(0)
-        self.assertEqual(window._selected_dataset_rows(), [])
+        # Only the clicked row leaves the selection (#330 replaced the #240
+        # behaviour that cleared every selected row).
+        self.assertEqual(window._selected_dataset_rows(), [1])
 
         selection = window.dataset_table.selectionModel()
         model = window.dataset_table.model()
@@ -10018,7 +10020,7 @@ class GuiTests(unittest.TestCase):
         self.assertFalse(window.project.dirty)
         window.close()
 
-    def test_selected_visibility_checkbox_updates_all_rows_as_one_undo_step(self):
+    def test_visibility_checkbox_changes_only_the_clicked_row_and_keeps_selection(self):
         window = self.make_window()
         window.show()
         window.dataset_table.selectAll()
@@ -10040,16 +10042,228 @@ class GuiTests(unittest.TestCase):
         )
         self.app.processEvents()
 
-        self.assertFalse(any(dataset.visible for dataset in window.project.datasets))
+        self.assertEqual(
+            [dataset.visible for dataset in window.project.datasets], [False, True]
+        )
+        self.assertEqual(window._selected_dataset_rows(), [0, 1])
         self.assertEqual(len(window._undo_stack), 1)
         window.undo()
-        self.assertTrue(all(dataset.visible for dataset in window.project.datasets))
+        self.assertEqual(
+            [dataset.visible for dataset in window.project.datasets], [True, True]
+        )
         window.redo()
-        self.assertFalse(any(dataset.visible for dataset in window.project.datasets))
+        self.assertEqual(
+            [dataset.visible for dataset in window.project.datasets], [False, True]
+        )
         window.project.dirty = False
         window.close()
 
-    def test_selected_selection_checkbox_clears_all_rows_without_project_edit(self):
+    def _five_row_window(self):
+        datasets = []
+        names = ["210601.TXT", "225120.TXT", "210601.TXT", "225120.TXT", "210601.TXT"]
+        for index, name in enumerate(names):
+            dataset = load_ascii_file(str(SAMPLES / name))
+            dataset.label = dataset.short_label = "T%d" % (index + 1)
+            datasets.append(dataset)
+        project = Project(datasets=datasets)
+        project.method.view_mode = "single"
+        window = MainWindow()
+        window.project = project
+        window.translator.set_language(project.ui_language)
+        window._refresh_all(0)
+        window.show()
+        self.app.processEvents()
+        return window
+
+    def _reset_five_rows(self, window):
+        for dataset in window.project.datasets:
+            dataset.visible = True
+        window._refresh_all(0)
+        window.dataset_table.clearSelection()
+        self.app.processEvents()
+
+    def _click_check(self, table, row, column, shift=False):
+        left_button = (
+            QtCore.Qt.MouseButton.LeftButton
+            if QT_API == 6
+            else QtCore.Qt.LeftButton
+        )
+        shift_modifier = (
+            QtCore.Qt.KeyboardModifier.ShiftModifier
+            if QT_API == 6
+            else QtCore.Qt.ShiftModifier
+        )
+        no_modifier = (
+            QtCore.Qt.KeyboardModifier.NoModifier
+            if QT_API == 6
+            else QtCore.Qt.NoModifier
+        )
+        rect = table.visualItemRect(table.item(row, column))
+        QtTest.QTest.mouseClick(
+            table.viewport(),
+            left_button,
+            shift_modifier if shift else no_modifier,
+            pos=QtCore.QPoint(rect.left() + 10, rect.center().y()),
+        )
+        self.app.processEvents()
+
+    @staticmethod
+    def _marks(table, column, rows=5):
+        return "".join(
+            "S" if table.item(row, column).checkState() == CHECKED else "."
+            for row in range(rows)
+        )
+
+    def test_selection_checkbox_column_toggles_single_rows_and_shift_ranges(self):
+        window = self._five_row_window()
+        try:
+            self._reset_five_rows(window)
+            table = window.dataset_table
+            column = DATASET_SELECTED_COLUMN
+            steps = [
+                (1, False, ".S...", [1]),
+                (3, True, ".SSS.", [1, 2, 3]),
+                (2, False, ".S.S.", [1, 3]),
+                (4, False, ".S.SS", [1, 3, 4]),
+            ]
+            for row, shift, marks, selected in steps:
+                self._click_check(table, row, column, shift)
+                self.assertEqual(self._marks(table, column), marks)
+                self.assertEqual(window._selected_dataset_rows(), selected)
+        finally:
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_visibility_checkbox_column_toggles_single_rows_and_shift_ranges(self):
+        window = self._five_row_window()
+        try:
+            self._reset_five_rows(window)
+            table = window.dataset_table
+            column = DATASET_VISIBLE_COLUMN
+
+            def visible():
+                return "".join(
+                    "V" if dataset.visible else "."
+                    for dataset in window.project.datasets
+                )
+
+            steps = [
+                (1, False, "V.VVV"),
+                (3, True, "V...V"),
+                (1, False, "VV..V"),
+                (3, True, "VVVVV"),
+            ]
+            for row, shift, expected in steps:
+                self._click_check(table, row, column, shift)
+                self.assertEqual(visible(), expected)
+                self.assertEqual(self._marks(table, column), expected.replace("V", "S"))
+
+            # One Shift range is one undo step.
+            self._click_check(table, 1, column, False)
+            self.assertEqual(visible(), "V.VVV")
+            self._click_check(table, 3, column, True)
+            self.assertEqual(visible(), "V...V")
+            window.undo()
+            self.assertEqual(visible(), "V.VVV")
+        finally:
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_visibility_checkbox_keeps_the_row_selection_of_label_clicks(self):
+        window = self._five_row_window()
+        try:
+            self._reset_five_rows(window)
+            table = window.dataset_table
+            left_button = (
+                QtCore.Qt.MouseButton.LeftButton
+                if QT_API == 6
+                else QtCore.Qt.LeftButton
+            )
+            shift_modifier = (
+                QtCore.Qt.KeyboardModifier.ShiftModifier
+                if QT_API == 6
+                else QtCore.Qt.ShiftModifier
+            )
+            no_modifier = (
+                QtCore.Qt.KeyboardModifier.NoModifier
+                if QT_API == 6
+                else QtCore.Qt.NoModifier
+            )
+            for row, modifier in ((1, no_modifier), (3, shift_modifier)):
+                rect = table.visualItemRect(table.item(row, DATASET_LABEL_COLUMN))
+                QtTest.QTest.mouseClick(
+                    table.viewport(), left_button, modifier, pos=rect.center()
+                )
+                self.app.processEvents()
+            self.assertEqual(window._selected_dataset_rows(), [1, 2, 3])
+            self._click_check(table, 2, DATASET_VISIBLE_COLUMN)
+            self.assertEqual(
+                [dataset.visible for dataset in window.project.datasets],
+                [True, True, False, True, True],
+            )
+            self.assertEqual(window._selected_dataset_rows(), [1, 2, 3])
+        finally:
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_batch_dialog_selection_column_toggles_single_rows_and_shift_ranges(self):
+        window = self._five_row_window()
+        project = window.project
+        dialog = BatchMetadataDialog(project, project.datasets[0].id, "ja")
+        try:
+            dialog.show()
+            self.app.processEvents()
+            dialog.clear_checks_button.click()
+            self.app.processEvents()
+            table = dialog.table
+            steps = [
+                (1, False, ".S..."),
+                (3, True, ".SSS."),
+                (2, False, ".S.S."),
+                (4, False, ".S.SS"),
+                (1, False, "...SS"),
+                (4, True, "....."),
+            ]
+            for row, shift, marks in steps:
+                self._click_check(table, row, 0, shift)
+                self.assertEqual(self._marks(table, 0), marks)
+
+            dialog.clear_checks_button.click()
+            self.app.processEvents()
+            left_button = (
+                QtCore.Qt.MouseButton.LeftButton
+                if QT_API == 6
+                else QtCore.Qt.LeftButton
+            )
+            shift_modifier = (
+                QtCore.Qt.KeyboardModifier.ShiftModifier
+                if QT_API == 6
+                else QtCore.Qt.ShiftModifier
+            )
+            no_modifier = (
+                QtCore.Qt.KeyboardModifier.NoModifier
+                if QT_API == 6
+                else QtCore.Qt.NoModifier
+            )
+            for row, modifier in ((1, no_modifier), (3, shift_modifier)):
+                rect = table.visualItemRect(table.item(row, 1))
+                QtTest.QTest.mouseClick(
+                    table.viewport(), left_button, modifier, pos=rect.center()
+                )
+                self.app.processEvents()
+            self.assertEqual(self._marks(table, 0), ".SSS.")
+            self._click_check(table, 2, 0)
+            self.assertEqual(self._marks(table, 0), ".S.S.")
+        finally:
+            dialog.close()
+            window.project.dirty = False
+            window.close()
+            self.app.processEvents()
+
+    def test_selection_checkbox_clears_only_the_clicked_row_without_project_edit(self):
         window = self.make_window()
         window.show()
         window.dataset_table.selectAll()
@@ -10070,7 +10284,7 @@ class GuiTests(unittest.TestCase):
         )
         self.app.processEvents()
 
-        self.assertEqual(window._selected_dataset_rows(), [])
+        self.assertEqual(window._selected_dataset_rows(), [1])
         self.assertEqual(
             [
                 window.dataset_table.item(
@@ -10078,7 +10292,7 @@ class GuiTests(unittest.TestCase):
                 ).checkState()
                 for row in range(window.dataset_table.rowCount())
             ],
-            [UNCHECKED, UNCHECKED],
+            [UNCHECKED, CHECKED],
         )
         self.assertEqual(
             [dataset.visible for dataset in window.project.datasets], visibility

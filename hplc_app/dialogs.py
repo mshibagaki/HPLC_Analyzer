@@ -1923,6 +1923,56 @@ class BatchCellError(ValueError):
         self.reason = reason
 
 
+_CHECK_INDICATOR_MOUSE_EVENTS = (
+    (
+        QtCore.QEvent.Type.MouseButtonPress,
+        QtCore.QEvent.Type.MouseButtonRelease,
+        QtCore.QEvent.Type.MouseButtonDblClick,
+        QtCore.QEvent.Type.MouseMove,
+    )
+    if QT_API == 6
+    else (
+        QtCore.QEvent.MouseButtonPress,
+        QtCore.QEvent.MouseButtonRelease,
+        QtCore.QEvent.MouseButtonDblClick,
+        QtCore.QEvent.MouseMove,
+    )
+)
+
+
+def check_indicator_rect(view, index):
+    """Return the viewport rectangle of the check box drawn in ``index``."""
+    option = QtWidgets.QStyleOptionViewItem()
+    option.initFrom(view.viewport())
+    option.rect = view.visualRect(index)
+    option.features |= (
+        QtWidgets.QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+        if QT_API == 6
+        else QtWidgets.QStyleOptionViewItem.HasCheckIndicator
+    )
+    element = (
+        QtWidgets.QStyle.SubElement.SE_ItemViewItemCheckIndicator
+        if QT_API == 6
+        else QtWidgets.QStyle.SE_ItemViewItemCheckIndicator
+    )
+    return view.style().subElementRect(element, option, view)
+
+
+def press_on_check_indicator(view, index, event, columns):
+    """True when a mouse event lands on the check box of one of ``columns``.
+
+    Qt collapses a multi-row selection to the clicked row when a check box in
+    an already-selected row is clicked; the views use this to keep the
+    selection unchanged for check box clicks.
+    """
+    if event is None or event.type() not in _CHECK_INDICATOR_MOUSE_EVENTS:
+        return False
+    if not index.isValid() or index.column() not in columns:
+        return False
+    position = event.position().toPoint() if QT_API == 6 else event.pos()
+    return check_indicator_rect(view, index).contains(position)
+
+
 class BatchConditionTable(QtWidgets.QTableWidget):
     """Condition table that routes standard clipboard shortcuts to its dialog."""
 
@@ -1930,6 +1980,15 @@ class BatchConditionTable(QtWidgets.QTableWidget):
         super().__init__(rows, columns, parent)
         self.copy_callback = None
         self.paste_callback = None
+
+    def selectionCommand(self, index, event=None):
+        if press_on_check_indicator(self, index, event, (0,)):
+            return (
+                QtCore.QItemSelectionModel.SelectionFlag.NoUpdate
+                if QT_API == 6
+                else QtCore.QItemSelectionModel.NoUpdate
+            )
+        return super().selectionCommand(index, event)
 
     def keyPressEvent(self, event):
         if event.matches(QtGui.QKeySequence.Copy) and self.copy_callback:
@@ -2172,6 +2231,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self._condition_copy_payload = None
         self._syncing_table = False
         self._syncing_selection_checks = False
+        self._check_anchor_row = -1
         self.setWindowTitle(
             "測定・試料条件の入力"
             if language == "ja"
@@ -2486,6 +2546,30 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 self.table.editItem(item)
 
     def _table_item_changed(self, item):
+        if item.column() == 0:
+            if self._syncing_selection_checks:
+                return
+            shift_modifier = (
+                QtCore.Qt.KeyboardModifier.ShiftModifier
+                if QT_API == 6
+                else QtCore.Qt.ShiftModifier
+            )
+            if (
+                QtWidgets.QApplication.keyboardModifiers() & shift_modifier
+                and 0 <= self._check_anchor_row < self.table.rowCount()
+            ):
+                low = min(self._check_anchor_row, item.row())
+                high = max(self._check_anchor_row, item.row())
+                self._syncing_selection_checks = True
+                try:
+                    for target_row in range(low, high + 1):
+                        target = self.table.item(target_row, 0)
+                        if target is not None:
+                            target.setCheckState(item.checkState())
+                finally:
+                    self._syncing_selection_checks = False
+            self._check_anchor_row = item.row()
+            return
         editable_columns = self.EDITABLE_COLUMNS | {self.RUN_ID_COLUMN}
         if self._syncing_table or item.column() not in editable_columns:
             return

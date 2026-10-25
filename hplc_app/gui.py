@@ -338,10 +338,15 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
         self._axis_pan_owner = parent
         super().__init__(canvas, parent)
         self._axis_pan_active = False
+        self._axis_zoom_active = False
+        self._axis_zoom_drag_id = None
 
     def press_pan(self, event):
         if getattr(event, "button", None) not in (1, MouseButton.LEFT):
-            return super().press_pan(event)
+            # Issue #334: like the PyQtGraph screen, only the left button
+            # drags. Matplotlib's native right-button zoom is dropped on
+            # explicit request (it was kept for Issue #236).
+            return
         owner = self._axis_pan_owner
         if owner is None or not getattr(owner, "_view_initialized", False):
             return
@@ -361,11 +366,43 @@ class AxisAwareNavigationToolbar(NavigationToolbar):
 
     def press_zoom(self, event):
         owner = self._axis_pan_owner
-        if owner is not None and getattr(owner, "_view_initialized", False):
-            if getattr(event, "inaxes", None) is owner.axes_overview:
-                return
-            owner._push_view_history()
-        return super().press_zoom(event)
+        if owner is None or not getattr(owner, "_view_initialized", False):
+            return super().press_zoom(event)
+        if getattr(event, "button", None) not in (1, MouseButton.LEFT):
+            return
+        source_axis = getattr(event, "inaxes", None)
+        if source_axis is not None and source_axis in (
+            owner.axes_overview,
+            owner.axes_overview_right,
+        ):
+            return
+        if not owner._begin_axis_zoom(event):
+            return
+        self._axis_zoom_active = True
+        self._axis_zoom_drag_id = self.canvas.mpl_connect(
+            "motion_notify_event", self.drag_zoom
+        )
+
+    def drag_zoom(self, event):
+        if not self._axis_zoom_active:
+            return super().drag_zoom(event)
+        owner = self._axis_pan_owner
+        rectangle = owner._update_axis_zoom(event) if owner is not None else None
+        if rectangle is None:
+            self.remove_rubberband()
+        else:
+            self.draw_rubberband(event, *rectangle)
+
+    def release_zoom(self, event):
+        if not self._axis_zoom_active:
+            return super().release_zoom(event)
+        self._axis_zoom_active = False
+        self.canvas.mpl_disconnect(self._axis_zoom_drag_id)
+        self.remove_rubberband()
+        owner = self._axis_pan_owner
+        if owner is not None:
+            owner._end_axis_zoom(event)
+            self.set_history_buttons()
 
     def home(self, *args):
         owner = self._axis_pan_owner
@@ -765,6 +802,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._peak_overlay_artists = {}
         self._navigation_interaction_active = False
         self._screen_pan_session = None
+        self._screen_zoom_session = None
         self._screen_preview = None
         self._screen_preview_notice = ""
         self._force_matplotlib_screen_plot = False
@@ -1210,6 +1248,122 @@ class MainWindow(QtWidgets.QMainWindow):
             self._view_state_update_guard = False
         self._request_canvas_draw(throttled=True)
         return True
+
+    def _begin_axis_zoom(self, event):
+        """Start a rubber-band zoom with the PyQtGraph screen's semantics.
+
+        Dragging in the plot zooms X and the panel's own Y axis only (Y2 is
+        left alone on the single panel); dragging on an axis band zooms that
+        axis alone. Returns False when the press is not a zoom start.
+        """
+        self._screen_zoom_session = None
+        region = self._pan_target(event)
+        if region is None:
+            return False
+        normalized = self._normalized_pointer_event(event, hit_region=region)
+        on_axis = region in ("x", "y1", "y2")
+        role = "y2" if region in ("y2", "plot_y2") else "y1"
+        if role == "y2" and self.axes_right is None:
+            return False
+        values = normalized.data_for(role)
+        if (
+            not all(value is not None and math.isfinite(value) for value in values)
+            or normalized.canvas_x is None
+            or normalized.canvas_y is None
+        ):
+            return False
+        configured = self.project.method.zoom_axis
+        mode = (
+            "x" if region == "x"
+            else "y" if on_axis
+            else "both" if configured == "auto"
+            else configured
+        )
+        self._screen_zoom_session = {
+            "start": values,
+            "role": role,
+            "mode": mode,
+            "pixel": (normalized.canvas_x, normalized.canvas_y),
+            "state": self._screen_view_state(),
+        }
+        return True
+
+    def _axis_zoom_values(self, event):
+        session = self._screen_zoom_session
+        normalized = self._normalized_pointer_event(event)
+        values = normalized.data_for(session["role"])
+        if (
+            not all(value is not None and math.isfinite(value) for value in values)
+            or normalized.canvas_x is None
+            or normalized.canvas_y is None
+        ):
+            return None, normalized
+        state = session["state"]
+        x_limits = state.x
+        y_limits = getattr(state, session["role"])
+        return (
+            min(max(values[0], min(x_limits)), max(x_limits)),
+            min(max(values[1], min(y_limits)), max(y_limits)),
+        ), normalized
+
+    def _update_axis_zoom(self, event):
+        """Return the rubber-band rectangle (display pixels) or None."""
+        session = self._screen_zoom_session
+        if session is None:
+            return None
+        values, normalized = self._axis_zoom_values(event)
+        if values is None:
+            return None
+        axis = (
+            self.axes_right
+            if session["role"] == "y2" and self._split_y_axes
+            else self.axes
+        )
+        box = axis.bbox
+        pixel_x, pixel_y = session["pixel"]
+        mode = session["mode"]
+        left, right = (
+            (pixel_x, normalized.canvas_x) if mode != "y" else (box.x0, box.x1)
+        )
+        bottom, top = (
+            (pixel_y, normalized.canvas_y) if mode != "x" else (box.y0, box.y1)
+        )
+        return left, bottom, right, top
+
+    def _end_axis_zoom(self, event):
+        session = self._screen_zoom_session
+        self._screen_zoom_session = None
+        if session is None:
+            return False
+        values, normalized = self._axis_zoom_values_for(session, event)
+        if values is None:
+            return False
+        dx = abs(normalized.canvas_x - session["pixel"][0])
+        dy = abs(normalized.canvas_y - session["pixel"][1])
+        mode = session["mode"]
+        if (
+            (mode == "x" and dx < 3)
+            or (mode == "y" and dy < 3)
+            or (mode == "both" and (dx < 3 or dy < 3))
+        ):
+            return False
+        changes = {}
+        if mode in ("x", "both"):
+            changes["x"] = tuple(sorted((session["start"][0], values[0])))
+        if mode in ("y", "both"):
+            changes[session["role"]] = tuple(
+                sorted((session["start"][1], values[1]))
+            )
+        self._push_view_history()
+        self._apply_view_state(replace(session["state"], **changes))
+        return True
+
+    def _axis_zoom_values_for(self, session, event):
+        self._screen_zoom_session = session
+        try:
+            return self._axis_zoom_values(event)
+        finally:
+            self._screen_zoom_session = None
 
     def _end_axis_pan(self):
         if self._screen_pan_session is None:
@@ -6368,6 +6522,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if getattr(self, "_split_y_axes", False) and self.axes_right is not None:
             edge = 5.0
+            # Issue #334: like the PyQtGraph AxisItem, the X band of the lower
+            # panel includes its tick marks and numbers, not only the axis line.
+            lower = self.axes_right.bbox
+            try:
+                ticks_bbox = self.axes_right.xaxis.get_tightbbox(
+                    self.canvas.get_renderer()
+                )
+            except (AttributeError, RuntimeError):
+                ticks_bbox = None
+            if (
+                ticks_bbox is not None
+                and lower.x0 - edge <= x_value <= lower.x1 + edge
+                and ticks_bbox.y0 - 3.0 <= y_value <= lower.y0 + edge
+            ):
+                return "x"
             for axis, y_target, plot_target in (
                 (self.axes, "y1", "plot_y1"),
                 (self.axes_right, "y2", "plot_y2"),

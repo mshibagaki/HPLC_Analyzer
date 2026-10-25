@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import asdict, replace
 import hashlib
 import json
 import os
@@ -85,6 +85,7 @@ from hplc_app.models import (
     GradientPoint,
     PeakRegion,
     Project,
+    Solvent,
     TextAnnotation,
     VerticalMarker,
     WorkDirectory,
@@ -10361,6 +10362,258 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
             self.app.processEvents()
+
+    def _batch_click_label(self, table, row, shift=False, column=1):
+        left_button = (
+            QtCore.Qt.MouseButton.LeftButton if QT_API == 6 else QtCore.Qt.LeftButton
+        )
+        modifier = (
+            (QtCore.Qt.KeyboardModifier.ShiftModifier if QT_API == 6 else QtCore.Qt.ShiftModifier)
+            if shift
+            else (QtCore.Qt.KeyboardModifier.NoModifier if QT_API == 6 else QtCore.Qt.NoModifier)
+        )
+        rect = table.visualItemRect(table.item(row, column))
+        QtTest.QTest.mouseClick(
+            table.viewport(), left_button, modifier, pos=rect.center()
+        )
+        self.app.processEvents()
+
+    def _batch_gradient_window(self):
+        window = self._five_row_window()
+        source = window.project.datasets[0]
+        source.measurement.gradient = [
+            GradientPoint(0.0, 90.0, 10.0, 0.0, 0.0),
+            GradientPoint(30.0, 10.0, 90.0, 0.0, 0.0),
+        ]
+        source.measurement.solvents["B"] = Solvent(name="Acetonitrile")
+        window.project.gradient_presets["G-A"] = {
+            "gradient": [
+                {"time_min": 0.0, "a_pct": 50.0, "b_pct": 50.0, "c_pct": 0.0, "d_pct": 0.0, "flow_ml_min": 1.0},
+                {"time_min": 10.0, "a_pct": 20.0, "b_pct": 80.0, "c_pct": 0.0, "d_pct": 0.0, "flow_ml_min": 1.0},
+            ],
+            "solvents": {"B": {"name": "Methanol", "composition": ""}},
+        }
+        return window
+
+    def test_batch_dialog_check_click_keeps_shift_anchor_and_checks(self):
+        # Issue #335: a check box click used to move the Shift anchor and the
+        # next Shift selection overwrote every check.
+        window = self._five_row_window()
+        dialog = BatchMetadataDialog(window.project, window.project.datasets[0].id, "ja")
+        try:
+            dialog.show()
+            self.app.processEvents()
+            table = dialog.table
+            self._batch_click_label(table, 1)
+            self.assertEqual(self._marks(table, 0), ".S...")
+            self._batch_click_label(table, 2, shift=True)
+            self.assertEqual(self._marks(table, 0), ".SS..")
+            self._click_check(table, 4, 0)
+            self.assertEqual(self._marks(table, 0), ".SS.S")
+            self.assertEqual(table.currentRow(), 2)
+            self._batch_click_label(table, 3, shift=True)
+            self.assertEqual(self._marks(table, 0), ".SSSS")
+            self.assertEqual(
+                sorted({index.row() for index in table.selectedIndexes()}),
+                [1, 2, 3],
+            )
+            # A plain click still leaves only the clicked row checked.
+            self._batch_click_label(table, 0)
+            self.assertEqual(self._marks(table, 0), "S....")
+        finally:
+            dialog.close()
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_copies_visually_rectangular_range_and_pastes_from_top_left(self):
+        window = self._five_row_window()
+        dialog = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+        try:
+            table = dialog.table
+            header = table.horizontalHeader()
+            # Run ID / Timestamp sit visually next to the label although their
+            # logical numbers are 16 and 17.
+            columns = sorted(
+                (dialog.RUN_ID_COLUMN, dialog.TIMESTAMP_COLUMN, 1),
+                key=header.visualIndex,
+            )
+            table.clearSelection()
+            for column in columns:
+                table.item(0, column).setSelected(True)
+            with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                dialog._copy_selected_cells()
+            warning.assert_not_called()
+            copied = QtWidgets.QApplication.clipboard().text().split("\t")
+            self.assertEqual(
+                copied, [table.item(0, column).text() for column in columns]
+            )
+
+            # Paste starts at the top-left of the selection, not the current cell.
+            table.clearSelection()
+            table.item(1, 4).setSelected(True)
+            table.item(2, 4).setSelected(True)
+            table.setCurrentCell(2, 4)
+            table.item(1, 4).setSelected(True)
+            table.item(2, 4).setSelected(True)
+            QtWidgets.QApplication.clipboard().setText("211\n212")
+            dialog._paste_clipboard()
+            self.assertEqual(
+                [table.item(row, 4).text() for row in (1, 2, 3)],
+                ["211", "212", table.item(3, 4).text()],
+            )
+
+            # One value into a multi-cell selection fills every selected cell.
+            table.clearSelection()
+            for row in range(1, 5):
+                table.item(row, 4).setSelected(True)
+            QtWidgets.QApplication.clipboard().setText("254")
+            dialog._paste_clipboard()
+            self.assertEqual(
+                [table.item(row, 4).text() for row in range(1, 5)], ["254"] * 4
+            )
+            dialog._accept()
+            self.assertEqual(
+                [d.measurement.wavelength_nm for d in window.project.datasets[1:]],
+                [254.0] * 4,
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_gradient_copy_paste_to_several_rows(self):
+        window = self._batch_gradient_window()
+        datasets = window.project.datasets
+        source = datasets[0]
+        dialog = BatchMetadataDialog(window.project, source.id, "en")
+        try:
+            table = dialog.table
+            self.assertEqual(
+                table.item(0, dialog.GRADIENT_COLUMN).text(), "(unsaved, 2 points)"
+            )
+            self.assertEqual(table.item(1, dialog.GRADIENT_COLUMN).text(), "")
+            table.clearSelection()
+            table.setCurrentCell(0, dialog.GRADIENT_COLUMN)
+            dialog._copy_selected_cells()
+            table.clearSelection()
+            for row in (2, 3, 4):
+                table.item(row, dialog.GRADIENT_COLUMN).setSelected(True)
+            table.setCurrentCell(2, dialog.GRADIENT_COLUMN)
+            for row in (2, 3, 4):
+                table.item(row, dialog.GRADIENT_COLUMN).setSelected(True)
+            dialog._paste_clipboard()
+            for row in (2, 3, 4):
+                self.assertEqual(
+                    table.item(row, dialog.GRADIENT_COLUMN).text(),
+                    "(unsaved, 2 points)",
+                )
+            dialog._accept()
+            for target in datasets[2:]:
+                self.assertEqual(
+                    [asdict(p) for p in target.measurement.gradient],
+                    [asdict(p) for p in source.measurement.gradient],
+                )
+                self.assertEqual(target.measurement.solvents["B"].name, "Acetonitrile")
+            self.assertEqual(datasets[1].measurement.gradient, [])
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_gradient_paste_by_preset_name_and_unknown_text(self):
+        window = self._batch_gradient_window()
+        datasets = window.project.datasets
+        dialog = BatchMetadataDialog(window.project, datasets[0].id, "en")
+        try:
+            table = dialog.table
+            column = dialog.GRADIENT_COLUMN
+            table.setCurrentCell(1, column)
+            QtWidgets.QApplication.clipboard().setText("no such gradient")
+            with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                dialog._paste_clipboard()
+            warning.assert_called_once()
+            self.assertIn("no such gradient", warning.call_args.args[2])
+            self.assertEqual(table.item(1, column).text(), "")
+            self.assertEqual(dialog.gradient_assignments, {})
+
+            QtWidgets.QApplication.clipboard().setText("G-A")
+            dialog._paste_clipboard()
+            self.assertEqual(table.item(1, column).text(), "G-A")
+            dialog._accept()
+            self.assertEqual(datasets[1].gradient_preset_name, "G-A")
+            self.assertEqual(datasets[1].measurement.gradient[-1].b_pct, 80.0)
+            self.assertEqual(datasets[1].measurement.solvents["B"].name, "Methanol")
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_gradient_button_applies_to_all_checked_rows_after_confirm(self):
+        window = self._batch_gradient_window()
+        datasets = window.project.datasets
+        dialog = BatchMetadataDialog(window.project, datasets[0].id, "en")
+        try:
+            dialog.table.setCurrentCell(0, 1)
+            dialog._set_all_checks(False)
+            for row in (0, 2, 3):
+                dialog.table.item(row, 0).setCheckState(CHECKED)
+
+            def edit_gradient(gradient_dialog):
+                gradient_dialog.table.item(0, 2).setText("25")
+                gradient_dialog.applied_preset_name = "Fan out"
+                gradient_dialog._accept()
+                return gradient_dialog.result()
+
+            asked = []
+
+            def decline(*args):
+                asked.append(args[2])
+                return QtWidgets.QMessageBox.No
+
+            with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_gradient), \
+                    patch.object(QtWidgets.QMessageBox, "question", side_effect=decline):
+                dialog._edit_selected_gradient()
+            self.assertEqual(asked, ["Apply to 3 rows (3 Runs)?"])
+            self.assertEqual(dialog.detail_overrides, {})
+            self.assertEqual(dialog.table.item(2, dialog.GRADIENT_COLUMN).text(), "")
+
+            with patch("hplc_app.dialogs.dialog_exec", side_effect=edit_gradient), \
+                    patch.object(
+                        QtWidgets.QMessageBox, "question",
+                        return_value=QtWidgets.QMessageBox.Yes,
+                    ):
+                dialog._edit_selected_gradient()
+            dialog._accept()
+            for index in (0, 2, 3):
+                self.assertEqual(datasets[index].gradient_preset_name, "Fan out")
+                self.assertEqual(datasets[index].measurement.gradient[0].b_pct, 25.0)
+            self.assertEqual(datasets[1].measurement.gradient, [])
+            self.assertEqual(datasets[4].measurement.gradient, [])
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_remembers_copy_fields_while_open(self):
+        window = self.make_window()
+        dialog = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+        try:
+            dialog._set_all_checks(False)
+            dialog.table.item(0, 0).setCheckState(CHECKED)
+            seen = []
+
+            def choose(copy_dialog):
+                seen.append(
+                    {f for f, c in copy_dialog.field_checks.items() if c.isChecked()}
+                )
+                for field, check in copy_dialog.field_checks.items():
+                    check.setChecked(field in ("label", "gradient"))
+                return True
+
+            with patch("hplc_app.dialogs.dialog_exec", side_effect=choose):
+                dialog._copy_conditions()
+                dialog._copy_conditions()
+            self.assertNotIn("gradient", seen[0])
+            self.assertEqual(seen[1], {"label", "gradient"})
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_batch_dialog_selection_column_toggles_single_rows_and_shift_ranges(self):
         window = self._five_row_window()

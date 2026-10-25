@@ -1980,6 +1980,75 @@ class BatchConditionTable(QtWidgets.QTableWidget):
         super().__init__(rows, columns, parent)
         self.copy_callback = None
         self.paste_callback = None
+        self._event_modifiers = None
+        self._check_press_row = -1
+
+    @property
+    def extending_selection(self):
+        """True while a Shift/Ctrl event is changing the selection."""
+        modifiers = self._event_modifiers
+        if modifiers is None:
+            return False
+        if QT_API == 6:
+            extend = (
+                QtCore.Qt.KeyboardModifier.ShiftModifier,
+                QtCore.Qt.KeyboardModifier.ControlModifier,
+            )
+        else:
+            extend = (QtCore.Qt.ShiftModifier, QtCore.Qt.ControlModifier)
+        return any(bool(modifiers & flag) for flag in extend)
+
+    def _with_modifiers(self, handler, event):
+        self._event_modifiers = event.modifiers()
+        try:
+            handler(event)
+        finally:
+            self._event_modifiers = None
+
+    def _left_button(self, event):
+        return event.button() == (
+            QtCore.Qt.MouseButton.LeftButton
+            if QT_API == 6
+            else QtCore.Qt.LeftButton
+        )
+
+    def _check_row_at(self, event):
+        position = event.position().toPoint() if QT_API == 6 else event.pos()
+        index = self.indexAt(position)
+        if self._left_button(event) and press_on_check_indicator(
+            self, index, event, (0,)
+        ):
+            return index.row()
+        return -1
+
+    def mousePressEvent(self, event):
+        # A check box click is handled here and never reaches Qt's selection
+        # code: that code would move the current cell and the Shift-selection
+        # anchor to the check box.
+        row = self._check_row_at(event)
+        if row >= 0:
+            self._check_press_row = row
+            event.accept()
+            return
+        self._check_press_row = -1
+        self._with_modifiers(super().mousePressEvent, event)
+
+    def mouseReleaseEvent(self, event):
+        pressed = self._check_press_row
+        if pressed >= 0:
+            self._check_press_row = -1
+            event.accept()
+            if self._check_row_at(event) == pressed:
+                item = self.item(pressed, 0)
+                if item is not None:
+                    item.setCheckState(
+                        UNCHECKED if item.checkState() == CHECKED else CHECKED
+                    )
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self._with_modifiers(super().mouseMoveEvent, event)
 
     def selectionCommand(self, index, event=None):
         if press_on_check_indicator(self, index, event, (0,)):
@@ -1999,7 +2068,7 @@ class BatchConditionTable(QtWidgets.QTableWidget):
             self.paste_callback()
             event.accept()
             return
-        super().keyPressEvent(event)
+        self._with_modifiers(super().keyPressEvent, event)
 
 
 class LeftElideDelegate(QtWidgets.QStyledItemDelegate):
@@ -2232,6 +2301,10 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self._syncing_table = False
         self._syncing_selection_checks = False
         self._check_anchor_row = -1
+        self._last_selection_rows = set()
+        self._gradient_clip = None
+        self._clipboard_text_cache = ""
+        self._last_copy_fields = None
         self.setWindowTitle(
             "測定・試料条件の入力"
             if language == "ja"
@@ -2412,7 +2485,10 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 format_optional(dataset.measurement.molar_absorptivity_214),
                 format_optional(dataset.measurement.molar_absorptivity_280),
                 format_optional(dataset.measurement.molecular_weight_g_mol),
-                dataset.effective_gradient_preset_name(),
+                self._gradient_cell_text(
+                    dataset.effective_gradient_preset_name(),
+                    len(dataset.measurement.gradient),
+                ),
             )
             for column, value in enumerate(values, start=1):
                 item = QtWidgets.QTableWidgetItem(value)
@@ -2532,10 +2608,25 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             format_optional(dataset.measurement.molar_absorptivity_214),
             format_optional(dataset.measurement.molar_absorptivity_280),
             format_optional(dataset.measurement.molecular_weight_g_mol),
-            dataset.effective_gradient_preset_name(),
+            self._gradient_cell_text(
+                dataset.effective_gradient_preset_name(),
+                len(dataset.measurement.gradient),
+            ),
         )
         for column, value in enumerate(values, start=1):
             self.table.item(row, column).setText(value)
+
+    def _gradient_cell_text(self, name: str, point_count: int) -> str:
+        """Display text of a gradient cell; unnamed gradients show their size."""
+        if name:
+            return name
+        if not point_count:
+            return ""
+        return (
+            "（未登録・%d 点）" % point_count
+            if self.language == "ja"
+            else "(unsaved, %d points)" % point_count
+        )
 
     def _cell_double_clicked(self, row: int, column: int):
         if column == self.GRADIENT_COLUMN:
@@ -2598,14 +2689,26 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         selected_rows = {
             index.row() for index in self.table.selectedIndexes()
         }
+        previous_rows = self._last_selection_rows
+        self._last_selection_rows = selected_rows
+        if self.table.extending_selection:
+            # Shift/Ctrl: only rows entering or leaving the selection change;
+            # checks added by other means stay as they are.
+            targets = {row: CHECKED for row in selected_rows - previous_rows}
+            targets.update(
+                {row: UNCHECKED for row in previous_rows - selected_rows}
+            )
+        else:
+            targets = {
+                row: CHECKED if row in selected_rows else UNCHECKED
+                for row in range(self.table.rowCount())
+            }
         self._syncing_selection_checks = True
         try:
-            for row in range(self.table.rowCount()):
+            for row, state in targets.items():
                 item = self.table.item(row, 0)
                 if item is not None:
-                    item.setCheckState(
-                        CHECKED if row in selected_rows else UNCHECKED
-                    )
+                    item.setCheckState(state)
         finally:
             self._syncing_selection_checks = False
 
@@ -2669,19 +2772,30 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             ja if self.language == "ja" else en,
         )
 
+    def _visual_column(self, column: int) -> int:
+        return self.table.horizontalHeader().visualIndex(column)
+
+    def _logical_column(self, visual: int) -> int:
+        return self.table.horizontalHeader().logicalIndex(visual)
+
     def _copy_selected_cells(self):
         indexes = self.table.selectedIndexes()
         if not indexes:
             return
+        # Columns are walked in their on-screen order so a range that looks
+        # rectangular copies even when logical column numbers are not adjacent.
         rows = sorted({index.row() for index in indexes})
-        columns = sorted({index.column() for index in indexes})
-        selected = {(index.row(), index.column()) for index in indexes}
+        visuals = sorted({self._visual_column(index.column()) for index in indexes})
+        selected = {
+            (index.row(), self._visual_column(index.column()))
+            for index in indexes
+        }
         rectangle_rows = range(rows[0], rows[-1] + 1)
-        rectangle_columns = range(columns[0], columns[-1] + 1)
+        rectangle_visuals = range(visuals[0], visuals[-1] + 1)
         rectangle = {
-            (row, column)
+            (row, visual)
             for row in rectangle_rows
-            for column in rectangle_columns
+            for visual in rectangle_visuals
         }
         if selected != rectangle:
             self._clipboard_warning(
@@ -2690,22 +2804,55 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             )
             return
         lines = []
-        for row in rectangle_rows:
+        gradient_cells = {}
+        for row_offset, row in enumerate(rectangle_rows):
             values = []
-            for column in rectangle_columns:
+            for column_offset, visual in enumerate(rectangle_visuals):
+                column = self._logical_column(visual)
                 item = self.table.item(row, column)
                 if column == 0:
                     values.append("1" if item and item.checkState() == CHECKED else "0")
                 else:
                     values.append(item.text() if item is not None else "")
+                if column == self.GRADIENT_COLUMN:
+                    try:
+                        gradient_cells[(row_offset, column_offset)] = (
+                            values[-1],
+                            self._pending_gradient_payload(row),
+                        )
+                    except BatchCellError:
+                        pass
             lines.append("\t".join(values))
-        QtWidgets.QApplication.clipboard().setText("\n".join(lines))
+        text = "\n".join(lines)
+        QtWidgets.QApplication.clipboard().setText(text)
+        # The gradient itself cannot travel as text; remember it for a paste
+        # of exactly this clipboard content back into this dialog.
+        self._gradient_clip = (
+            {"text": text, "cells": gradient_cells} if gradient_cells else None
+        )
+
+    def _resolve_gradient_paste(self, row: int, column: int, grid_position, text):
+        """Return ("payload", payload) or ("preset", name) for pasted text."""
+        clip = self._gradient_clip
+        if clip is not None and clip["text"] == self._clipboard_text_cache:
+            remembered = clip["cells"].get(grid_position)
+            if remembered is not None and remembered[0] == text:
+                return ("payload", remembered[1])
+        if text in self.gradient_presets:
+            return ("preset", text)
+        self._cell_error(
+            row,
+            column,
+            "グラジエントとして貼り付けできない値です: %s" % text,
+            "This value cannot be pasted as a gradient: %s" % text,
+        )
 
     def _paste_clipboard(self):
         text = QtWidgets.QApplication.clipboard().text()
         normalized_text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
         if not normalized_text:
             return
+        self._clipboard_text_cache = normalized_text
         values = [line.split("\t") for line in normalized_text.split("\n")]
         width = len(values[0])
         if not width or any(len(row_values) != width for row_values in values):
@@ -2714,57 +2861,144 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 "Paste TSV rows with the same number of columns.",
             )
             return
-        start_row = self.table.currentRow()
-        start_column = self.table.currentColumn()
-        if start_row < 0 or start_column < 0:
-            return
-        if (
-            start_row + len(values) > self.table.rowCount()
-            or start_column + width > self.table.columnCount()
-        ):
-            self._clipboard_warning(
-                "貼り付け範囲が表の外にはみ出します。",
-                "The paste range extends beyond the table.",
+        selected_indexes = self.table.selectedIndexes()
+        if selected_indexes:
+            # The paste origin is the top-left of the selection (in on-screen
+            # column order), not the current cell.
+            start_row = min(index.row() for index in selected_indexes)
+            start_visual = min(
+                self._visual_column(index.column()) for index in selected_indexes
             )
+        else:
+            start_row = self.table.currentRow()
+            start_visual = (
+                self._visual_column(self.table.currentColumn())
+                if self.table.currentColumn() >= 0 else -1
+            )
+        if start_row < 0 or start_visual < 0:
             return
+        single_value = len(values) == 1 and width == 1
+        if single_value and len(selected_indexes) > 1:
+            # One value into many selected cells, as a spreadsheet does.
+            targets = sorted(
+                (index.row(), self._visual_column(index.column()))
+                for index in selected_indexes
+            )
+            cells = [
+                (row, self._logical_column(visual), values[0][0], (0, 0))
+                for row, visual in targets
+            ]
+        else:
+            if (
+                start_row + len(values) > self.table.rowCount()
+                or start_visual + width > self.table.columnCount()
+            ):
+                self._clipboard_warning(
+                    "貼り付け範囲が表の外にはみ出します。",
+                    "The paste range extends beyond the table.",
+                )
+                return
+            cells = [
+                (
+                    start_row + row_offset,
+                    self._logical_column(start_visual + column_offset),
+                    text_value,
+                    (row_offset, column_offset),
+                )
+                for row_offset, row_values in enumerate(values)
+                for column_offset, text_value in enumerate(row_values)
+            ]
 
         proposed = []
         shared_values = {}
+        gradient_ops = {}
         try:
-            for row_offset, row_values in enumerate(values):
-                row = start_row + row_offset
+            for row, column, text_value, grid_position in cells:
                 dataset = self.project.datasets[row]
-                for column_offset, text_value in enumerate(row_values):
-                    column = start_column + column_offset
-                    if column not in self.EDITABLE_COLUMNS:
+                if column == self.GRADIENT_COLUMN:
+                    operation = self._resolve_gradient_paste(
+                        row, column, grid_position, str(text_value).strip()
+                    )
+                    existing = gradient_ops.get(dataset.run_id)
+                    if existing is not None and existing[0] != operation:
                         self._cell_error(
                             row,
                             column,
-                            "この列には貼り付けできません。",
-                            "This column is not editable.",
+                            "同じRunの同じ項目に異なる値は貼り付けできません。",
+                            "Conflicting values cannot be pasted into the same Run field.",
                         )
-                    parsed = self._validate_cell_value(row, column, text_value)
-                    if column in self.RUN_SHARED_COLUMNS:
-                        key = (dataset.run_id, column)
-                        if key in shared_values and shared_values[key] != parsed:
-                            self._cell_error(
-                                row,
-                                column,
-                                "同じRunの同じ項目に異なる値は貼り付けできません。",
-                                "Conflicting values cannot be pasted into the same Run field.",
-                            )
-                        shared_values[key] = parsed
-                    proposed.append((row, column, str(text_value).strip()))
+                    gradient_ops[dataset.run_id] = (operation, row)
+                    continue
+                if column not in self.EDITABLE_COLUMNS:
+                    self._cell_error(
+                        row,
+                        column,
+                        "この列には貼り付けできません。",
+                        "This column is not editable.",
+                    )
+                parsed = self._validate_cell_value(row, column, text_value)
+                if column in self.RUN_SHARED_COLUMNS:
+                    key = (dataset.run_id, column)
+                    if key in shared_values and shared_values[key] != parsed:
+                        self._cell_error(
+                            row,
+                            column,
+                            "同じRunの同じ項目に異なる値は貼り付けできません。",
+                            "Conflicting values cannot be pasted into the same Run field.",
+                        )
+                    shared_values[key] = parsed
+                proposed.append((row, column, str(text_value).strip()))
+            gradient_plan = []
+            for run_id, (operation, row) in gradient_ops.items():
+                kind, value = operation
+                if kind == "payload":
+                    original = self.project.datasets[row]
+                    working = deepcopy(
+                        self.detail_overrides.get(original.id, original)
+                    )
+                    self._apply_row_to_dataset(row, working)
+                    self._apply_gradient_payload(working, value["name"], value)
+                    gradient_plan.append((run_id, row, "payload", working, value))
+                else:
+                    gradient_plan.append((run_id, row, "preset", None, value))
         except BatchCellError as exc:
             self._show_cell_error(exc)
             return
 
+        # Everything validated: apply.
         for row, column, text_value in proposed:
             self.table.item(row, column).setText(text_value)
-        self.table.clearSelection()
-        self.table.setCurrentCell(start_row, start_column)
-        for row, column, _text_value in proposed:
-            self.table.item(row, column).setSelected(True)
+        for run_id, row, kind, working, value in gradient_plan:
+            original = self.project.datasets[row]
+            if kind == "payload":
+                self.detail_overrides[original.id] = working
+                self.gradient_assignments.pop(run_id, None)
+                display = self._gradient_cell_text(
+                    value["name"], len(value["gradient"])
+                )
+            else:
+                self.gradient_assignments[run_id] = value
+                display = value
+                record_preset_used(self.preset_metadata, "gradients", value)
+            for related_row, related in enumerate(self.project.datasets):
+                if related.run_id == run_id:
+                    self.table.item(related_row, self.GRADIENT_COLUMN).setText(
+                        display
+                    )
+        if gradient_plan:
+            self._refresh_gradient_presets(self.gradient_preset_combo.currentText())
+        # Reselect what was pasted without touching the row checks.
+        self._syncing_selection_checks = True
+        try:
+            self.table.clearSelection()
+            self.table.setCurrentCell(start_row, self._logical_column(start_visual))
+            for row, column, _text, _position in cells:
+                self.table.item(row, column).setSelected(True)
+        finally:
+            self._syncing_selection_checks = False
+        self._last_selection_rows = {
+            index.row() for index in self.table.selectedIndexes()
+        }
 
     def _show_cell_error(self, error: BatchCellError):
         item = self.table.item(error.row, error.column)
@@ -2853,11 +3087,23 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         dataset.gradient_preset_name = name
 
     def _edit_selected_gradient(self, row=None):
-        if isinstance(row, bool) or row is None:
+        from_button = isinstance(row, bool) or row is None
+        if from_button:
             row = self.table.currentRow()
         if not (0 <= int(row) < len(self.project.datasets)):
             return
         row = int(row)
+        # From the button with several checked rows, the edited gradient goes
+        # to every checked row's Run (after an explicit confirmation).
+        extra_rows = []
+        if from_button:
+            checked = self._checked_rows()
+            if len(checked) > 1 and row in checked:
+                own_run = self.project.datasets[row].run_id
+                extra_rows = [
+                    other for other in checked
+                    if self.project.datasets[other].run_id != own_run
+                ]
         original = self.project.datasets[row]
         working = deepcopy(self.detail_overrides.get(original.id, original))
         try:
@@ -2881,18 +3127,75 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         )
         if not dialog_exec(dialog):
             return
+        if extra_rows:
+            target_rows = sorted({row, *extra_rows})
+            run_count = len({self.project.datasets[r].run_id for r in target_rows})
+            if not self._confirm_gradient_fan_out(len(target_rows), run_count):
+                return
         self.gradient_presets = dialog.presets
         self.preset_metadata = dialog.preset_metadata
         self._refresh_gradient_presets(working.effective_gradient_preset_name())
         self.detail_overrides[original.id] = working
         self.gradient_assignments.pop(original.run_id, None)
         gradient_name = working.effective_gradient_preset_name()
+        if extra_rows:
+            payload = {
+                "gradient": [asdict(point) for point in working.measurement.gradient],
+                "solvents": {
+                    line: asdict(solvent)
+                    for line, solvent in working.measurement.solvents.items()
+                },
+            }
+            if not self._apply_gradient_to_rows(extra_rows, gradient_name, payload):
+                return
         for related_row, dataset in enumerate(self.project.datasets):
             if dataset.run_id == original.run_id:
                 self.table.item(related_row, self.GRADIENT_COLUMN).setText(
-                    gradient_name
+                    self._gradient_cell_text(
+                        gradient_name, len(working.measurement.gradient)
+                    )
                 )
         self.table.setCurrentCell(row, self.GRADIENT_COLUMN)
+
+    def _confirm_gradient_fan_out(self, row_count: int, run_count: int) -> bool:
+        answer = QtWidgets.QMessageBox.question(
+            self,
+            "グラジエントの一括適用"
+            if self.language == "ja"
+            else "Apply gradient to checked rows",
+            "%d行（%d Run）に適用します。よろしいですか？" % (row_count, run_count)
+            if self.language == "ja"
+            else "Apply to %d rows (%d Runs)?" % (row_count, run_count),
+        )
+        return answer == QtWidgets.QMessageBox.Yes
+
+    def _apply_gradient_to_rows(self, rows, name: str, payload) -> bool:
+        """Stage one gradient on the Run of every given row (all or nothing)."""
+        plan = []
+        seen_runs = set()
+        try:
+            for target_row in rows:
+                original = self.project.datasets[target_row]
+                if original.run_id in seen_runs:
+                    continue
+                seen_runs.add(original.run_id)
+                working = deepcopy(self.detail_overrides.get(original.id, original))
+                self._apply_row_to_dataset(target_row, working)
+                self._apply_gradient_payload(working, name, payload)
+                plan.append((target_row, original, working))
+        except BatchCellError as exc:
+            self._show_cell_error(exc)
+            return False
+        display = self._gradient_cell_text(name, len(payload["gradient"]))
+        for target_row, original, working in plan:
+            self.detail_overrides[original.id] = working
+            self.gradient_assignments.pop(original.run_id, None)
+            for related_row, related in enumerate(self.project.datasets):
+                if related.run_id == original.run_id:
+                    self.table.item(related_row, self.GRADIENT_COLUMN).setText(
+                        display
+                    )
+        return True
 
     def _refresh_presets(self, selected_name: str = ""):
         selected_name = selected_name or self.preset_combo.currentText()
@@ -3082,13 +3385,21 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             )
             return
         options = [
-            (field, ja, en, default_checked)
+            (
+                field,
+                ja,
+                en,
+                default_checked
+                if self._last_copy_fields is None
+                else field in self._last_copy_fields,
+            )
             for field, _column, ja, en, default_checked in self.COPY_FIELDS
         ]
         dialog = ConditionCopyDialog(options, self.language, self)
         if not dialog_exec(dialog):
             return
         selected = set(dialog.selected_fields())
+        self._last_copy_fields = frozenset(selected)
         if not selected:
             self._selection_message(
                 "コピーする要素を1件以上選択してください。",
@@ -3163,7 +3474,11 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 if related.run_id == original.run_id:
                     self.table.item(
                         related_row, self.GRADIENT_COLUMN
-                    ).setText(gradient["name"])
+                    ).setText(
+                        self._gradient_cell_text(
+                            gradient["name"], len(gradient["gradient"])
+                        )
+                    )
 
     def _refresh_run_identity_columns(self):
         self._syncing_table = True

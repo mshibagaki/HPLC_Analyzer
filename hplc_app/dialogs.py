@@ -744,6 +744,7 @@ class DirectoryImportDialog(QtWidgets.QDialog):
         self.language = language
         self.files = []
         self.duplicate_txt_skip_count = 0
+        self.same_measurement_skip_count = 0
         self.setWindowTitle(
             "ディレクトリ一括読み込み"
             if language == "ja"
@@ -824,9 +825,11 @@ class DirectoryImportDialog(QtWidgets.QDialog):
             )
             self.files = discovery.files
             self.duplicate_txt_skip_count = len(discovery.skipped_txt_files)
+            self.same_measurement_skip_count = discovery.same_measurement_skipped
         except (OSError, ValueError):
             self.files = []
             self.duplicate_txt_skip_count = 0
+            self.same_measurement_skip_count = 0
         root = Path(directory) if directory else None
         for path in self.files:
             self.preview_list.addItem(path.relative_to(root).as_posix())
@@ -845,6 +848,14 @@ class DirectoryImportDialog(QtWidgets.QDialog):
                 if self.language == "ja"
                 else " Preferred .gcd and skipped %d matching .txt file(s)."
                 % self.duplicate_txt_skip_count
+            )
+        if self.same_measurement_skip_count:
+            summary += (
+                " GCD／TXT の同じ測定を%d件スキップします。"
+                % self.same_measurement_skip_count
+                if self.language == "ja"
+                else " Skipping %d GCD/TXT file(s) of the same measurement."
+                % self.same_measurement_skip_count
             )
         self.summary_label.setText(summary)
         self.import_button.setEnabled(bool(self.files))

@@ -7182,17 +7182,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 getattr(dialog, "recursive", False),
             )
         skipped_txt_count = getattr(dialog, "duplicate_txt_skip_count", 0)
-        QtWidgets.QMessageBox.information(
-            self,
-            APP_NAME,
-            "\n".join(
-                (
-                    self.translator("imported", count=imported),
-                    self.translator(
-                        "gcd_txt_skipped", count=skipped_txt_count
-                    ),
+        same_measurement_count = getattr(
+            dialog, "same_measurement_skip_count", 0
+        )
+        message_lines = [
+            self.translator("imported", count=imported),
+            self.translator("gcd_txt_skipped", count=skipped_txt_count),
+        ]
+        if same_measurement_count:
+            message_lines.append(
+                self.translator(
+                    "same_measurement_skipped", count=same_measurement_count
                 )
-            ),
+            )
+        QtWidgets.QMessageBox.information(
+            self, APP_NAME, "\n".join(message_lines)
         )
         self._settings.set(LAST_IMPORT_DIRECTORY, str(directory), sync=True)
         return imported
@@ -7254,13 +7258,17 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.edit_work_directories()
             return 0
+        reload_result = self._work_directory_reload_candidates()
         (
             candidates,
             duplicate_count,
             changed,
             errors,
             skipped_txt_count,
-        ) = self._work_directory_reload_candidates()
+        ) = reload_result
+        same_measurement_count = getattr(
+            reload_result, "same_measurement_skipped", 0
+        )
         lines = [
             self.translator(
                 "work_directory_reload_summary",
@@ -7273,6 +7281,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if skipped_txt_count:
             lines.append(
                 self.translator("gcd_txt_skipped", count=skipped_txt_count)
+            )
+        if same_measurement_count:
+            lines.append(
+                self.translator(
+                    "same_measurement_skipped", count=same_measurement_count
+                )
             )
         if changed:
             lines.append(self.translator("changed_files_held"))

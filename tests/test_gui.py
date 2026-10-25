@@ -10705,6 +10705,268 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    # ---- Issue #334: Matplotlib pan/zoom gestures match the PyQtGraph screen ----
+
+    def _gesture_window(self, view_mode, renderer):
+        window = self.make_window()
+        window.project.method.view_mode = view_mode
+        window._refresh_all(0)
+        window.resize(1400, 900)
+        window.show()
+        if renderer == "pyqtgraph":
+            window.screen_preview_checkbox.setChecked(True)
+        self.app.processEvents()
+        return window
+
+    def _gesture_targets(self, window, view_mode, renderer):
+        """Return (widget, {region: QPoint}) for one renderer, in widget pixels."""
+        core = QtCore
+        if renderer == "pyqtgraph":
+            consumer = window._screen_preview.consumer
+            widget = consumer.widget
+
+            def center(rect):
+                return widget.mapFromScene(rect.center())
+
+            scene = lambda item: item.sceneBoundingRect()
+            if view_mode == "split_y_axes":
+                regions = {
+                    "plot_y1": center(scene(consumer.primary.vb)),
+                    "plot_y2": center(scene(consumer.secondary_plot.vb)),
+                    "x": center(scene(consumer.secondary_plot.getAxis("bottom"))),
+                    "y1": center(scene(consumer.primary.getAxis("left"))),
+                    "y2": center(scene(consumer.secondary_plot.getAxis("left"))),
+                }
+            else:
+                regions = {
+                    "plot": center(scene(consumer.primary.vb)),
+                    "x": center(scene(consumer.primary.getAxis("bottom"))),
+                    "y1": center(scene(consumer.primary.getAxis("left"))),
+                    "y2": center(scene(consumer.primary.getAxis("right"))),
+                }
+            return widget.viewport(), regions
+
+        canvas = window.canvas
+        height = canvas.height()
+
+        def point(x, y):
+            return core.QPoint(int(round(x)), int(round(height - y)))
+
+        if view_mode == "split_y_axes":
+            upper, lower = window.axes.bbox, window.axes_right.bbox
+            regions = {
+                "plot_y1": point((upper.x0 + upper.x1) / 2, (upper.y0 + upper.y1) / 2),
+                "plot_y2": point((lower.x0 + lower.x1) / 2, (lower.y0 + lower.y1) / 2),
+                # Over the tick numbers, not on the axis line.
+                "x": point((lower.x0 + lower.x1) / 2, lower.y0 - 15),
+                "y1": point(upper.x0 - 12, (upper.y0 + upper.y1) / 2),
+                "y2": point(lower.x0 - 12, (lower.y0 + lower.y1) / 2),
+            }
+        else:
+            box = window.axes.bbox
+            middle = (box.y0 + box.y1) / 2
+            regions = {
+                "plot": point((box.x0 + box.x1) / 2, middle),
+                "x": point((box.x0 + box.x1) / 2, box.y0 - 15),
+                "y1": point(box.x0 - 12, middle),
+                "y2": point(box.x1 + 12, middle),
+            }
+        return canvas, regions
+
+    def _gesture_send_mouse(self, widget, kind, position, button, held):
+        core, gui = QtCore, QtGui
+        modifiers = core.Qt.KeyboardModifier.NoModifier
+        self.app.sendEvent(
+            widget,
+            gui.QMouseEvent(
+                kind, core.QPointF(position),
+                core.QPointF(widget.mapToGlobal(position)),
+                button, held, modifiers,
+            ),
+        )
+        self.app.processEvents()
+
+    def _gesture_drag(self, widget, start, offset, button):
+        core = QtCore
+        kinds = core.QEvent.Type
+        none = core.Qt.MouseButton.NoButton
+        end = start + offset
+        middle = core.QPoint(
+            (start.x() + end.x()) // 2, (start.y() + end.y()) // 2
+        )
+        self._gesture_send_mouse(widget, kinds.MouseButtonPress, start, button, button)
+        self._gesture_send_mouse(widget, kinds.MouseMove, middle, none, button)
+        self._gesture_send_mouse(widget, kinds.MouseMove, end, none, button)
+        self._gesture_send_mouse(widget, kinds.MouseButtonRelease, end, button, none)
+
+    def _gesture_wheel(self, widget, position):
+        core, gui = QtCore, QtGui
+        self.app.sendEvent(
+            widget,
+            gui.QWheelEvent(
+                core.QPointF(position),
+                core.QPointF(widget.mapToGlobal(position)),
+                core.QPoint(), core.QPoint(0, 120),
+                core.Qt.MouseButton.NoButton,
+                core.Qt.KeyboardModifier.NoModifier,
+                core.Qt.ScrollPhase.NoScrollPhase, False,
+            ),
+        )
+        self.app.processEvents()
+
+    @staticmethod
+    def _changed_axes(before, after):
+        changed = []
+        for name in ("x", "y1", "y2"):
+            old, new = getattr(before, name), getattr(after, name)
+            if old is None or new is None:
+                continue
+            scale = 1.0 + abs(old[1] - old[0])
+            if max(abs(old[0] - new[0]), abs(old[1] - new[1])) > 1e-9 * scale:
+                changed.append(name)
+        return tuple(changed)
+
+    def _gesture_matrix(self, window, view_mode, renderer, tool):
+        window.mouse_mode_combo.setCurrentIndex(window.mouse_mode_combo.findData(tool))
+        self.app.processEvents()
+        widget, regions = self._gesture_targets(window, view_mode, renderer)
+        buttons = QtCore.Qt.MouseButton
+        results = {}
+        for region, position in regions.items():
+            for operation in ("drag", "right_drag", "wheel"):
+                window._reset_view()
+                self.app.processEvents()
+                before = window._screen_view_state()
+                if operation == "wheel":
+                    self._gesture_wheel(widget, position)
+                else:
+                    if region == "x":
+                        offset = QtCore.QPoint(60, 0)
+                    elif region in ("y1", "y2"):
+                        offset = QtCore.QPoint(0, 40)
+                    else:
+                        offset = QtCore.QPoint(40, 25)
+                    self._gesture_drag(
+                        widget, position, offset,
+                        buttons.LeftButton if operation == "drag" else buttons.RightButton,
+                    )
+                results[(region, operation)] = self._changed_axes(
+                    before, window._screen_view_state()
+                )
+        return results
+
+    @staticmethod
+    def _expected_gesture(view_mode, tool, region, operation):
+        """The PyQtGraph (reference) behavior, as measured in Issue #334."""
+        if operation == "right_drag":
+            return ()
+        axis_band = {"x": ("x",), "y1": ("y1",), "y2": ("y2",)}
+        if region in axis_band:
+            return axis_band[region]
+        if view_mode == "split_y_axes":
+            own = "y1" if region == "plot_y1" else "y2"
+            return ("x", own)
+        if operation == "wheel":
+            return ("x", "y1", "y2")
+        if tool == "zoom":
+            return ("x", "y1")
+        return ("x", "y1", "y2")
+
+    def test_matplotlib_gestures_match_the_pyqtgraph_reference_in_every_mode(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        for view_mode in ("single", "overview_detail", "split_y_axes"):
+            reference = {}
+            matplotlib_results = {}
+            for renderer, store in (
+                ("pyqtgraph", reference),
+                ("matplotlib", matplotlib_results),
+            ):
+                window = self._gesture_window(view_mode, renderer)
+                try:
+                    for tool in ("zoom", "pan"):
+                        for key, value in self._gesture_matrix(
+                            window, view_mode, renderer, tool
+                        ).items():
+                            store[(tool,) + key] = value
+                finally:
+                    window.project.dirty = False
+                    window.close()
+            for key, expected_axes in reference.items():
+                tool, region, operation = key
+                with self.subTest(view_mode=view_mode, gesture=key):
+                    # The reference itself must not drift ...
+                    self.assertEqual(
+                        expected_axes,
+                        self._expected_gesture(view_mode, tool, region, operation),
+                    )
+                    # ... and Matplotlib must change exactly the same axes.
+                    self.assertEqual(matplotlib_results[key], expected_axes)
+
+    def test_matplotlib_zoom_axis_setting_matches_pyqtgraph_for_plot_drags(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        outcomes = {}
+        for renderer in ("pyqtgraph", "matplotlib"):
+            window = self._gesture_window("single", renderer)
+            try:
+                window.mouse_mode_combo.setCurrentIndex(
+                    window.mouse_mode_combo.findData("zoom")
+                )
+                widget, regions = self._gesture_targets(window, "single", renderer)
+                for setting in ("auto", "both", "x", "y"):
+                    window.zoom_axis_combo.setCurrentIndex(
+                        window.zoom_axis_combo.findData(setting)
+                    )
+                    window._reset_view()
+                    self.app.processEvents()
+                    before = window._screen_view_state()
+                    self._gesture_drag(
+                        widget, regions["plot"], QtCore.QPoint(40, 25),
+                        QtCore.Qt.MouseButton.LeftButton,
+                    )
+                    outcomes[(renderer, setting)] = self._changed_axes(
+                        before, window._screen_view_state()
+                    )
+            finally:
+                window.project.dirty = False
+                window.close()
+        for setting in ("auto", "both", "x", "y"):
+            self.assertEqual(
+                outcomes[("matplotlib", setting)],
+                outcomes[("pyqtgraph", setting)],
+                setting,
+            )
+        self.assertEqual(outcomes[("matplotlib", "x")], ("x",))
+        self.assertEqual(outcomes[("matplotlib", "y")], ("y1",))
+
+    def test_matplotlib_zoom_is_one_history_step_and_a_click_is_none(self):
+        window = self._gesture_window("single", "matplotlib")
+        try:
+            window.mouse_mode_combo.setCurrentIndex(
+                window.mouse_mode_combo.findData("zoom")
+            )
+            self.app.processEvents()
+            window._reset_view()
+            self.app.processEvents()
+            widget, regions = self._gesture_targets(window, "single", "matplotlib")
+            initial = window._screen_view_state()
+            left = QtCore.Qt.MouseButton.LeftButton
+            # A bare click (no drag) neither zooms nor adds history.
+            self._gesture_drag(widget, regions["plot"], QtCore.QPoint(0, 0), left)
+            self.assertEqual(window._screen_view_state(), initial)
+            self._gesture_drag(widget, regions["x"], QtCore.QPoint(60, 0), left)
+            zoomed = window._screen_view_state()
+            self.assertNotEqual(zoomed.x, initial.x)
+            self.assertEqual((zoomed.y1, zoomed.y2), (initial.y1, initial.y2))
+            window.toolbar.back()
+            self.assertEqual(window._screen_view_state(), initial)
+            window.toolbar.forward()
+            self.assertEqual(window._screen_view_state(), zoomed)
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_batch_dialog_check_click_keeps_shift_anchor_and_checks(self):
         # Issue #335: a check box click used to move the Shift anchor and the
         # next Shift selection overwrote every check.

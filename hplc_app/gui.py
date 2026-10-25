@@ -125,6 +125,7 @@ from .rendering import (
     apply_legend_frame_and_fill as _apply_legend_frame_and_fill,
     default_render_quality,
     default_trace_color,
+    distinct_trace_colors,
     matplotlib_line_style,
     normalize_render_quality,
     resolve_x_tick_spacing,
@@ -1495,6 +1496,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.color_button = QtWidgets.QPushButton()
         self.show_all_button = QtWidgets.QPushButton()
         self.hide_all_button = QtWidgets.QPushButton()
+        self.distinct_colors_button = QtWidgets.QPushButton()
+        self.default_colors_button = QtWidgets.QPushButton()
         self.move_dataset_up_button = QtWidgets.QPushButton()
         self.move_dataset_down_button = QtWidgets.QPushButton()
         self.group_run_button = QtWidgets.QPushButton()
@@ -1532,6 +1535,8 @@ class MainWindow(QtWidgets.QMainWindow):
         spectrum_display_buttons.addWidget(self.hide_all_button, 0, 1)
         spectrum_display_buttons.addWidget(self.move_dataset_up_button, 1, 0)
         spectrum_display_buttons.addWidget(self.move_dataset_down_button, 1, 1)
+        spectrum_display_buttons.addWidget(self.distinct_colors_button, 2, 0)
+        spectrum_display_buttons.addWidget(self.default_colors_button, 2, 1)
         left_layout.addWidget(self.spectrum_display_group)
         self.import_button.clicked.connect(self.import_ascii)
         self.remove_button.clicked.connect(self.remove_dataset)
@@ -1539,6 +1544,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.color_button.clicked.connect(self.change_color)
         self.show_all_button.clicked.connect(lambda: self.set_all_datasets_visible(True))
         self.hide_all_button.clicked.connect(lambda: self.set_all_datasets_visible(False))
+        self.distinct_colors_button.clicked.connect(
+            lambda: self.set_visible_trace_colors(True)
+        )
+        self.default_colors_button.clicked.connect(
+            lambda: self.set_visible_trace_colors(False)
+        )
         self.move_dataset_up_button.clicked.connect(
             lambda: self.move_selected_dataset(-1)
         )
@@ -2358,6 +2369,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self._plot()
         self._update_title()
 
+    def set_visible_trace_colors(self, distinct: bool):
+        """Give the visible traces distinct explicit colors, or clear them."""
+
+        visible = [item for item in self.project.datasets if item.visible]
+        if not visible:
+            return False
+        if distinct:
+            colors = distinct_trace_colors(len(visible))
+        else:
+            colors = [""] * len(visible)
+        if all(item.color == color for item, color in zip(visible, colors)):
+            return False
+        before = self._capture_analysis_state()
+        for item, color in zip(visible, colors):
+            item.color = color
+        self._push_undo_snapshot(
+            before,
+            self._history_label("見分けやすい色に", "Distinct colors")
+            if distinct
+            else self._history_label("既定の色に戻す", "Default colors"),
+        )
+        self.project.dirty = True
+        self._refresh_dataset_table(self.dataset_table.currentRow())
+        self._plot()
+        self._update_title()
+        return True
+
     def move_selected_dataset(self, direction: int):
         row = self.dataset_table.currentRow()
         target = row + (-1 if direction < 0 else 1)
@@ -2673,6 +2711,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.color_button.setText(t("spectrum"))
         self.show_all_button.setText(t("show_all"))
         self.hide_all_button.setText(t("hide_all"))
+        self.distinct_colors_button.setText(t("distinct_colors"))
+        self.default_colors_button.setText(t("default_colors"))
         self.move_dataset_up_button.setText(t("move_up"))
         self.move_dataset_down_button.setText(t("move_down"))
         self.group_run_button.setText(t("group_run"))

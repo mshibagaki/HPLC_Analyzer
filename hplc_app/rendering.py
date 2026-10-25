@@ -173,6 +173,45 @@ class ScreenRendererCapabilities:
     supports_matplotlib_artists: bool = False
 
 
+# Qualitative palette for the "Distinct colors" command: tab10 without its
+# orange (too close to the amber selection highlight #f59e0b) and without
+# black (reserved for the B% line). Ordered so the first few differ most.
+DISTINCT_TRACE_BASE_COLORS = (
+    "#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#8c564b",
+    "#e377c2", "#17becf", "#7f7f7f", "#bcbd22",
+)
+SELECTION_HIGHLIGHT_COLOR = "#f59e0b"
+# Hue band (degrees) around the amber highlight that extra colors avoid.
+_AVOIDED_HUE_DEGREES = (20.0, 60.0)
+
+
+def distinct_trace_colors(count: int):
+    """Return ``count`` mutually distinguishable colors, deterministically.
+
+    The first nine come from the fixed palette; beyond that, hues are spread
+    evenly over the circle minus the amber band, alternating dark and light
+    so neighbours differ in lightness as well as hue.
+    """
+    import colorsys
+
+    count = max(0, int(count))
+    colors = list(DISTINCT_TRACE_BASE_COLORS[:count])
+    extra = count - len(colors)
+    if extra <= 0:
+        return colors
+    low, high = _AVOIDED_HUE_DEGREES
+    arc = 360.0 - (high - low)
+    for index in range(extra):
+        hue = (high + (index + 0.5) * arc / extra) % 360.0
+        lightness = (0.28, 0.66)[index % 2]
+        red, green, blue = colorsys.hls_to_rgb(hue / 360.0, lightness, 0.75)
+        colors.append(
+            "#%02x%02x%02x"
+            % (round(red * 255), round(green * 255), round(blue * 255))
+        )
+    return colors
+
+
 def default_trace_color(channel, ordinal: int = 0) -> Optional[str]:
     """Return a channel-family default; explicit dataset colors stay authoritative."""
 

@@ -28,6 +28,8 @@ ORGANIZATION_NAME = "Research Tools"
 
 UI_LANGUAGE = "ui/language"
 DATASET_COLUMN_ORDER = "ui/dataset_column_order"
+BATCH_DIALOG_COLUMN_ORDER = "ui/batch_dialog_column_order"
+BATCH_DIALOG_GEOMETRY = "ui/batch_dialog_geometry"
 AUTOMATIC_UPDATE_CHECK = "updates/automatic_check"
 IMPORT_DIRECTORY = "paths/import_directory"
 SAVE_DIRECTORY = "paths/save_directory"
@@ -58,6 +60,12 @@ DEFAULT_DATASET_COLUMN_ORDER = (
     "x_shift",
     "offset",
 )
+
+
+# Logical column numbers of the condition input dialog in on-screen order.
+# Column 0 (Select) is pinned to the left; Run ID (16) and Timestamp (17)
+# sit next to the label by default.
+DEFAULT_BATCH_DIALOG_COLUMN_ORDER = (0, 16, 17) + tuple(range(1, 16)) + (18,)
 
 
 @dataclass(frozen=True)
@@ -157,6 +165,44 @@ def _dataset_column_order(value: Any, fallback: tuple) -> list:
     return normalized
 
 
+def _batch_dialog_column_order(value: Any, fallback: tuple) -> list:
+    decoded = value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return list(fallback)
+    if not isinstance(decoded, (list, tuple)):
+        return list(fallback)
+    try:
+        normalized = [int(item) for item in decoded]
+    except (TypeError, ValueError):
+        return list(fallback)
+    if (
+        sorted(normalized) != sorted(fallback)
+        or not normalized
+        or normalized[0] != 0
+    ):
+        return list(fallback)
+    return normalized
+
+
+def _batch_dialog_geometry(value: Any, fallback: Dict[str, Any]) -> Dict[str, Any]:
+    decoded = _json_object(value, fallback)
+    try:
+        width = int(decoded["width"])
+        height = int(decoded["height"])
+    except (KeyError, TypeError, ValueError):
+        return deepcopy(fallback)
+    if not (300 <= width <= 20000 and 200 <= height <= 20000):
+        return deepcopy(fallback)
+    return {
+        "width": width,
+        "height": height,
+        "maximized": _boolean(decoded.get("maximized", False), False),
+    }
+
+
 def _encode_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -176,6 +222,14 @@ SETTING_SPECS: Dict[str, SettingSpec] = {
         _constant(DEFAULT_DATASET_COLUMN_ORDER),
         _dataset_column_order,
         _encode_json,
+    ),
+    BATCH_DIALOG_COLUMN_ORDER: SettingSpec(
+        _constant(DEFAULT_BATCH_DIALOG_COLUMN_ORDER),
+        _batch_dialog_column_order,
+        _encode_json,
+    ),
+    BATCH_DIALOG_GEOMETRY: SettingSpec(
+        _constant({}), _batch_dialog_geometry, _encode_json
     ),
     AUTOMATIC_UPDATE_CHECK: SettingSpec(_constant(True), _boolean, bool),
     IMPORT_DIRECTORY: _text_spec(),

@@ -195,8 +195,11 @@ from hplc_app.settings_store import (
     ApplicationSettings,
     AUTO_PEAK_SENSITIVITY_PRESETS,
     AUTOMATIC_UPDATE_CHECK,
+    BATCH_DIALOG_COLUMN_ORDER,
+    BATCH_DIALOG_GEOMETRY,
     DATASET_COLUMN_ORDER,
     DATABASE_PATH,
+    DEFAULT_BATCH_DIALOG_COLUMN_ORDER,
     DEFAULT_DATASET_COLUMN_ORDER,
     FIGURE_FORMAT,
     IMPORT_DIRECTORY,
@@ -5808,6 +5811,8 @@ class ApplicationSettingsTests(unittest.TestCase):
         expected_keys = {
             "ui/language",
             "ui/dataset_column_order",
+            "ui/batch_dialog_column_order",
+            "ui/batch_dialog_geometry",
             "updates/automatic_check",
             "paths/import_directory",
             "paths/save_directory",
@@ -5963,6 +5968,29 @@ class ApplicationSettingsTests(unittest.TestCase):
             )
         )
         self.assertFalse(ApplicationSettings(_FakeSettingsBackend(status=1)).sync())
+
+    def test_batch_dialog_settings_reject_invalid_stored_values(self):
+        # Issue #336: window size and column order are application settings.
+        default = list(DEFAULT_BATCH_DIALOG_COLUMN_ORDER)
+        store = ApplicationSettings(_FakeSettingsBackend())
+        self.assertEqual(store.get(BATCH_DIALOG_COLUMN_ORDER), default)
+        self.assertEqual(store.get(BATCH_DIALOG_GEOMETRY), {})
+        for invalid in ("not json", "[1, 2]", [1, 0] + default[2:], default[:-1], [0, 0] + default[2:]):
+            backend = _FakeSettingsBackend()
+            backend.setValue(BATCH_DIALOG_COLUMN_ORDER, invalid)
+            self.assertEqual(ApplicationSettings(backend).get(BATCH_DIALOG_COLUMN_ORDER), default)
+        shuffled = [0, 18, 3, 2, 1] + [n for n in default if n not in (0, 18, 3, 2, 1)]
+        self.assertTrue(store.set(BATCH_DIALOG_COLUMN_ORDER, shuffled))
+        self.assertEqual(store.get(BATCH_DIALOG_COLUMN_ORDER), shuffled)
+        self.assertTrue(store.set(BATCH_DIALOG_GEOMETRY, {"width": 900, "height": 500, "maximized": True}))
+        self.assertEqual(
+            store.get(BATCH_DIALOG_GEOMETRY),
+            {"width": 900, "height": 500, "maximized": True},
+        )
+        for invalid in ({"width": 10, "height": 500}, {"width": "x"}, "garbage"):
+            backend = _FakeSettingsBackend()
+            backend.setValue(BATCH_DIALOG_GEOMETRY, invalid)
+            self.assertEqual(ApplicationSettings(backend).get(BATCH_DIALOG_GEOMETRY), {})
 
     def test_gui_has_no_direct_qsettings_key_access(self):
         gui_source = (ROOT / "hplc_app" / "gui.py").read_text(encoding="utf-8")

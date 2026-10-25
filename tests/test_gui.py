@@ -10486,6 +10486,225 @@ class GuiTests(unittest.TestCase):
             window.project.dirty = False
             window.close()
 
+    def _sorted_dialog(self):
+        window = self._five_row_window()
+        wavelengths = ["10", "9", "", "280", "214"]
+        for dataset, value in zip(window.project.datasets, wavelengths):
+            dataset.measurement.wavelength_nm = float(value) if value else None
+        dialog = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+        return window, dialog
+
+    def test_batch_dialog_has_maximize_button_and_remembers_size(self):
+        # Issue #336: size / maximized state are application settings.
+        window = self._five_row_window()
+        try:
+            dialog = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+            hint = (
+                QtCore.Qt.WindowType.WindowMaximizeButtonHint
+                if QT_API == 6
+                else QtCore.Qt.WindowMaximizeButtonHint
+            )
+            self.assertTrue(bool(dialog.windowFlags() & hint))
+            dialog.resize(930, 510)
+            dialog.reject()
+            again = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+            self.assertEqual((again.width(), again.height()), (930, 510))
+            self.assertFalse(again.isMaximized())
+            again.reject()
+
+            from hplc_app.settings_store import ApplicationSettings, BATCH_DIALOG_GEOMETRY
+
+            ApplicationSettings().set(
+                BATCH_DIALOG_GEOMETRY,
+                {"width": 800, "height": 400, "maximized": True},
+                sync=True,
+            )
+            maximized = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+            state = (
+                QtCore.Qt.WindowState.WindowMaximized
+                if QT_API == 6
+                else QtCore.Qt.WindowMaximized
+            )
+            self.assertTrue(bool(maximized.windowState() & state))
+            maximized.reject()
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_header_click_sorts_display_only_and_third_click_restores(self):
+        window, dialog = self._sorted_dialog()
+        try:
+            ids = [dataset.id for dataset in window.project.datasets]
+            dialog._header_clicked(4)
+            self.assertEqual(dialog.displayed_rows(), [1, 0, 4, 3, 2])  # 9 < 10, blank last
+            dialog._header_clicked(4)
+            self.assertEqual(dialog.displayed_rows(), [3, 4, 0, 1, 2])  # blank stays last
+            dialog._header_clicked(4)
+            self.assertEqual(dialog.displayed_rows(), [0, 1, 2, 3, 4])
+            dialog._header_clicked(4)
+            dialog._accept()
+            self.assertEqual([d.id for d in window.project.datasets], ids)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_sort_by_label_is_natural_and_by_select_puts_checked_first(self):
+        window, dialog = self._sorted_dialog()
+        try:
+            for row, label in enumerate(["T10", "t9", "T1", "b", "A"]):
+                dialog.table.item(row, 1).setText(label)
+            dialog._header_clicked(1)
+            self.assertEqual(
+                [dialog.table.item(row, 1).text() for row in dialog.displayed_rows()],
+                ["A", "b", "T1", "t9", "T10"],
+            )
+            dialog._set_all_checks(False)
+            dialog.table.item(3, 0).setCheckState(CHECKED)
+            dialog._header_clicked(0)
+            self.assertEqual(dialog.displayed_rows()[0], 3)
+            dialog.reject()
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_edits_in_a_sorted_view_reach_the_displayed_measurement(self):
+        window, dialog = self._sorted_dialog()
+        try:
+            datasets = window.project.datasets
+            ids = [dataset.id for dataset in datasets]
+            dialog._header_clicked(4)  # displayed: 1, 0, 4, 3, 2
+            shown = dialog.displayed_rows()
+            flows_before = [d.measurement.flow_rate_ml_min for d in datasets]
+
+            # Direct edit of the third displayed row.
+            third = shown[2]
+            dialog.table.item(third, 6).setText("0.75")
+
+            # Paste starts at the selected displayed row and walks displayed rows.
+            dialog.table.clearSelection()
+            dialog.table.setCurrentCell(shown[3], 5)
+            QtWidgets.QApplication.clipboard().setText("3\\n4".replace("\\n", "\n"))
+            dialog._paste_clipboard()
+
+            # Preset applied to a checked displayed row.
+            dialog.presets["P"] = {"column_name": "C18-sorted"}
+            dialog.preset_combo.clear()
+            dialog.preset_combo.addItem("P")
+            dialog.preset_combo.setCurrentText("P")
+            dialog._set_all_checks(False)
+            dialog.table.item(shown[0], 0).setCheckState(CHECKED)
+            dialog._apply_preset()
+
+            dialog._accept()
+            self.assertEqual([d.id for d in datasets], ids)
+            changed = {
+                index: d.measurement.flow_rate_ml_min
+                for index, d in enumerate(datasets)
+                if d.measurement.flow_rate_ml_min != flows_before[index]
+            }
+            self.assertEqual(changed, {third: 0.75})
+            self.assertEqual(datasets[shown[3]].measurement.aux_range_au_per_v, 3.0)
+            self.assertEqual(datasets[shown[4]].measurement.aux_range_au_per_v, 4.0)
+            self.assertEqual(datasets[shown[0]].measurement.column_name, "C18-sorted")
+            for index in range(5):
+                if index != shown[0]:
+                    self.assertNotEqual(datasets[index].measurement.column_name, "C18-sorted")
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_gradient_and_runs_follow_the_displayed_rows_when_sorted(self):
+        window, dialog = self._sorted_dialog()
+        try:
+            datasets = window.project.datasets
+            window.project.gradient_presets["G-S"] = {
+                "gradient": [
+                    {"time_min": 0.0, "a_pct": 70.0, "b_pct": 30.0, "c_pct": 0.0, "d_pct": 0.0, "flow_ml_min": 1.0},
+                    {"time_min": 5.0, "a_pct": 10.0, "b_pct": 90.0, "c_pct": 0.0, "d_pct": 0.0, "flow_ml_min": 1.0},
+                ],
+                "solvents": {},
+            }
+            dialog.gradient_presets = deepcopy(window.project.gradient_presets)
+            dialog._header_clicked(4)
+            shown = dialog.displayed_rows()
+            # Gradient preset on the first displayed row.
+            dialog._set_all_checks(False)
+            dialog.table.item(shown[0], 0).setCheckState(CHECKED)
+            dialog.gradient_preset_combo.clear()
+            dialog.gradient_preset_combo.addItem("G-S")
+            dialog.gradient_preset_combo.setCurrentText("G-S")
+            dialog._apply_gradient_preset()
+            # Copy a condition from the second displayed row to the third.
+            dialog._set_all_checks(False)
+            dialog.table.item(shown[1], 0).setCheckState(CHECKED)
+            dialog.table.item(shown[1], 9).setText("37")
+            with patch(
+                "hplc_app.dialogs.dialog_exec",
+                side_effect=lambda copy_dialog: (
+                    [c.setChecked(f == "column_temperature_c")
+                     for f, c in copy_dialog.field_checks.items()],
+                    True,
+                )[1],
+            ):
+                dialog._copy_conditions()
+            dialog._set_all_checks(False)
+            dialog.table.item(shown[2], 0).setCheckState(CHECKED)
+            dialog._paste_conditions()
+            dialog._accept()
+            self.assertEqual(datasets[shown[0]].gradient_preset_name, "G-S")
+            self.assertEqual(datasets[shown[0]].measurement.gradient[-1].b_pct, 90.0)
+            self.assertEqual(datasets[shown[2]].measurement.column_temperature_c, 37.0)
+            others = [i for i in range(5) if i not in (shown[0],)]
+            for index in others:
+                self.assertNotEqual(datasets[index].gradient_preset_name, "G-S")
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_batch_dialog_columns_move_but_select_stays_left_and_order_persists(self):
+        window = self._five_row_window()
+        try:
+            dialog = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+            header = dialog.table.horizontalHeader()
+            self.assertEqual(
+                dialog.column_order(), [0, 16, 17] + list(range(1, 16)) + [18]
+            )
+            # Move Wavelength (4) next to Label.
+            header.moveSection(header.visualIndex(4), 4)
+            self.assertEqual(dialog.column_order()[0], 0)
+            moved = dialog.column_order()
+            # Dragging the Select column away snaps back to the left edge.
+            header.moveSection(0, 5)
+            self.assertEqual(dialog.column_order()[0], 0)
+            moved = dialog.column_order()
+            dialog.reject()
+
+            again = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+            self.assertEqual(again.column_order(), moved)
+            # A rectangle that is visually contiguous still copies after the move.
+            visual = again.table.horizontalHeader().visualIndex
+            first, second = sorted((1, 4), key=visual)
+            again.table.clearSelection()
+            again.table.item(0, first).setSelected(True)
+            again.table.item(0, second).setSelected(True)
+            if abs(visual(first) - visual(second)) == 1:
+                with patch.object(QtWidgets.QMessageBox, "warning") as warning:
+                    again._copy_selected_cells()
+                warning.assert_not_called()
+            again.reset_column_order()
+            self.assertEqual(
+                again.column_order(), [0, 16, 17] + list(range(1, 16)) + [18]
+            )
+            again.reject()
+            third = BatchMetadataDialog(window.project, window.project.datasets[0].id, "en")
+            self.assertEqual(
+                third.column_order(), [0, 16, 17] + list(range(1, 16)) + [18]
+            )
+            third.reject()
+        finally:
+            window.project.dirty = False
+            window.close()
+
     def test_batch_dialog_check_click_keeps_shift_anchor_and_checks(self):
         # Issue #335: a check box click used to move the Shift anchor and the
         # next Shift selection overwrote every check.

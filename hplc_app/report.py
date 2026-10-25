@@ -21,6 +21,7 @@ from .peak_fitting import (
     is_saturation_corrected,
 )
 from .rendering import (
+    GRADIENT_AXIS_RANGE,
     apply_legend_frame_and_fill,
     matplotlib_line_style,
     resolve_x_tick_spacing,
@@ -489,7 +490,7 @@ def _plot_dataset(
             linestyle=":",
             linewidth=0.9,
         )
-        gradient_axis.set_ylim(0.0, 100.0)
+        gradient_axis.set_ylim(*GRADIENT_AXIS_RANGE)
         gradient_axis.set_ylabel(project.method.gradient_axis_label or "Mobile phase B (%)")
     if fitted_plotted:
         legend = axis.legend(frameon=True, fontsize=6.5)

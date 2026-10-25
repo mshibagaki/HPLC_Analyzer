@@ -9,7 +9,7 @@ import weakref
 import numpy as np
 
 from .models import normalize_line_style
-from .rendering import minmax_decimate, screen_point_budget
+from .rendering import GRADIENT_AXIS_RANGE, minmax_decimate, screen_point_budget
 from .screen_events import ScreenPointerEvent
 from .screen_navigation import (
     ScreenOverviewState, ScreenViewState, compose_overview_state,
@@ -156,7 +156,7 @@ class PyQtGraphSceneConsumer:
         self.primary.scene().addItem(self.gradient)
         self.gradient_axis.linkToView(self.gradient)
         self.gradient.setXLink(self.primary)
-        self.gradient.setYRange(0.0, 100.0, padding=0.0)
+        self.gradient.setYRange(*GRADIENT_AXIS_RANGE, padding=0.0)
         self.gradient_layers = [(self.gradient, self.gradient_axis, self.primary)]
         if self.split_y_axes:
             gradient_secondary = self.pg.ViewBox()
@@ -222,12 +222,16 @@ class PyQtGraphSceneConsumer:
         horizontal = getattr(orientations, "Horizontal")
         vertical = getattr(orientations, "Vertical")
         self.navigation_scrollbars = {}
-        for name, orientation in (
+        scrollbar_specs = [
             ("overview_x", horizontal),
             ("overview_y", vertical),
             ("detail_x", horizontal),
             ("detail_y", vertical),
-        ):
+        ]
+        if self.split_y_axes:
+            # Two-screen mode: the lower panel gets its own Y2 bar.
+            scrollbar_specs.append(("detail_y2", vertical))
+        for name, orientation in scrollbar_specs:
             scrollbar = qt_widgets.QScrollBar(
                 orientation, self.widget.viewport()
             )
@@ -245,6 +249,7 @@ class PyQtGraphSceneConsumer:
         self.overview_y_scrollbar = self.navigation_scrollbars["overview_y"]
         self.detail_x_scrollbar = self.navigation_scrollbars["detail_x"]
         self.detail_y_scrollbar = self.navigation_scrollbars["detail_y"]
+        self.detail_y2_scrollbar = self.navigation_scrollbars.get("detail_y2")
         self.overview_buttons = []
         for text, command, tooltip in (
             ("+", "zoom_in", "Zoom overview in"),
@@ -367,6 +372,8 @@ class PyQtGraphSceneConsumer:
     def _set_detail_controls_visible(self, visible):
         self.detail_x_scrollbar.setVisible(bool(visible))
         self.detail_y_scrollbar.setVisible(bool(visible))
+        if self.detail_y2_scrollbar is not None:
+            self.detail_y2_scrollbar.setVisible(bool(visible))
 
     def _layout_overview_controls(self):
         if not getattr(self, "overview_state", None) or not self.overview_state.enabled:
@@ -429,10 +436,30 @@ class PyQtGraphSceneConsumer:
         detail_top = int(detail_top_left.y())
         detail_bottom = int(detail_bottom_right.y())
         vertical_width = 18
+        # Two-screen mode: Y1 keeps its bar beside the upper panel, Y2 gets
+        # its own beside the lower panel, and the shared X bar moves below the
+        # lower panel so it no longer covers the split handle between them.
+        x_left, x_right, x_bottom = detail_left, detail_right, detail_bottom
+        if self.secondary_plot is not None and self.detail_y2_scrollbar is not None:
+            lower_rectangle = self.secondary_plot.sceneBoundingRect()
+            lower_top_left = self.widget.mapFromScene(lower_rectangle.topLeft())
+            lower_bottom_right = self.widget.mapFromScene(
+                lower_rectangle.bottomRight()
+            )
+            x_left = int(lower_top_left.x())
+            x_right = int(lower_bottom_right.x())
+            x_bottom = int(lower_bottom_right.y())
+            self.detail_y2_scrollbar.setGeometry(
+                x_right + 1,
+                int(lower_top_left.y()),
+                vertical_width,
+                max(0, x_bottom - int(lower_top_left.y())),
+            )
+            self.detail_y2_scrollbar.raise_()
         self.detail_x_scrollbar.setGeometry(
-            detail_left,
-            detail_bottom + 1,
-            max(0, detail_right - detail_left),
+            x_left,
+            x_bottom + 1,
+            max(0, x_right - x_left),
             18,
         )
         self.detail_y_scrollbar.setGeometry(
@@ -450,6 +477,9 @@ class PyQtGraphSceneConsumer:
             "overview_y": self._range_tuple(self.overview.viewRange()[1]),
             "detail_x": self._range_tuple(self.primary.viewRange()[0]),
             "detail_y": self._range_tuple(self.primary.viewRange()[1]),
+            "detail_y2": self._range_tuple(
+                (self.secondary_plot or self.primary).viewRange()[1]
+            ),
         }
         window = windows[name]
         bounds = (
@@ -1091,7 +1121,7 @@ class PyQtGraphSceneConsumer:
             self.secondary.enableAutoRange()
             self.overview.enableAutoRange()
             self.overview_secondary.enableAutoRange()
-        self.gradient.setYRange(0.0, 100.0, padding=0.0)
+        self.gradient.setYRange(*GRADIENT_AXIS_RANGE, padding=0.0)
         self._sync_auxiliary_views()
         if view_state is None or overview_state is None:
             # Standalone consumers still resolve their initial data range before

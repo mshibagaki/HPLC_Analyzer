@@ -20,6 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from hplc_app.analysis import recalculate_dataset_peaks
 from hplc_app.database import database_sections
+from hplc_app.import_batch import ChromatogramDiscovery
 from hplc_app.rendering import GRADIENT_AXIS_RANGE
 from hplc_app.dialogs import (
     AnalytePresetRegistrationDialog,
@@ -10394,6 +10395,32 @@ class GuiTests(unittest.TestCase):
             "solvents": {"B": {"name": "Methanol", "composition": ""}},
         }
         return window
+
+    def test_directory_import_dialog_reports_same_measurement_skips(self):
+        # Issue #338: the skipped GCD/TXT pairs are reported next to the
+        # existing same-folder note, in both languages.
+        window = self.make_window()
+        try:
+            for language, fragment in (
+                ("en", "Skipping 2 GCD/TXT"),
+                ("ja", "同じ測定を2件スキップ"),
+            ):
+                with tempfile.TemporaryDirectory() as directory:
+                    dialog = DirectoryImportDialog(directory, language)
+                    with patch(
+                        "hplc_app.dialogs.discover_chromatogram_files_with_report",
+                        return_value=ChromatogramDiscovery([], [], 2),
+                    ):
+                        dialog.refresh_preview()
+                    self.assertEqual(dialog.same_measurement_skip_count, 2)
+                    self.assertIn(fragment, dialog.summary_label.text())
+                    dialog.close()
+            self.assertIn(
+                "2", window.translator("same_measurement_skipped", count=2)
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
 
     def test_batch_dialog_check_click_keeps_shift_anchor_and_checks(self):
         # Issue #335: a check box click used to move the Shift anchor and the

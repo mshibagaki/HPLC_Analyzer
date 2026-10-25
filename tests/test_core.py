@@ -117,6 +117,8 @@ from hplc_app.report import (
     render_analysis_report_pages,
 )
 from hplc_app.rendering import (
+    SELECTION_HIGHLIGHT_COLOR,
+    distinct_trace_colors,
     CHANNEL_COLOR_PALETTES,
     HIGH_QUALITY,
     LIGHTWEIGHT,
@@ -5969,6 +5971,78 @@ class ApplicationSettingsTests(unittest.TestCase):
         self.assertNotIn("._settings.setValue(", gui_source)
         for key in SETTING_SPECS:
             self.assertNotIn('"%s"' % key, gui_source)
+
+
+class DistinctTraceColorTests(unittest.TestCase):
+    """Issue #337: palette for the "Distinct colors" command."""
+
+    # CIE76 colour difference thresholds (documented in the pull request).
+    MINIMUM_PAIR_DELTA_E_UP_TO_NINE = 25.0
+    MINIMUM_PAIR_DELTA_E_BEYOND = 20.0
+    MINIMUM_DELTA_E_FROM_HIGHLIGHT = 25.0
+
+    @staticmethod
+    def lab(color):
+        channels = []
+        for offset in (1, 3, 5):
+            value = int(color[offset:offset + 2], 16) / 255.0
+            channels.append(
+                ((value + 0.055) / 1.055) ** 2.4
+                if value > 0.04045
+                else value / 12.92
+            )
+        red, green, blue = channels
+        x = (0.4124 * red + 0.3576 * green + 0.1805 * blue) / 0.95047
+        y = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+        z = (0.0193 * red + 0.1192 * green + 0.9505 * blue) / 1.08883
+
+        def curve(t):
+            return t ** (1.0 / 3.0) if t > 0.008856 else 7.787 * t + 16.0 / 116.0
+
+        fx, fy, fz = curve(x), curve(y), curve(z)
+        return (116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz))
+
+    def delta_e(self, first, second):
+        return math.dist(self.lab(first), self.lab(second))
+
+    def minimum_pair_delta_e(self, colors):
+        return min(
+            self.delta_e(a, b)
+            for index, a in enumerate(colors)
+            for b in colors[index + 1:]
+        )
+
+    def test_up_to_nine_colors_are_clearly_different(self):
+        for count in range(2, 10):
+            colors = distinct_trace_colors(count)
+            self.assertEqual(len(colors), count)
+            self.assertGreaterEqual(
+                self.minimum_pair_delta_e(colors),
+                self.MINIMUM_PAIR_DELTA_E_UP_TO_NINE,
+                count,
+            )
+
+    def test_fifteen_and_more_colors_are_all_different_and_avoid_the_highlight(self):
+        for count in (10, 15, 24):
+            colors = distinct_trace_colors(count)
+            self.assertEqual(len(set(colors)), count)
+            for color in colors:
+                self.assertGreaterEqual(
+                    self.delta_e(color, SELECTION_HIGHLIGHT_COLOR),
+                    self.MINIMUM_DELTA_E_FROM_HIGHLIGHT,
+                    (count, color),
+                )
+        self.assertGreaterEqual(
+            self.minimum_pair_delta_e(distinct_trace_colors(15)),
+            self.MINIMUM_PAIR_DELTA_E_BEYOND,
+        )
+
+    def test_colors_are_deterministic_and_never_black(self):
+        self.assertEqual(distinct_trace_colors(15), distinct_trace_colors(15))
+        self.assertEqual(distinct_trace_colors(0), [])
+        for color in distinct_trace_colors(24):
+            self.assertNotEqual(color.lower(), "#000000")
+            self.assertGreater(self.lab(color)[0], 15.0)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from hplc_app.analysis import recalculate_dataset_peaks
 from hplc_app.database import database_sections
 from hplc_app.import_batch import ChromatogramDiscovery
-from hplc_app.rendering import GRADIENT_AXIS_RANGE
+from hplc_app.rendering import GRADIENT_AXIS_RANGE, distinct_trace_colors
 from hplc_app.dialogs import (
     AnalytePresetRegistrationDialog,
     AutoPeakDetectionDialog,
@@ -10418,6 +10418,70 @@ class GuiTests(unittest.TestCase):
             self.assertIn(
                 "2", window.translator("same_measurement_skipped", count=2)
             )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_distinct_colors_button_colors_only_visible_traces_in_one_undo_step(self):
+        window = self._five_row_window()
+        try:
+            datasets = window.project.datasets
+            for dataset in datasets:
+                dataset.color = ""
+            datasets[1].visible = False
+            datasets[3].visible = False
+            datasets[3].color = "#123456"
+            window._refresh_all(0)
+            before = [dataset.color for dataset in datasets]
+            self.assertEqual(window.distinct_colors_button.text(), "見分けやすい色に")
+            window.distinct_colors_button.click()
+            visible = [d for d in datasets if d.visible]
+            colors = [d.color for d in visible]
+            self.assertEqual(colors, distinct_trace_colors(3))
+            self.assertEqual(len(set(colors)), 3)
+            self.assertEqual(datasets[1].color, before[1])
+            self.assertEqual(datasets[3].color, "#123456")
+            self.assertEqual(len(window._undo_stack), 1)
+            window.undo()
+            self.assertEqual([d.color for d in datasets], before)
+            window.redo()
+            self.assertEqual([d.color for d in visible], colors)
+            self.assertEqual(datasets[3].color, "#123456")
+
+            window.default_colors_button.click()
+            self.assertEqual([d.color for d in visible], ["", "", ""])
+            self.assertEqual(datasets[3].color, "#123456")
+            window.undo()
+            self.assertEqual([d.color for d in visible], colors)
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_distinct_colors_reach_the_screen_and_png_export_and_survive_save(self):
+        window = self._five_row_window()
+        try:
+            datasets = window.project.datasets
+            window.distinct_colors_button.click()
+            expected = distinct_trace_colors(len(datasets))
+            self.assertEqual([d.color for d in datasets], expected)
+            self.assertEqual(
+                [dataset_display_color(d, index) for index, d in enumerate(datasets)],
+                expected,
+            )
+            lines = [line.get_color() for line in window.axes.get_lines()]
+            for color in expected:
+                self.assertIn(color, lines)
+            scene = getattr(window, "_screen_scene", None)
+            if scene is not None:
+                self.assertEqual([t.color for t in scene.traces], expected)
+
+            from hplc_app.project_io import load_project, save_project
+
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "colors.hplcproj"
+                save_project(str(path), window.project)
+                reloaded = load_project(str(path))
+            self.assertEqual([d.color for d in reloaded.datasets], expected)
         finally:
             window.project.dirty = False
             window.close()

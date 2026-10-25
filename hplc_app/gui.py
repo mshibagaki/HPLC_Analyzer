@@ -7824,6 +7824,7 @@ class MainWindow(QtWidgets.QMainWindow):
             group_runs_callback=group_runs,
             ungroup_runs_callback=ungroup_runs,
             analyte_presets=self._global_analyte_presets,
+            settings=self._settings,
         )
         if dialog_exec(dialog):
             self._global_preset_metadata = dialog.preset_metadata

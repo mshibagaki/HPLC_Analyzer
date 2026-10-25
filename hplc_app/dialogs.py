@@ -5,6 +5,7 @@ from dataclasses import asdict
 import json
 import math
 from pathlib import Path
+import re
 from typing import Dict, Optional
 
 import matplotlib
@@ -70,6 +71,12 @@ from .rendering import (
 from .screen_scene import (
     MAX_FRACTION_BOUNDARY_LINES,
     fraction_boundary_count,
+)
+from .settings_store import (
+    ApplicationSettings,
+    BATCH_DIALOG_COLUMN_ORDER,
+    BATCH_DIALOG_GEOMETRY,
+    DEFAULT_BATCH_DIALOG_COLUMN_ORDER,
 )
 from .qt_compat import (
     CHECKED,
@@ -2289,11 +2296,17 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         group_runs_callback=None,
         ungroup_runs_callback=None,
         analyte_presets=None,
+        settings=None,
     ):
         super().__init__(parent)
         self.project = project
         self.language = language
         self.selected_dataset_id = selected_dataset_id
+        # Window size and column order are application settings, never part
+        # of the project.
+        self._app_settings = settings if settings is not None else ApplicationSettings()
+        self._sort_state = None
+        self._column_move_guard = False
         self.presets = sanitize_condition_presets(project.condition_presets)
         self.gradient_presets = deepcopy(project.gradient_presets)
         self.analyte_presets = sanitize_analyte_presets(analyte_presets)
@@ -2322,6 +2335,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             else "Measurement / sample conditions input"
         )
         self.resize(1250, 620)
+        self._enable_maximize()
+        self._restore_geometry()
         root = QtWidgets.QVBoxLayout(self)
 
         preset_row = QtWidgets.QHBoxLayout()
@@ -2522,6 +2537,17 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         header = self.table.horizontalHeader()
         header.moveSection(header.visualIndex(self.RUN_ID_COLUMN), 1)
         header.moveSection(header.visualIndex(self.TIMESTAMP_COLUMN), 2)
+        self._apply_column_order(self._app_settings.get(BATCH_DIALOG_COLUMN_ORDER))
+        header.setSectionsMovable(True)
+        header.setSectionsClickable(True)
+        header.sectionMoved.connect(self._column_moved)
+        header.sectionClicked.connect(self._header_clicked)
+        header.setContextMenuPolicy(
+            QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+            if QT_API == 6
+            else QtCore.Qt.CustomContextMenu
+        )
+        header.customContextMenuRequested.connect(self._header_context_menu)
         self.table.resizeColumnsToContents()
         self.table.setColumnWidth(self.SOURCE_COLUMN, 320)
         self.table.setItemDelegateForColumn(
@@ -2638,6 +2664,186 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             if self.language == "ja"
             else "(unsaved, %d points)" % point_count
         )
+
+    # ---- window, column order and display-only row sorting (Issue #336) ----
+
+    NUMERIC_SORT_COLUMNS = frozenset((3, 4, 5, 6, 7, 9, 10, 12, 13, 14))
+
+    def _enable_maximize(self):
+        if QT_API == 6:
+            hints = (
+                QtCore.Qt.WindowType.WindowMaximizeButtonHint
+                | QtCore.Qt.WindowType.WindowMinimizeButtonHint
+            )
+        else:
+            hints = (
+                QtCore.Qt.WindowMaximizeButtonHint
+                | QtCore.Qt.WindowMinimizeButtonHint
+            )
+        self.setWindowFlags(self.windowFlags() | hints)
+
+    def _restore_geometry(self):
+        stored = self._app_settings.get(BATCH_DIALOG_GEOMETRY)
+        if not stored:
+            return
+        self.resize(stored["width"], stored["height"])
+        if stored.get("maximized"):
+            state = (
+                QtCore.Qt.WindowState.WindowMaximized
+                if QT_API == 6
+                else QtCore.Qt.WindowMaximized
+            )
+            self.setWindowState(self.windowState() | state)
+
+    def _save_geometry(self):
+        maximized = bool(self.isMaximized())
+        normal = self.normalGeometry() if maximized else self.geometry()
+        if normal.width() < 300 or normal.height() < 200:
+            return
+        self._app_settings.set(
+            BATCH_DIALOG_GEOMETRY,
+            {
+                "width": normal.width(),
+                "height": normal.height(),
+                "maximized": maximized,
+            },
+            sync=True,
+        )
+
+    def done(self, result):
+        self._save_geometry()
+        super().done(result)
+
+    def column_order(self):
+        """Logical column numbers in on-screen order."""
+        header = self.table.horizontalHeader()
+        return [header.logicalIndex(visual) for visual in range(header.count())]
+
+    def _apply_column_order(self, order):
+        header = self.table.horizontalHeader()
+        self._column_move_guard = True
+        try:
+            for visual, logical in enumerate(order):
+                header.moveSection(header.visualIndex(logical), visual)
+        finally:
+            self._column_move_guard = False
+
+    def _column_moved(self, _logical, _old_visual, _new_visual):
+        if self._column_move_guard:
+            return
+        header = self.table.horizontalHeader()
+        if header.visualIndex(0) != 0:
+            # The Select column stays at the left edge.
+            self._column_move_guard = True
+            try:
+                header.moveSection(header.visualIndex(0), 0)
+            finally:
+                self._column_move_guard = False
+        self._app_settings.set(
+            BATCH_DIALOG_COLUMN_ORDER, self.column_order(), sync=True
+        )
+
+    def reset_column_order(self):
+        self._apply_column_order(DEFAULT_BATCH_DIALOG_COLUMN_ORDER)
+        self._app_settings.set(
+            BATCH_DIALOG_COLUMN_ORDER, self.column_order(), sync=True
+        )
+
+    def _header_context_menu(self, position):
+        menu = QtWidgets.QMenu(self)
+        action = menu.addAction(
+            "列の並びを既定に戻す"
+            if self.language == "ja"
+            else "Reset column order"
+        )
+        action.triggered.connect(self.reset_column_order)
+        run_menu = menu.exec if hasattr(menu, "exec") else menu.exec_
+        run_menu(self.table.horizontalHeader().mapToGlobal(position))
+
+    @staticmethod
+    def _natural_key(text: str):
+        return tuple(
+            (0, int(part), "") if part.isdigit() else (1, 0, part)
+            for part in re.split(r"(\d+)", text.casefold())
+            if part != ""
+        )
+
+    def _sort_key(self, row: int, column: int):
+        """Sort key of one cell, or None for an empty cell (always last)."""
+        if column == 0:
+            item = self.table.item(row, 0)
+            return 0 if item is not None and item.checkState() == CHECKED else 1
+        text = self._cell_text(row, column)
+        if not text:
+            return None
+        if column in self.NUMERIC_SORT_COLUMNS:
+            try:
+                return (0, float(text), "")
+            except ValueError:
+                return (1, 0.0, text.casefold())
+        return self._natural_key(text)
+
+    def sorted_rows(self, column: int, ascending: bool):
+        keyed = [
+            (row, self._sort_key(row, column))
+            for row in range(self.table.rowCount())
+        ]
+        present = [(row, key) for row, key in keyed if key is not None]
+        empty = [row for row, key in keyed if key is None]
+        present.sort(key=lambda pair: pair[1], reverse=not ascending)
+        return [row for row, _key in present] + empty
+
+    def _header_clicked(self, column: int):
+        state = self._sort_state
+        if state is None or state[0] != column:
+            new_state = (column, True)
+        elif state[1]:
+            new_state = (column, False)
+        else:
+            new_state = None
+        self.apply_row_order(new_state)
+
+    def apply_row_order(self, state):
+        """Show rows sorted by ``state`` = (column, ascending) or the project order.
+
+        Only the on-screen order of the rows changes: logical row ``i`` stays
+        project dataset ``i``, so nothing typed or pasted can reach another
+        measurement, and ``project.datasets`` is never reordered.
+        """
+        self._sort_state = state
+        row_count = self.table.rowCount()
+        order = (
+            list(range(row_count))
+            if state is None
+            else self.sorted_rows(*state)
+        )
+        vertical = self.table.verticalHeader()
+        for target, row in enumerate(order):
+            vertical.moveSection(vertical.visualIndex(row), target)
+        header = self.table.horizontalHeader()
+        header.setSortIndicatorShown(state is not None)
+        if state is not None:
+            if QT_API == 6:
+                indicator = (
+                    QtCore.Qt.SortOrder.AscendingOrder
+                    if state[1]
+                    else QtCore.Qt.SortOrder.DescendingOrder
+                )
+            else:
+                indicator = (
+                    QtCore.Qt.AscendingOrder
+                    if state[1]
+                    else QtCore.Qt.DescendingOrder
+                )
+            header.setSortIndicator(state[0], indicator)
+
+    def displayed_rows(self):
+        """Logical rows in on-screen order."""
+        vertical = self.table.verticalHeader()
+        return [
+            vertical.logicalIndex(visual)
+            for visual in range(self.table.rowCount())
+        ]
 
     def _cell_double_clicked(self, row: int, column: int):
         if column == self.GRADIENT_COLUMN:
@@ -2789,16 +2995,22 @@ class BatchMetadataDialog(QtWidgets.QDialog):
     def _logical_column(self, visual: int) -> int:
         return self.table.horizontalHeader().logicalIndex(visual)
 
+    def _visual_row(self, row: int) -> int:
+        return self.table.verticalHeader().visualIndex(row)
+
+    def _logical_row(self, visual: int) -> int:
+        return self.table.verticalHeader().logicalIndex(visual)
+
     def _copy_selected_cells(self):
         indexes = self.table.selectedIndexes()
         if not indexes:
             return
         # Columns are walked in their on-screen order so a range that looks
         # rectangular copies even when logical column numbers are not adjacent.
-        rows = sorted({index.row() for index in indexes})
+        rows = sorted({self._visual_row(index.row()) for index in indexes})
         visuals = sorted({self._visual_column(index.column()) for index in indexes})
         selected = {
-            (index.row(), self._visual_column(index.column()))
+            (self._visual_row(index.row()), self._visual_column(index.column()))
             for index in indexes
         }
         rectangle_rows = range(rows[0], rows[-1] + 1)
@@ -2816,7 +3028,8 @@ class BatchMetadataDialog(QtWidgets.QDialog):
             return
         lines = []
         gradient_cells = {}
-        for row_offset, row in enumerate(rectangle_rows):
+        for row_offset, visual_row in enumerate(rectangle_rows):
+            row = self._logical_row(visual_row)
             values = []
             for column_offset, visual in enumerate(rectangle_visuals):
                 column = self._logical_column(visual)
@@ -2876,12 +3089,15 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         if selected_indexes:
             # The paste origin is the top-left of the selection (in on-screen
             # column order), not the current cell.
-            start_row = min(index.row() for index in selected_indexes)
+            start_row = min(self._visual_row(index.row()) for index in selected_indexes)
             start_visual = min(
                 self._visual_column(index.column()) for index in selected_indexes
             )
         else:
-            start_row = self.table.currentRow()
+            start_row = (
+                self._visual_row(self.table.currentRow())
+                if self.table.currentRow() >= 0 else -1
+            )
             start_visual = (
                 self._visual_column(self.table.currentColumn())
                 if self.table.currentColumn() >= 0 else -1
@@ -2911,7 +3127,7 @@ class BatchMetadataDialog(QtWidgets.QDialog):
                 return
             cells = [
                 (
-                    start_row + row_offset,
+                    self._logical_row(start_row + row_offset),
                     self._logical_column(start_visual + column_offset),
                     text_value,
                     (row_offset, column_offset),
@@ -3002,7 +3218,9 @@ class BatchMetadataDialog(QtWidgets.QDialog):
         self._syncing_selection_checks = True
         try:
             self.table.clearSelection()
-            self.table.setCurrentCell(start_row, self._logical_column(start_visual))
+            self.table.setCurrentCell(
+                self._logical_row(start_row), self._logical_column(start_visual)
+            )
             for row, column, _text, _position in cells:
                 self.table.item(row, column).setSelected(True)
         finally:

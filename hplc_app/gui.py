@@ -119,6 +119,7 @@ from .report import (
     render_analysis_report_pages,
 )
 from .rendering import (
+    GRADIENT_AXIS_RANGE,
     HIGH_QUALITY,
     LIGHTWEIGHT,
     apply_legend_frame_and_fill as _apply_legend_frame_and_fill,
@@ -757,7 +758,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.axes_right = None
         self.axes_gradient = None
         self.axes_gradient_secondary = None
-        self._preview_gradient_limits = (0.0, 100.0)
+        self._preview_gradient_limits = GRADIENT_AXIS_RANGE
         self._overview_dataset_lines = {}
         self._plot_source_cache = {}
         self._peak_overlay_artists = {}
@@ -3954,12 +3955,40 @@ class MainWindow(QtWidgets.QMainWindow):
                 if scene is not None else None
             )
             return limits if limits is not None else tuple(self.axes.get_ylim())
+        if name == "detail_y2":
+            if not self._split_y_axes:
+                return None
+            scene = getattr(self, "_screen_scene", None)
+            return (
+                self._scene_y_limits(scene, "y2", self._full_x_bounds())
+                if scene is not None else None
+            )
         return None
+
+    def _set_detail_y2(self, limits):
+        """Pan only Y2 (the lower panel's own scrollbar in two-screen mode)."""
+
+        state = self._screen_view_state()
+        bounds = self._screen_scroll_bounds("detail_y2")
+        if bounds is None or state.y2 is None:
+            return
+        low, high = sorted(float(value) for value in limits)
+        span = min(high - low, bounds[1] - bounds[0])
+        low = min(max(low, bounds[0]), bounds[1] - span)
+        self._apply_view_state(replace(state, y2=(low, low + span)))
 
     def _set_detail_y_from_primary(self, limits):
         """Pan detail Y1/Y2 to the same relative data position."""
 
         state = self._screen_view_state()
+        if self._split_y_axes:
+            # Separate panels: the upper bar moves Y1 only.
+            bounds = self._screen_scroll_bounds("detail_y")
+            low, high = sorted(float(value) for value in limits)
+            span = min(high - low, bounds[1] - bounds[0])
+            low = min(max(low, bounds[0]), bounds[1] - span)
+            self._apply_view_state(replace(state, y1=(low, low + span)))
+            return
         primary_bounds = self._screen_scroll_bounds("detail_y")
         low, high = sorted(float(value) for value in limits)
         primary_span = min(high - low, primary_bounds[1] - primary_bounds[0])
@@ -4345,7 +4374,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ):
                 if gradient_axis is not None:
                     gradient_axis.set_ylabel(scene.gradient.axis_label)
-                    gradient_axis.set_ylim(0.0, 100.0)
+                    gradient_axis.set_ylim(*GRADIENT_AXIS_RANGE)
 
         if self.project.method.show_major_grid:
             self.axes.grid(
@@ -4722,7 +4751,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 label=gradient_spec.label,
                 antialiased=not self._is_lightweight_rendering(),
             )
-            gradient_axis.set_ylim(0.0, 100.0)
+            gradient_axis.set_ylim(*GRADIENT_AXIS_RANGE)
             gradient_axis.set_ylabel(
                 gradient_spec.axis_label
             )

@@ -268,6 +268,8 @@ class ExperimentalScreenPreview:
             ))
         elif command == "detail_y":
             owner._set_detail_y_from_primary(value)
+        elif command == "detail_y2":
+            owner._set_detail_y2(value)
 
     def _handle_overview_pan_event(self, name, event):
         """Pan the overview in X without changing the detail view or history."""

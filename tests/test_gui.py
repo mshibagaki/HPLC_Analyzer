@@ -20,6 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from hplc_app.analysis import recalculate_dataset_peaks
 from hplc_app.database import database_sections
+from hplc_app.rendering import GRADIENT_AXIS_RANGE
 from hplc_app.dialogs import (
     AnalytePresetRegistrationDialog,
     AutoPeakDetectionDialog,
@@ -1327,7 +1328,7 @@ class GuiTests(unittest.TestCase):
             self.assertEqual(evidence["counts"]["text_annotations"], 1)
             self.assertTrue(evidence["shared_x"])
             self.assertAlmostEqual(evidence["gradient_range"][0], 0.0, places=2)
-            self.assertAlmostEqual(evidence["gradient_range"][1], 100.0, places=2)
+            self.assertAlmostEqual(evidence["gradient_range"][1], GRADIENT_AXIS_RANGE[1], places=2)
             self.assertEqual(view_evidence["x"], (4.0, 22.0))
             self.assertEqual(view_evidence["y1"], (-0.1, 0.2))
             self.assertEqual(view_evidence["y2"], (-0.3, 0.4))
@@ -4382,6 +4383,158 @@ class GuiTests(unittest.TestCase):
             ) as set_secondary:
                 window._zoom_overview_y(0.8)
                 set_secondary.assert_not_called()
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def _full_b_window(self, view_mode):
+        window = self.make_window()
+        window.project.datasets[0].measurement.gradient = [
+            GradientPoint(0.0, 0.0, 100.0, 0.0, 0.0),
+            GradientPoint(90.0, 0.0, 100.0, 0.0, 0.0),
+        ]
+        window.view_mode_combo.setCurrentIndex(
+            window.view_mode_combo.findData(view_mode)
+        )
+        window.resize(1400, 900)
+        window.show()
+        window.screen_preview_checkbox.setChecked(True)
+        self.app.processEvents()
+        return window
+
+    def test_gradient_100_percent_line_is_drawn_in_every_view_mode(self):
+        # Issue #333: the B% axis used to end exactly at 100, so the 100 %
+        # line sat on the clipped edge of the plot area and vanished.
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        for view_mode in ("single", "overview_detail", "split_y_axes"):
+            with self.subTest(view_mode=view_mode):
+                window = self._full_b_window(view_mode)
+                try:
+                    consumer = window._screen_preview.consumer
+                    self.assertEqual(
+                        tuple(consumer.gradient.viewRange()[1]),
+                        GRADIENT_AXIS_RANGE,
+                    )
+                    image = consumer.widget.viewport().grab().toImage()
+                    rect = consumer.gradient.sceneBoundingRect()
+                    top = int(rect.top())
+                    # The 100 % line must sit inside the plot area (about
+                    # 5 % of its height below the top edge), not on the edge.
+                    headroom = int(rect.height() * 5.0 / 105.0)
+                    self.assertGreaterEqual(headroom, 4)
+                    dark = 0
+                    for y in range(top + 2, top + headroom + 3):
+                        for x in range(int(rect.left()), int(rect.right())):
+                            colour = QtGui.QColor(image.pixel(x, y))
+                            if max(colour.red(), colour.green(), colour.blue()) < 90:
+                                dark += 1
+                    self.assertGreater(dark, 20)
+                finally:
+                    window.project.dirty = False
+                    window.close()
+
+    def test_gradient_axis_headroom_keeps_tick_labels_and_resets(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self._full_b_window("overview_detail")
+        try:
+            consumer = window._screen_preview.consumer
+            ticks = consumer.gradient_axis.tickValues(0.0, 105.0, 400)
+            # Only the first two tick levels carry numbers in pyqtgraph.
+            labels = [value for _spacing, values in ticks[:2] for value in values]
+            self.assertLessEqual(max(labels), 100.0)
+            self.assertNotIn(105.0, labels)
+            window._plot(preserve_view=False)
+            self.app.processEvents()
+            self.assertEqual(
+                tuple(window._screen_preview.consumer.gradient.viewRange()[1]),
+                GRADIENT_AXIS_RANGE,
+            )
+            self.assertEqual(
+                tuple(window.axes_gradient.get_ylim()), GRADIENT_AXIS_RANGE
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_matplotlib_gradient_axis_and_report_use_headroom(self):
+        window = self.make_window()
+        try:
+            window.project.method.view_mode = "single"
+            window._plot(preserve_view=False)
+            self.assertEqual(
+                tuple(window.axes_gradient.get_ylim()), GRADIENT_AXIS_RANGE
+            )
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_split_view_scrollbars_sit_outside_both_panels(self):
+        # Issue #333: two-screen mode has an X bar below the lower panel and
+        # one Y bar per panel; the split handle stays uncovered.
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self._full_b_window("split_y_axes")
+        try:
+            consumer = window._screen_preview.consumer
+            upper = consumer.primary.sceneBoundingRect()
+            lower = consumer.secondary_plot.sceneBoundingRect()
+            x_bar = consumer.detail_x_scrollbar.geometry()
+            y1_bar = consumer.detail_y_scrollbar.geometry()
+            y2_bar = consumer.detail_y2_scrollbar.geometry()
+            self.assertTrue(consumer.detail_y2_scrollbar.isVisible())
+            self.assertGreaterEqual(x_bar.top(), lower.bottom())
+            self.assertGreaterEqual(y1_bar.left(), upper.right())
+            self.assertGreaterEqual(y2_bar.left(), lower.right())
+            for bar in (x_bar, y1_bar, y2_bar):
+                for panel in (upper, lower):
+                    overlap = QtCore.QRectF(bar).intersected(panel)
+                    self.assertLess(overlap.width() * overlap.height(), 1.0)
+            handle = consumer.split_handle.sceneBoundingRect()
+            handle_rect = QtCore.QRectF(
+                consumer.widget.mapFromScene(handle).boundingRect()
+            )
+            for bar in (x_bar, y1_bar, y2_bar):
+                overlap = QtCore.QRectF(bar).intersected(handle_rect)
+                self.assertLess(overlap.width() * overlap.height(), 1.0)
+            self.assertLessEqual(y1_bar.bottom(), y2_bar.top())
+
+            # Each Y bar moves only its own axis.
+            state = window._screen_view_state()
+            y1_before, y2_before = state.y1, state.y2
+            window._apply_view_state(replace(
+                state,
+                y1=(y1_before[0], y1_before[0] + (y1_before[1] - y1_before[0]) / 4),
+                y2=(y2_before[0], y2_before[0] + (y2_before[1] - y2_before[0]) / 4),
+            ))
+            self.app.processEvents()
+            zoomed = window._screen_view_state()
+            consumer.detail_y_scrollbar.setValue(consumer.detail_y_scrollbar.maximum())
+            self.app.processEvents()
+            after_y1 = window._screen_view_state()
+            self.assertNotAlmostEqual(after_y1.y1[0], zoomed.y1[0])
+            self.assertEqual(tuple(after_y1.y2), tuple(zoomed.y2))
+            consumer.detail_y2_scrollbar.setValue(consumer.detail_y2_scrollbar.maximum())
+            self.app.processEvents()
+            after_y2 = window._screen_view_state()
+            self.assertNotAlmostEqual(after_y2.y2[0], after_y1.y2[0])
+            self.assertEqual(tuple(after_y2.y1), tuple(after_y1.y1))
+        finally:
+            window.project.dirty = False
+            window.close()
+
+    def test_split_handle_drag_still_works_with_scrollbars(self):
+        if not pyqtgraph_scene_available():
+            self.skipTest("optional modern renderer unavailable")
+        window = self._full_b_window("split_y_axes")
+        try:
+            consumer = window._screen_preview.consumer
+            handle = consumer.widget.mapFromScene(
+                consumer.split_handle.sceneBoundingRect().center()
+            )
+            widget_at = consumer.widget.viewport().childAt(handle)
+            self.assertIsNone(widget_at)
         finally:
             window.project.dirty = False
             window.close()

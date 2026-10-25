@@ -17,6 +17,10 @@ import numpy as np
 from .models import normalize_line_style
 
 
+# B% axis range shared by every renderer. The 5 % headroom keeps the 100 %
+# line off the clipped edge of the plot area; ticks stay at 0-100.
+GRADIENT_AXIS_RANGE = (0.0, 105.0)
+
 HIGH_QUALITY = "high_quality"
 LIGHTWEIGHT = "lightweight"
 RENDER_QUALITIES = (HIGH_QUALITY, LIGHTWEIGHT)

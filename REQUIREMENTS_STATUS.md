@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-10-24 (Issues #333-#338 planning)
+Updated: 2026-10-25 (Issue #344 planning)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -120,6 +120,7 @@ Windows 11 field use on `8b9f27c` produced ten more requests, grouped into six i
 | #336 | Batch condition editing | The batch condition dialog cannot sort rows, move columns, or maximize, and 39 places index `project.datasets` by table row, so enabling sorting as-is would write conditions to the wrong measurement |
 | #337 | Preferences and colors | Default trace colors come from the Y-axis family (in practice the Ch1/Ch2 channel), so several traces on one axis get adjacent, similar shades; there is no qualitative distinct-color assignment |
 | #338 | Continuous directory import | Reload treats a GCD and its TXT export as the same measurement only inside one folder; a TXT already in the project or a TXT in another registered folder lets the matching GCD (or both) be imported again. File names alone cannot be the key because the same name exists in Ch1 and Ch2 |
+| #344 | Chromatogram list | Dragging several selected rows does start a multi-row drag (Qt keeps the selection on press), but `DatasetTableWidget.dropEvent` ignores any drop unless exactly one row is selected, and `move_dataset_to` / `rowMoveRequested` carry a single row. Measured: dropping rows 1, 2 and 4 of five changes nothing and records no undo step. Planned in `WIN11_FEEDBACK_WORKFLOW.md` section 42; no schema change |
 
 ## Project compatibility notes for Issues #181 and #221
 

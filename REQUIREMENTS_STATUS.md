@@ -1,6 +1,6 @@
 # Requirements implementation status
 
-Updated: 2026-09-11 (Issues #307, #308, #309, #310, #311, #313, #314 delivered)
+Updated: 2026-10-24 (Issues #333-#338 planning)
 
 This tracked file is the source of truth for the original product requests. Update it in the same Issue/PR that changes a status. `Implemented` means the behavior and automated regression coverage are on `main`; it does not replace the physical release evidence in `VALIDATION_BLOCKERS.md`.
 
@@ -109,6 +109,17 @@ A further eight requests were grouped into two issues (#313, #314), planned on t
 Issue #313 changes the schema and #314 does not. The fraction ranges themselves already persist on `Project.fraction_regions`, and `ReportOptions` is a session-only dataclass that needs one more flag, but the requested "show fraction areas" checkbox has no counterpart at all: the four existing display flags live on `AnalysisMethod` and none covers fraction ranges, which `screen_scene.py` builds unconditionally. #313 therefore adds one persisted field with a migration that reads existing projects as visible, matching what they draw today. Issue #314 must also apply the tick-count ceiling added by Issue #241, because a report can span a wider X range than the screen and would otherwise generate more tick lines than the screen permits.
 
 Issue #313 is delivered, in the Selection and display row above. Issue #314 is delivered, in the Output and reports row above.
+
+Windows 11 field use on `8b9f27c` produced ten more requests, grouped into six issues (#333-#338). None changes the schema. The findings are in `WIN11_FEEDBACK_WORKFLOW.md` section 39.
+
+| Issue | Affected row | What is actually wrong |
+|---|---|---|
+| #333 | Zoom and overview navigation | The B% axis is fixed at exactly 0-100 with no padding, so the 100% line lies on the ViewBox clip edge; whether it survives depends on the sub-pixel position of the plot's top, and in overview-and-detail mode (top at y = 153.51) it is clipped away entirely. In the split view the detail scrollbars are anchored to the upper panel only: the horizontal one sits on the divider between the panels and the lower panel has no vertical scrollbar |
+| #334 | Replace the interactive Matplotlib screen renderer | Measured with real Qt events, the renderers disagree: a zoom-mode drag on an axis band zooms that axis in PyQtGraph and does nothing in Matplotlib; a zoom rectangle in the single panel changes Y2 in Matplotlib but not PyQtGraph; a right-button drag zooms in Matplotlib and does nothing in PyQtGraph; and in the split view Matplotlib's X-axis band is only the spine +/- 5 px. PyQtGraph is the reference (requester decision, 2026-10-25), so every difference is resolved on the Matplotlib side |
+| #335 | Batch condition editing | In the batch condition dialog a check-box click moves the Shift anchor without selecting, every selection change overwrites all checks, and the visually moved Run ID and timestamp columns make visually rectangular ranges fail the logical-column copy check. The gradient column copies only a preset name, refuses paste, and shows nothing for an unnamed gradient; paste starts at the current cell rather than the selection, so one value cannot fill several cells |
+| #336 | Batch condition editing | The batch condition dialog cannot sort rows, move columns, or maximize, and 39 places index `project.datasets` by table row, so enabling sorting as-is would write conditions to the wrong measurement |
+| #337 | Preferences and colors | Default trace colors come from the Y-axis family (in practice the Ch1/Ch2 channel), so several traces on one axis get adjacent, similar shades; there is no qualitative distinct-color assignment |
+| #338 | Continuous directory import | Reload treats a GCD and its TXT export as the same measurement only inside one folder; a TXT already in the project or a TXT in another registered folder lets the matching GCD (or both) be imported again. File names alone cannot be the key because the same name exists in Ch1 and Ch2 |
 
 ## Project compatibility notes for Issues #181 and #221
 
